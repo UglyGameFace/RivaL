@@ -18,6 +18,7 @@ import json
 import logging
 import math
 import re
+import textwrap
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
@@ -68,7 +69,9 @@ def short_name(family: str) -> str:
         return "History" + suffix
     lab = re.fullmatch(r"lab_\d+m_([0-9a-f]+)", base)
     if lab:
-        return f"Lab {lab.group(1)[:6]}"
+        from parlay_bot.perpetuals.model_lab import family_name
+
+        return family_name(base) + suffix
     return (_NAMES.get(base) or base[:12]) + suffix
 
 
@@ -165,9 +168,14 @@ def fold(evidence_rows, stops, *, retired=frozenset()) -> list[TrialRow]:
             after_fees_bps=fees_sum / fees_weight if fees_weight else None,
             family=family,
         )
-        best = rows.get(row.name)
+        key = family if family.startswith("lab_") else row.name
+        best = rows.get(key)
         if best is None or (row.days, row.results) > (best.days, best.results):
-            rows[row.name] = row
+            rows[key] = row
+    from parlay_bot.perpetuals.model_lab import family_names
+
+    labels = family_names([r.family for r in rows.values() if r.family.startswith("lab_")])
+    rows = {key: replace(row, name=labels.get(row.family, row.name)) for key, row in rows.items()}
     return sorted(rows.values(), key=lambda r: (_ORDER[r.status], -r.days, -r.results, r.name))
 
 
@@ -238,6 +246,18 @@ def grouped(header: str, items: list[tuple[str, str]], *,
     return "```\n" + "\n".join(lines) + "\n```\n"
 
 
+def model_line(name: str, day: str, results: str, right: str, edge: str, *,
+               expanded: bool = False) -> str:
+    """Long descriptive names get their own line; phone-width metrics stay intact."""
+    metrics = f"{day:>5} {results:>4} {right:>5} {edge:>5}"
+    if not expanded:
+        name = name[:11]
+    if len(name) <= 11:
+        return f"{name:<11} {metrics}"
+    return "\n".join((*textwrap.wrap(name, width=PHONE_WIDTH, break_long_words=False),
+                      f"{'':11} {metrics}"))
+
+
 def table(rows: list[TrialRow]) -> str:
     """Name, day, results, right, edge; one line per model, grouped by status."""
     items = []
@@ -246,8 +266,8 @@ def table(rows: list[TrialRow]) -> str:
         rate = "—" if row.hit_rate is None else f"{row.hit_rate:.0%}"
         # Under 20 results an edge is noise (+44.8 on 10 results): say "few".
         edge = _pts(row.gain) if row.results >= TOO_FEW else "few"
-        line = (f"{row.name[:11]:<11} {day:>5} {_tiny_count(row.results):>4} "
-                f"{rate:>5} {edge:>5}")
+        line = model_line(row.name, day, _tiny_count(row.results), rate, edge,
+                          expanded=row.family.startswith("lab_"))
         items.append((row.status, line))
     text = grouped(f"{'Model':<11} {'Day':>5} {'Res':>4} {'Right':>5} {'Edge':>5}", items)
     if len(rows) > MAX_ROWS:
@@ -323,6 +343,11 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
     stops_here = [(r["venue"], r["contract"], r["family"]) for r in stop_rows
                   if int(r["horizon_minutes"]) == horizon
                   and (str(r["venue"]), str(r["contract"])) in contracts]
+    from parlay_bot.perpetuals.model_lab import load_family_designs
+
+    load_family_designs(store, {family for entry, _, _ in everywhere
+                               for family in (entry[2] if isinstance(entry[2], dict) else {})
+                               if str(family).startswith("lab_")})
     rows = fold(here, stops_here, retired=retired)
     # Right % is counted on the SAME exchanges as Day, Res and Edge (the ones
     # the hourly promotion check judged), so one row never mixes scopes.

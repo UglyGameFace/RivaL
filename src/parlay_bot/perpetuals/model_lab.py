@@ -42,6 +42,7 @@ import json
 import logging
 import math
 import random
+import re
 import statistics
 import threading
 from datetime import UTC, datetime, timedelta
@@ -159,7 +160,9 @@ def is_lab(family: str) -> bool:
 
 def describe(genome: dict) -> str:
     """One plain sentence about a design."""
-    inputs = list(genome["inputs"])
+    labels = {"momentum": "price momentum", "volatility": "volatility (range and ATR)",
+              "volume": "trading volume", "oscillators": "RSI, MACD and Bollinger bands"}
+    inputs = [labels[g] for g in genome["inputs"]]
     reads = ", ".join(inputs[:-1]) + (" and " if len(inputs) > 1 else "") + inputs[-1]
     when = {"any": "every market", "trend": "trending markets only",
             "quiet": "choppy (non-trending) markets only"}[genome["regime"]]
@@ -169,8 +172,9 @@ def describe(genome: dict) -> str:
     extra = " plus a few combined signals" if genome["shape"] == "interact" else ""
     start = "starting from the main model's weights" if genome["warm"] == "main" else \
         "starting from scratch"
+    pull = {0.0001: "light", 0.001: "moderate", 0.01: "strong"}[genome["l2"]]
     return (f"Reads {reads}{extra}; calls {when}; learns {speed[genome['lr']]} "
-            f"{start}; {trust}.")
+            f"{start}; {trust}; uses {pull} regularization to keep weights in check.")
 
 
 def _vector(genome: dict, features) -> tuple[float, ...]:
@@ -489,6 +493,96 @@ def search_bar(pairs, *, tried: int) -> dict:
 _CLOSED: set[str] = set()
 _TRIED: dict[int, int] = {}
 _GENOMES: dict[str, dict] = {}
+
+
+def load_family_designs(store, families) -> None:
+    """Warm display metadata after a restart, with a bounded read and no writes.
+
+    The lab normally loads these itself. Screens must also work before its
+    first review, without treating a digest as a model description.
+    """
+    missing = sorted({str(f) for f in families if str(f) not in _GENOMES
+                      and re.fullmatch(r"lab_(?:5|15|60)m_[0-9a-f]{10}", str(f))})
+    if not missing:
+        return
+    try:
+        with store.connect() as conn:
+            if store.database.backend == "postgres":
+                exists = conn.execute("SELECT to_regclass('rival_lab_genomes') AS name").fetchone()
+            else:
+                exists = conn.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                                      "AND name='rival_lab_genomes'").fetchone()
+            if not exists or not exists["name"]:
+                return
+            for offset in range(0, len(missing), 100):
+                batch = missing[offset:offset + 100]
+                rows = conn.execute("SELECT family,horizon_minutes,genome_json FROM rival_lab_genomes "
+                    "WHERE family IN (" + ",".join("?" for _ in batch) + ")", tuple(batch)).fetchall()
+                for row in rows:
+                    try:
+                        raw = row["genome_json"]
+                        if not isinstance(raw, str) or len(raw) > 4096:
+                            continue
+                        genome = json.loads(raw)
+                        if (genome.get("version") == VERSION
+                                and genome.get("horizon") == row["horizon_minutes"]
+                                and family_of(genome, row["horizon_minutes"]) == row["family"]):
+                            _GENOMES[row["family"]] = _plain(genome)
+                    except (ValueError, TypeError, KeyError):
+                        continue
+    except Exception as exc:  # noqa: BLE001 - optional display metadata
+        _LOG.warning("RivaL lab design names unavailable error=%s", type(exc).__name__)
+
+
+def _design_name(genome: dict | None) -> str:
+    if not genome:
+        return "Design unavailable"
+    groups = {"momentum": "price", "volatility": "volatility", "volume": "volume",
+              "oscillators": "RSI/MACD"}
+    basis = ("all signals" if tuple(genome["inputs"]) == GROUP_ORDER
+             else " + ".join(groups[g] for g in genome["inputs"]))
+    regime = {"any": "", "trend": "trend ", "quiet": "choppy "}[genome["regime"]]
+    title = regime + basis
+    speed = {0.01: "slow", 0.025: "steady", 0.05: "fast", 0.1: "rapid"}[genome["lr"]]
+    return title[0].upper() + title[1:] + " · " + speed
+
+
+def family_name(family: str) -> str:
+    """The actual signal inputs and learning speed, without opaque design IDs."""
+    return _design_name(_GENOMES.get(str(family)))
+
+
+def family_settings(family: str) -> str | None:
+    """The remaining design choices, suitable for a model-picker description."""
+    g = _GENOMES.get(str(family))
+    if not g:
+        return None
+    return " · ".join(("blended inputs" if g["shape"] == "interact" else "linear inputs",
+        "main-model start" if g["warm"] == "main" else "fresh start",
+        {0.5: "half confidence", 0.75: "trimmed confidence", 1.0: "full confidence"}[g["shrink"]],
+        {0.0001: "light pull", 0.001: "medium pull", 0.01: "strong pull"}[g["l2"]]))
+
+
+def family_names(families) -> dict[str, str]:
+    """Distinct designs keep distinct rows, with meaningful qualifiers on collisions."""
+    genomes = dict(_GENOMES)
+    names = {f: _design_name(genomes.get(f)) for f in families}
+    for title in set(names.values()):
+        same = [f for f in names if names[f] == title and f in genomes]
+        if len(same) < 2:
+            continue
+        dimensions = [d for d in ("shape", "warm", "shrink", "l2")
+                      if len({genomes[f][d] for f in same}) > 1]
+        words = {"shape": {"linear": "linear", "interact": "blend"},
+                 "warm": {"main": "main start", "zero": "fresh start"},
+                 "shrink": {0.5: "half confidence", 0.75: "trimmed", 1.0: "full confidence"},
+                 "l2": {0.0001: "light pull", 0.001: "medium pull", 0.01: "strong pull"}}
+        for f in same:
+            qualifiers = [words[d][genomes[f][d]] for d in dimensions]
+            if len({f.split("_")[1] for f in same}) > 1:
+                qualifiers.append(f.split("_")[1])
+            names[f] += " · " + ", ".join(qualifiers)
+    return names
 
 
 def describe_family(family: str) -> str | None:

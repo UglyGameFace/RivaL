@@ -9,14 +9,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-from parlay_bot.perpetuals.evidence_score_receipt import (  # noqa: E402
-    MODEL,
-    summarize_rows,
-)
-from evidence_board_github import read_public_intelligence  # noqa: E402
-from evidence_board_receipt import (  # noqa: E402
+from evidence_board_github import read_public_intelligence
+from evidence_board_receipt import (
     read_intelligence_host,
     read_paired_performance,
+)
+from parlay_bot.perpetuals.evidence_score_receipt import (
+    MODEL,
+    summarize_rows,
 )
 
 

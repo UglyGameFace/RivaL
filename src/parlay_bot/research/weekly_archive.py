@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 
 from parlay_bot.archive.drive import MAX_RESEARCH_DOCUMENT_BYTES
 from parlay_bot.config import Settings
-from parlay_bot.research import archive_training, gbm_training, volcal_training
+from parlay_bot.research import archive_training, gbm_training, volcal_training, xmarket_training
 from parlay_bot.research.publish import _artifact, _drive
 from parlay_bot.research.scheduled_variants import (
     RESULT_PREFIX,
@@ -47,6 +47,8 @@ def _fit(module, frames: dict, training: dict, **variant) -> tuple[dict, dict | 
             report["trending_census"] = census
         return report, None, "blocked"
     report = result["report"]
+    if report.get("training_status") == "blocked":
+        return report, None, "blocked"
     if result["artifact"] is None:
         return report, None, "rejected"
     model = module.validate(result["artifact"])
@@ -116,7 +118,7 @@ async def _train_variant(drive, request: dict, *, common: dict, full: dict,
 
 async def train_weekly_archive(frames: dict, *, training: dict, census: dict,
                                out: Path, publish: bool) -> int:
-    """Train the three ordinary families and at most one requested variant per scope.
+    """Train the four ordinary families and at most one requested variant per scope.
 
     regime_v2 is retired (spec rival-regime-live-learning-spec-20261108,
     D10): it no longer trains here; the live-learning families replace
@@ -136,9 +138,18 @@ async def train_weekly_archive(frames: dict, *, training: dict, census: dict,
                                      training=training)
         for prefix, module in (("archive-v1", archive_training),
                                ("gbm-v1", gbm_training),
-                               ("volcal-v1", volcal_training)):
+                               ("volcal-v1", volcal_training),
+                               ("xmarket-v1", xmarket_training)):
             try:
-                report, model, status = _fit(module, common, training)
+                extra = {}
+                if module is xmarket_training:
+                    from parlay_bot.research.xmarket_history import load_local_inputs, weekly_inputs
+                    cache = out.parent / "data" / "xmarket-inputs"
+                    market_data = (await weekly_inputs(drive, asset=asset, through=through, cache=cache)
+                                   if drive is not None else
+                                   load_local_inputs(cache, asset=asset) if cache.is_dir() else {})
+                    extra["market_data"] = market_data
+                report, model, status = _fit(module, common, training, **extra)
             except Exception as exc:  # noqa: BLE001 - record error, finish peers, fail the run
                 errors = True
                 status, model = "error", None

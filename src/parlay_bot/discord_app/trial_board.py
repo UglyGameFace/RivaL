@@ -50,6 +50,7 @@ _NAMES = {
     "archive_v1": "Archive",
     "gbm_v1": "Boosted",
     "volcal_v1": "VolCal",
+    "xmarket_v1": "XMarket",
     "gaussian_nb_v1": "Naive Bayes",
     "knn21_v1": "Nearest-21",
 }

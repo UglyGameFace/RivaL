@@ -101,6 +101,7 @@ from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
 from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 from parlay_bot.perpetuals.unattended_acceptance import unattended_acceptance_receipt
 from parlay_bot.perpetuals.volcal_model import VolcalModelSet, is_volcal_document
+from parlay_bot.perpetuals.xmarket_model import XmarketModelSet, is_xmarket_document
 from parlay_bot.providers.errors import QuotaReserveReached
 from parlay_bot.providers.oddspapi import OddsPapiClient
 from parlay_bot.providers.owner_limits import OwnerLimitStore
@@ -1918,6 +1919,10 @@ class RivalDiscordClient(discord.Client):
                         if saved or settled:
                             _LOG.info("RivaL Kalshi up/down recorded=%d settled=%d",
                                       saved, settled)
+                    try:
+                        await asyncio.wait_for(tracker.capture_inputs(), timeout=10)
+                    except Exception as exc:  # noqa: BLE001 - forecasts and settlement already finished
+                        _LOG.info("XMarket Kalshi capture deferred error=%s", type(exc).__name__)
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001 - research only
@@ -1942,6 +1947,13 @@ class RivalDiscordClient(discord.Client):
             try:
                 if not host_memory.snapshot().pressure:
                     await asyncio.wait_for(backup.run_once(), timeout=1800)
+                    if self.research_drive is not None:
+                        from parlay_bot.perpetuals.xmarket_inputs import XmarketInputs
+                        try:
+                            await asyncio.wait_for(XmarketInputs(self.store).publish_days(
+                                self.research_drive), timeout=180)
+                        except Exception as exc:  # noqa: BLE001 - keep the completed records backup healthy
+                            _LOG.warning("XMarket input export deferred error=%s", type(exc).__name__)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - backup must never affect the bot
@@ -2201,6 +2213,10 @@ class RivalDiscordClient(discord.Client):
                 # a pass, so Sentry hears from it even when the listing was
                 # empty and nothing was considered.
                 heartbeat("rival-formula-test")
+                try:
+                    await self._capture_xmarket_history(notices)
+                except Exception as exc:  # noqa: BLE001 - optional collection cannot fail the formula pass
+                    _LOG.warning("XMarket history capture deferred error=%s", type(exc).__name__)
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
@@ -2208,6 +2224,25 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001 - research only, never blocks the bot
                 _LOG.exception("RivaL formula test cycle failed")
             await asyncio.sleep(max(1, 10 - (time.monotonic() - started)))
+
+    async def _capture_xmarket_history(self, notices) -> None:
+        native = [n for n in notices if n.horizon == 15]
+        if not native:
+            return
+        from parlay_bot.perpetuals.xmarket_inputs import XmarketInputs
+        inputs = getattr(self, "xmarket_inputs", None)
+        if inputs is None:
+            inputs = self.xmarket_inputs = XmarketInputs(self.store)
+        limiter = asyncio.Semaphore(2)
+        async def capture(notice):
+            async with limiter:
+                try:
+                    await asyncio.wait_for(inputs.capture_polymarket(
+                        notice, self.auto_hunt.polymarket._http()), timeout=5)
+                except Exception as exc:  # noqa: BLE001 - isolate each optional source
+                    _LOG.warning("XMarket PM history unavailable asset=%s error=%s",
+                                 notice.asset, type(exc).__name__)
+        await asyncio.gather(*(capture(n) for n in native))
 
     async def _poly_research_loop(self) -> None:
         """Study genuine listed contracts silently, without consuming AI quota.
@@ -2561,6 +2596,15 @@ class RivalDiscordClient(discord.Client):
         if getattr(market, "volcal_models", None) is None:
             market.volcal_models = VolcalModelSet(self.store)
         return market.volcal_models
+
+    def _xmarket_model_set(self):
+        """The same xmarket model set the forecast cycle serves from."""
+        if self.perp_collector is None:
+            return None
+        market = self.perp_collector.market
+        if getattr(market, "xmarket_models", None) is None:
+            market.xmarket_models = XmarketModelSet(self.store)
+        return market.xmarket_models
 
     def _regime2_model_set(self):
         """The same regime_v2 model set the forecast cycle serves from."""
@@ -3163,6 +3207,9 @@ class RivalDiscordClient(discord.Client):
                 regime2_set = self._regime2_model_set()
                 if regime2_set is not None:
                     known |= await asyncio.to_thread(regime2_set.imported_file_ids)
+                xmarket_set = self._xmarket_model_set()
+                if xmarket_set is not None:
+                    known |= await asyncio.to_thread(xmarket_set.imported_file_ids)
                 for _ in range(12):
                     items, next_cursor = await asyncio.wait_for(
                         self.research_drive.read_verified_research_candidates(
@@ -3248,6 +3295,28 @@ class RivalDiscordClient(discord.Client):
                                         _LOG.info("RivaL imported volcal model %s", file_id)
                             except (ValueError, UnicodeError):
                                 _LOG.warning("RivaL volcal model failed verification")
+                            continue
+                        if is_xmarket_document(payload):
+                            # XMarket artifacts are verified by
+                            # xmarket_training.validate(): provider hashes
+                            # (never normalized hashes), feature contract
+                            # and digest, calibration evaluated, offline
+                            # gates passed. The Drive-manifest byte
+                            # cross-check does not apply here: its
+                            # machinery only understands historical-
+                            # candidate documents, and the missing byte
+                            # check is a known Phase 2 limitation (same
+                            # as archive_v1 / gbm_v1).
+                            try:
+                                xmarket = self._xmarket_model_set()
+                                if xmarket is not None:
+                                    added = await asyncio.to_thread(
+                                        xmarket.import_document, file_id, payload,
+                                    )
+                                    if added:
+                                        _LOG.info("RivaL imported xmarket model %s", file_id)
+                            except (ValueError, UnicodeError):
+                                _LOG.warning("RivaL xmarket model failed verification")
                             continue
                         if is_regime2_document(payload):
                             # regime_v2 artifacts are verified by

@@ -64,6 +64,9 @@ async def test_optional_model_import_recovers_startup_pool_failure(monkeypatch):
         def _regime2_model_set(self):
             return None
 
+        def _xmarket_model_set(self):
+            return None
+
         def is_closed(self):
             return self.closed
 

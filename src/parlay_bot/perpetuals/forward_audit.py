@@ -52,8 +52,11 @@ from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.volcal_model import VolcalModelSet, volcal_calls
 from parlay_bot.perpetuals.watch_evidence import day_block_watch_evidence
 from parlay_bot.perpetuals.wild_model import wild_calls
+from parlay_bot.perpetuals.xmarket_inputs import XmarketInputs
+from parlay_bot.perpetuals.xmarket_model import XmarketModelSet, xmarket_calls
 from parlay_bot.research.archive_features import live_vector as archive_live_vector
 from parlay_bot.research.volcal_features import live_vector as volcal_live_vector
+from parlay_bot.research.xmarket_features import live_vector as xmarket_live_vector
 from parlay_bot.storage import maintenance
 from parlay_bot.storage.database import database_clock
 
@@ -152,6 +155,7 @@ ISSUE_REGIME_V2_CHALLENGERS = False
 # RivaL-native from Obi-Stoned Kenobi's perp-engine ideas (his DM
 # permission, 2026-11-11); no weights or code copied from their engine.
 ISSUE_VOLCAL_V1_CHALLENGERS = True
+ISSUE_XMARKET_V1_CHALLENGERS = True
 # regime live-learning shadow issuance (spec
 # rival-regime-live-learning-spec-20261108, D8): each live family issues
 # its own learner's call as a shadow forecast only on trending cycles
@@ -375,6 +379,19 @@ class ForwardAccuracyMonitor:
                 self.market.volcal_models = current
             except Exception:  # noqa: BLE001 - optional challenger only
                 _LOG.exception("RivaL volcal model registry unavailable")
+                return None
+        return current
+
+    def _xmarket_models(self):
+        """The bot-wide xmarket model set (None if its table is unavailable)."""
+        current = getattr(self.market, "xmarket_models", None)
+        if current is None:
+            try:
+                current = XmarketModelSet(self.store)
+                current.initialize()
+                self.market.xmarket_models = current
+            except Exception:  # noqa: BLE001 - optional challenger only
+                _LOG.exception("RivaL xmarket model registry unavailable")
                 return None
         return current
 
@@ -1071,6 +1088,15 @@ class ForwardAccuracyMonitor:
         gbm_set = self._gbm_models()
         regime2_set = self._regime2_models()
         volcal_set = self._volcal_models()
+        xmarket_set = self._xmarket_models() if ISSUE_XMARKET_V1_CHALLENGERS else None
+        xmarket_inputs = XmarketInputs(self.store)
+        try:
+            xmarket_inputs.note_venues(eligible, now=stamp)
+        except Exception:  # noqa: BLE001 - source census never affects incumbent issuance
+            _LOG.warning("XMarket live venue census unavailable", exc_info=True)
+        xmarket_samples = {}
+        xmarket_candles = {}
+        xmarket_streams = {(v, asset_for_contract(c)): (c, q) for v, c, q in eligible}
         btc_streams = {v: (c, q) for v, c, q in eligible if asset_for_contract(c) == "BTC"}
         btc_cache: dict[str, list] = {}
         # Order-flow challenger inputs: one causal snapshot per asset per cycle.
@@ -1386,6 +1412,33 @@ class ForwardAccuracyMonitor:
                             volcal_set, asset=asset, horizon=horizon,
                             vector=volcal_vector, now=stamp,
                         )
+                    xmarket_items = ()
+                    if ISSUE_XMARKET_V1_CHALLENGERS and xmarket_set is not None:
+                        try:
+                            doc = xmarket_set.active(asset, horizon, now=stamp)
+                            if doc is not None:
+                                from parlay_bot.perpetuals.pooled_features import bar_close
+                                if asset not in xmarket_samples:
+                                    xmarket_samples[asset] = xmarket_inputs.recent(
+                                        asset, at=bar_close(candles[-1]), now=stamp)
+                                required = tuple(doc["dispersion_venues"])
+                                venue_rows = {}
+                                for other in required:
+                                    source = xmarket_streams.get((other, asset))
+                                    if source is not None:
+                                        key = (other, asset)
+                                        if key not in xmarket_candles:
+                                            xmarket_candles[key] = persisted_candles(self.market.recent_candles(
+                                                venue=other, contract=source[0], quote=source[1],
+                                                interval_minutes=5, count=40, as_of=stamp))
+                                        venue_rows[other] = xmarket_candles[key]
+                                vector = xmarket_live_vector(candles, asset=asset,
+                                    samples=xmarket_samples[asset], venue_candles=venue_rows,
+                                    venues=required, now=stamp, pm_fidelity=doc["pm_fidelity_minutes"])
+                                xmarket_items = xmarket_calls(xmarket_set, asset=asset,
+                                    horizon=horizon, vector=vector, now=stamp)
+                        except Exception:  # noqa: BLE001 - optional shadow family only
+                            _LOG.warning("XMarket shadow inputs unavailable", exc_info=True)
                     mark = self._mark()
                     # Store regime and model fingerprints BEFORE the target
                     # closes, in the same DB transaction as the forecast.
@@ -1630,7 +1683,7 @@ class ForwardAccuracyMonitor:
                                     boosters=boosters,
                                     historical_candidates=historical_shadows,
                                     pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
-                                    challengers=(*flow_calls, *archive_items, *gbm_items, *volcal_items, *regime_items, *wild_items, *regime2_items, *regime_live_items, *regime_live_fast_items, *lab_items),
+                                    challengers=(*flow_calls, *archive_items, *gbm_items, *volcal_items, *xmarket_items, *regime_items, *wild_items, *regime2_items, *regime_live_items, *regime_live_fast_items, *lab_items),
                                     prepared=shadow_prepared, stopped=stream_stops,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger

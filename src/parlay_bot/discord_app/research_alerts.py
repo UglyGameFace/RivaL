@@ -438,6 +438,8 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
             if not isinstance(families, dict):
                 continue
             for family, info in families.items():
+                if str(family).startswith("xmarket_"):
+                    continue  # this family never generates outbound alerts/DMs
                 if not isinstance(info, dict) or info.get("qualified"):
                     continue
                 targets, days = info.get("targets"), info.get("days")

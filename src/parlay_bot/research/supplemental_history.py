@@ -195,9 +195,9 @@ def ingest_binance_supplement(
     )
 
 
-def _json_get(client: httpx.Client, url: str, params: dict) -> object:
+def _json_get(client: httpx.Client, url: str, params: dict, *, timeout=30) -> object:
     try:
-        response = client.get(url, params=params, timeout=30, follow_redirects=False)
+        response = client.get(url, params=params, timeout=timeout, follow_redirects=False)
         if response.is_redirect:
             raise HistoryImportError("history provider redirected unexpectedly")
         response.raise_for_status()
@@ -216,17 +216,34 @@ def _time_bounds(*, start_ts: int, end_ts: int) -> None:
         raise HistoryImportError("invalid historical contract time window")
 
 
+def _check_contract_binding(binding, contract, start, end, *, token_id=None):
+    if binding is None:
+        return  # legacy retrospective intake remains available, but cannot train XMarket
+    from datetime import timedelta
+
+    from parlay_bot.research.xmarket_features import timestamp
+    if (not isinstance(binding, dict) or binding.get("contract_id") != contract
+            or binding.get("asset") not in ("BTC", "ETH", "SOL", "XRP")
+            or int(timestamp(binding["opens_at"]).timestamp()) != start
+            or int(timestamp(binding["closes_at"]).timestamp()) != end
+            or timestamp(binding["closes_at"]) - timestamp(binding["opens_at"]) != timedelta(minutes=15)
+            or token_id is not None and binding.get("token_id") != token_id):
+        raise HistoryImportError("supplemental contract identity binding mismatch")
+
+
 def ingest_polymarket_token(
     client: httpx.Client, *, condition_id: str, token_id: str,
     start_ts: int, end_ts: int, fidelity: int, out_dir: Path,
+    contract_binding: dict | None = None, timeout_seconds: float = 30,
 ):
     _time_bounds(start_ts=start_ts, end_ts=end_ts)
     if (not re.fullmatch(r"0x[0-9a-fA-F]{64}", condition_id)
         or not re.fullmatch(r"[0-9]{20,90}", token_id)
         or fidelity not in (1, 5, 15, 60, 240, 1440)):
         raise HistoryImportError("unverified Polymarket contract identity or fidelity")
+    _check_contract_binding(contract_binding, condition_id, start_ts, end_ts, token_id=token_id)
     params = {"market": token_id, "startTs": start_ts, "endTs": end_ts, "fidelity": fidelity}
-    raw = _json_get(client, POLY, params)
+    raw = _json_get(client, POLY, params, timeout=timeout_seconds)
     if not isinstance(raw, dict) or not isinstance(raw.get("history"), list):
         raise HistoryImportError("missing Polymarket token history")
     observed = []
@@ -237,7 +254,8 @@ def ingest_polymarket_token(
         instant = point["t"]
         value = _finite(point.get("p"))
         if (instant < start_ts or instant > end_ts or instant <= previous
-            or not 0 < value < 1 or len(observed) >= _MAX_CONTRACT_POINTS):
+            or not (0 <= value <= 1 if contract_binding is not None else 0 < value < 1)
+            or len(observed) >= _MAX_CONTRACT_POINTS):
             raise HistoryImportError("invalid Polymarket contract price sequence")
         observed.append({"at": datetime.fromtimestamp(instant, UTC).isoformat(), "price": value})
         previous = instant
@@ -249,6 +267,7 @@ def ingest_polymarket_token(
         source="polymarket_token_history", key=key, records=observed,
         raw_sha=_sha(payload), url=POLY, out_dir=out_dir,
         extra={
+            **({"xmarket_contract": contract_binding} if contract_binding is not None else {}),
             "condition_id": condition_id, "token_id": token_id,
             "fidelity_minutes": fidelity, "range_unix": [start_ts, end_ts],
             "no_historical_orderbook_or_fill_evidence": True,
@@ -260,15 +279,27 @@ def ingest_polymarket_token(
 def ingest_kalshi_contract(
     client: httpx.Client, *, ticker: str,
     start_ts: int, end_ts: int, period_minutes: int, out_dir: Path,
+    series_ticker: str | None = None, contract_binding: dict | None = None,
+    timeout_seconds: float = 30,
 ):
     _time_bounds(start_ts=start_ts, end_ts=end_ts)
     if (not re.fullmatch(r"[A-Z0-9-]{2,110}", ticker)
         or period_minutes not in (1, 60, 1440)):
         raise HistoryImportError("invalid Kalshi ticker or period")
+    _check_contract_binding(contract_binding, ticker, start_ts, end_ts)
     url = f"{KALSHI}/historical/markets/{ticker}/candlesticks"
-    raw = _json_get(client, url, {
-        "start_ts": start_ts, "end_ts": end_ts, "period_interval": period_minutes,
-    })
+    params = {"start_ts": start_ts, "end_ts": end_ts, "period_interval": period_minutes}
+    try:
+        raw = _json_get(client, url, params, timeout=timeout_seconds)
+    except HistoryImportError as exc:
+        cause = exc.__cause__
+        if (not isinstance(cause, httpx.HTTPStatusError) or cause.response.status_code != 404
+                or not isinstance(series_ticker, str)
+                or not re.fullmatch(r"KX(?:BTC|ETH|SOL|XRP)15M", series_ticker)
+                or not ticker.startswith(series_ticker + "-")):
+            raise
+        url = f"{KALSHI}/series/{series_ticker}/markets/{ticker}/candlesticks"
+        raw = _json_get(client, url, params, timeout=timeout_seconds)
     if not isinstance(raw, dict) or not isinstance(raw.get("candlesticks"), list):
         raise HistoryImportError("missing archived Kalshi candlesticks")
     rows = []
@@ -290,7 +321,7 @@ def ingest_kalshi_contract(
                 raise HistoryImportError("invalid Kalshi OHLC")
             p = {}
             for item in ("open", "high", "low", "close"):
-                raw_v = value.get(item)
+                raw_v = value.get(item + "_dollars", value.get(item))
                 if raw_v is None:
                     p[item] = None
                 else:
@@ -303,8 +334,8 @@ def ingest_kalshi_contract(
                                      or p["high"] < max(p["open"], p["close"])):
                 raise HistoryImportError("Kalshi candle has inconsistent price range")
             price_fields[side] = p
-        volume = bar.get("volume")
-        oi = bar.get("open_interest")
+        volume = bar.get("volume_fp", bar.get("volume"))
+        oi = bar.get("open_interest_fp", bar.get("open_interest"))
         rows.append({
             "at": datetime.fromtimestamp(instant, UTC).isoformat(),
             **price_fields,
@@ -320,6 +351,7 @@ def ingest_kalshi_contract(
         records=rows, raw_sha=_sha(json.dumps(raw, sort_keys=True).encode()),
         url=url, out_dir=out_dir,
         extra={
+            **({"xmarket_contract": contract_binding} if contract_binding is not None else {}),
             "ticker": ticker, "period_minutes": period_minutes,
             "range_unix": [start_ts, end_ts],
             "historical_quotes_not_executable_fill_proof": True,
@@ -480,6 +512,7 @@ def _report_status(root: Path, jobs: list[tuple], acquired: dict) -> dict:
         },
         "retrospective_only": True, "live_model_promoted": False,
         "model_training_from_supplements_enabled": False,
+        "supplement_training_family_allowlist": ["xmarket_v1"],
         "automatic_trading_enabled": False,
     }
 

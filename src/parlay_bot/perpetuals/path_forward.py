@@ -497,3 +497,89 @@ class ProspectivePathLedger:
                 "after_cost_qualified":False,
             }
         return reports
+
+    def target_report(self, *, asset, horizon, now=None) -> dict:
+        """Independent close-only scores, not proof of an executable edge.
+
+        Direction and early-move are paired Brier comparisons against
+        source-specific historical baselines. Move size uses paired absolute
+        error. Correlated long/short and overlapping targets are reported
+        separately; these rows cannot approve a live model or simulated fill.
+        """
+        stamp=utc(now or datetime.now(UTC))
+        self.initialize()
+        with self.store.connect() as conn:
+            rows=conn.execute(
+                """SELECT * FROM rival_forward_path_targets
+                   WHERE asset=? AND horizon_minutes=?
+                     AND issued_at>=? AND settled_at<=?
+                     AND state='settled'
+                   ORDER BY target_opened_at DESC LIMIT 8000""",
+                (asset,horizon,(stamp-timedelta(days=28)).isoformat(),
+                 stamp.isoformat()),
+            ).fetchall()
+        scopes={}
+        for row in rows:
+            key="/".join((row["venue"],row["contract"],row["quote"],row["side"]))
+            scopes.setdefault(key,{}).setdefault(str(row["target_opened_at"]),[]).append(row)
+        reports={}
+        for key, grouped in scopes.items():
+            direction=[]
+            timing=[]
+            size=[]
+            for target, group in sorted(grouped.items()):
+                # Only one eligible prospect per exact model/source/target.
+                # Do not count duplicates as independent supporting evidence.
+                if len(group)!=1:
+                    continue
+                row=group[0]
+                if row["direction_positive"] not in (0,1) or row["early_move_by_half"] not in (0,1):
+                    continue
+                y=int(row["direction_positive"])
+                early=int(row["early_move_by_half"])
+                d=float(row["direction_probability"])
+                db=float(row["direction_baseline"])
+                t=float(row["early_move_probability"])
+                tb=float(row["early_move_baseline"])
+                estimate=float(row["absolute_move_p50"])
+                baseline=float(row["absolute_move_baseline"])
+                actual=float(row["absolute_move_realized"])
+                if (not all(math.isfinite(x) for x in (d,db,t,tb,estimate,baseline,actual))
+                        or not all(0<x<1 for x in (d,db,t,tb))
+                        or min(estimate,baseline,actual)<0):
+                    continue
+                direction.append((target,(d-y)**2,(db-y)**2))
+                timing.append((target,(t-early)**2,(tb-early)**2))
+                size.append((abs(estimate-actual),abs(baseline-actual)))
+            d_proof=score_paired_forward(direction)
+            t_proof=score_paired_forward(timing)
+            reports[key]={
+                "direction": {
+                    "targets":d_proof.targets,"days":d_proof.days,
+                    "model_brier":d_proof.model_brier,
+                    "baseline_brier":d_proof.baseline_brier,
+                    "paired_gain":d_proof.paired_gain,
+                    "research_screen":d_proof.status,"reason":d_proof.reason,
+                },
+                "early_close_move": {
+                    "definition": "first close >= prior one-sigma move by half horizon",
+                    "targets":t_proof.targets,"days":t_proof.days,
+                    "model_brier":t_proof.model_brier,
+                    "baseline_brier":t_proof.baseline_brier,
+                    "paired_gain":t_proof.paired_gain,
+                    "research_screen":t_proof.status,"reason":t_proof.reason,
+                },
+                "absolute_terminal_move": {
+                    "targets":len(size),
+                    "model_mean_abs_error":(
+                        sum(x[0] for x in size)/len(size) if size else None),
+                    "baseline_mean_abs_error":(
+                        sum(x[1] for x in size)/len(size) if size else None),
+                },
+                "independent_of_intrabar_tp_stop_order": True,
+                "correlated_with_other_sides_and_horizons": True,
+                "qualified_for_live_use": False,
+                "after_cost_qualified": False,
+                "execution_quote_proven": False,
+            }
+        return reports

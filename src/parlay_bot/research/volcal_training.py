@@ -252,10 +252,26 @@ def train_run(
     }
     if groups_off:
         report["feature_groups_off"] = list(groups_off)
+    # A separate research diagnostic must never weaken, block or select the
+    # VolCal candidate's own training/promotion decision. Reuses exactly the
+    # same causal source frames and chronological split; no uploaded weights.
+    try:
+        from parlay_bot.research.volatility_blend_research import evaluate_blend
+
+        report["volatility_blend_research"] = evaluate_blend(
+            frames, horizon=horizon, train_end=train_end, test_start=test_start)
+    except Exception:  # noqa: BLE001 - optional research, never a serving gate
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "VolCal independent volatility-blend research diagnostic failed")
+        report["volatility_blend_research"] = {
+            "status": "diagnostic_unavailable", "qualified_for_live_use": False,
+        }
     if not gates_passed:
         return {"publish_kind": "report", "artifact": None, "report": report}
     doc = {
-        **report,
+        **{k: v for k, v in report.items() if k != "volatility_blend_research"},
         "model_version": MODEL_VERSION,
         "features": cols,
         "feature_sources": {name: list(FEATURE_SOURCES[name]) for name in FEATURES},

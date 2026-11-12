@@ -161,6 +161,7 @@ class _Connection:
         self, raw: Any, backend: BackendName,
         on_exit: Callable[[Any], None] | None = None,
         origin: str = "unknown", read_only: bool = False,
+        diagnostics=None,
     ) -> None:
         self._read_only = read_only
         self._raw = raw
@@ -169,6 +170,7 @@ class _Connection:
         # Only operation names and timings, never SQL text, parameters,
         # URLs, API tokens or database values, enter diagnostics.
         self.origin = origin
+        self.diagnostics = diagnostics
         self.query_count = 0
         self.query_seconds = 0.0
         self.max_query_seconds = 0.0
@@ -185,10 +187,21 @@ class _Connection:
         started = time.monotonic()
         self.active_operation = operation
         self.active_started = started
+        error = None
+        error_evidence = None
         try:
             return self._raw.execute(_postgres_sql(sql), tuple(params))
+        except Exception as exc:
+            error = type(exc).__name__
+            if self.diagnostics is not None:
+                error_evidence = self.diagnostics.error_evidence(exc)
+            raise
         finally:
             elapsed = time.monotonic() - started
+            if self.diagnostics is not None and (elapsed >= 2 or error is not None):
+                self.diagnostics.observe(owner=self.origin, label=_statement_label(sql),
+                                         sql=sql, params=params, seconds=elapsed, error=error,
+                                         error_evidence=error_evidence)
             self.query_count += 1
             self.query_seconds += elapsed
             clock = _active_clock()
@@ -349,6 +362,18 @@ class PostgresDatabase(RelationalDatabase):
         self._closed = False
         # Diagnostic only: track checkout ages, never SQL/credentials.
         self._borrowers: dict[int, tuple[float, str, _Connection]] = {}
+        from parlay_bot.storage.diagnostics import QueryDiagnostics
+
+        self.diagnostics = QueryDiagnostics(self._diagnostic_owners)
+
+    def _diagnostic_owners(self) -> list[dict]:
+        """Correlate a deadlock with this process's active borrowers at failure time."""
+        with self._lock:
+            return [
+                {'pid': getattr(getattr(b._raw, 'info', None), 'backend_pid', None),
+                 'owner': b.origin, 'operation': b.active_operation}
+                for _, _, b in self._borrowers.values()
+            ]
 
     @staticmethod
     def _checkout_origin() -> str:
@@ -387,7 +412,7 @@ class PostgresDatabase(RelationalDatabase):
         held_since = time.monotonic()
         owner = self._checkout_origin()
         borrowed = _Connection(raw, self.backend, origin=owner,
-                               read_only=self._read_only)
+                               read_only=self._read_only, diagnostics=self.diagnostics)
         with self._lock:
             self._borrowers[id(raw)] = (
                 held_since, threading.current_thread().name, borrowed,

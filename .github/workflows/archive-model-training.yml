@@ -94,8 +94,8 @@ jobs:
         run: |
           python tools/restore_archive_months.py --asset ${{ matrix.asset }} \
             --root data/archive-v1-restore
-      # Step 3: train per (asset, horizon). The shared weekly run
-      # (train_weekly_archive) trains archive-v1 and gbm-v1
+      # Step 3: train once per (asset, horizon). The shared weekly run
+      # (train_weekly_archive) trains archive-v1, gbm-v1 and volcal-v1
       # for every (asset, horizon) on the same restored bytes, same
       # splits, same provenance. Binance 5m loads from official
       # Vision ZIPs via the pooled-training loader (SHA verified against
@@ -113,6 +113,7 @@ jobs:
           if [[ "${{ github.event_name }}" == "schedule" || "${{ inputs.publish }}" == "true" ]]; then
             publish_flag="--publish"
           fi
+          failed=0
           for horizon in 5 15 60; do
             python tools/train_archive_model.py \
               --asset ${{ matrix.asset }} --horizon "$horizon" \
@@ -123,47 +124,16 @@ jobs:
               --binance-through-day "$through_day" \
               --train-end "$train_end" --test-start "$test_start" \
               --trained-through "$trained_through" \
-              --out archive-v1-models $publish_flag || echo "horizon ${horizon}m gates failed (report only)"
+              --out archive-v1-models $publish_flag || failed=1
           done
-      # Step 4 (autonomous loop Phase 2, spec §3.4): train the GBM on the
-      # SAME restored bytes and the SAME splits as Step 3 (same
-      # --train-end / --test-start / --trained-through, same manifests
-      # dir, same census, same Binance cache). Per-horizon failure
-      # isolation, same as Step 3; a GBM horizon failing its gates
-      # publishes a report only and never blocks the other horizons or
-      # the logistic artifacts.
-      - name: Train GBM (all horizons)
-        run: |
-          last_month="$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)"
-          through_day="$(date -u -d yesterday +%Y-%m-%d)"
-          test_start="$(date -u -d "-28 days" +%Y-%m-%dT00:00:00+00:00)"
-          train_end="$(date -u -d "-56 days" +%Y-%m-%dT00:00:00+00:00)"
-          trained_through="$(date -u -d yesterday +%Y-%m-%dT23:55:00+00:00)"
-          publish_flag=""
-          if [[ "${{ github.event_name }}" == "schedule" || "${{ inputs.publish }}" == "true" ]]; then
-            publish_flag="--publish"
-          fi
-          for horizon in 5 15 60; do
-            python tools/train_gbm_model.py \
-              --asset ${{ matrix.asset }} --horizon "$horizon" \
-              --manifests-dir data/archive-v1-restore \
-              --census data/native-reports/drive-source-census.json \
-              --binance-cache binance-cache \
-              --binance-last-month "$last_month" \
-              --binance-through-day "$through_day" \
-              --train-end "$train_end" --test-start "$test_start" \
-              --trained-through "$trained_through" \
-              --out gbm-v1-models $publish_flag || echo "gbm horizon ${horizon}m gates failed (report only)"
-          done
+          exit "$failed"
       - name: Upload run reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: archive-v1-${{ matrix.asset }}-${{ github.run_id }}
           path: archive-v1-models/
           if-no-files-found: error
-      - name: Upload GBM run reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: gbm-v1-${{ matrix.asset }}-${{ github.run_id }}
-          path: gbm-v1-models/
-          if-no-files-found: error
+      - name: Summarize actual model outcomes
+        if: always()
+        run: python -m parlay_bot.research.training_outcomes archive-v1-models --asset ${{ matrix.asset }}

@@ -739,6 +739,18 @@ class ForwardAccuracyMonitor:
         }
 
     def active_learning_evidence(self, *, asset, horizon_minutes, now=None):
+        from parlay_bot.storage.read_cache import shared_reads
+
+        wall = datetime.now(UTC)
+        if now is not None and abs((utc(now) - wall).total_seconds()) > 10:
+            return self._active_learning_evidence_uncached(
+                asset=asset, horizon_minutes=horizon_minutes, now=now)
+        return shared_reads(self.store).read(
+            ("active_learning", asset, horizon_minutes), SUMMARY_TTL_SECONDS,
+            lambda: self._active_learning_evidence_uncached(
+                asset=asset, horizon_minutes=horizon_minutes, now=now))
+
+    def _active_learning_evidence_uncached(self, *, asset, horizon_minutes, now=None):
         """Score current adaptive policies, not training counts or older seeds.
 
         Each venue's latest issued seed identifies its current policy. Weights
@@ -2145,28 +2157,16 @@ class ForwardAccuracyMonitor:
         result computed in the last minute; an explicit historical clock
         always computes fresh.
         """
-        import copy
-        import time as _time
+        from parlay_bot.storage.read_cache import shared_reads
 
         wall = datetime.now(UTC)
         stamp = utc(now or wall)
         live = abs((stamp - wall).total_seconds()) <= 10
-        cache = getattr(self.store, "_forward_summary_cache", None)
-        if cache is None:
-            cache = {}
-            try:
-                self.store._forward_summary_cache = cache
-            except AttributeError:
-                live = False
-        key = asset
         if live:
-            hit = cache.get(key)
-            if hit is not None and _time.monotonic() - hit[0] < SUMMARY_TTL_SECONDS:
-                return copy.deepcopy(hit[1])
-        result = self._summary_uncached(asset=asset, now=stamp)
-        if live:
-            cache[key] = (_time.monotonic(), copy.deepcopy(result))
-        return result
+            return shared_reads(self.store).read(
+                ("forward_summary", asset), SUMMARY_TTL_SECONDS,
+                lambda: self._summary_uncached(asset=asset, now=stamp))
+        return self._summary_uncached(asset=asset, now=stamp)
 
     def _summary_uncached(self, *, asset: str, now: datetime | None = None) -> dict:
         """Aggregate valid paired future scores without counting missing errors as zero.

@@ -146,6 +146,7 @@ async def run_native_research(
     llm_hypotheses: list[dict] | None = None,
 ) -> dict:
     """Research-only. A successful run is NOT forward accuracy or profitability."""
+    checked_at = datetime.now(UTC).isoformat()
     if venue not in VENUES or len(months) != 6:
         raise HistoryImportError("six exact consecutive months and active venue required")
     # Contiguous calendar months and one venue only; never stitch distant
@@ -196,13 +197,28 @@ async def run_native_research(
         # A single forged/malformed or re-imported source file blocks the
         # entire run. Never select the cleaner-looking part of corrupt inputs.
         raise HistoryImportError("native research has invalid source partitions")
+    coverage_scopes = [
+        {"contract": s["contract"], "quote": s["quote"],
+         "interval": s["interval_minutes"],
+         "missing_or_incomplete_months": [
+             month for month in months
+             if (s["venue"], s["contract"], s["quote"], s["interval_minutes"], month)
+             not in full_partitions],
+         "qualified": (s["venue"], s["contract"], s["quote"], s["interval_minutes"])
+         in qualified}
+        for s in requested
+    ]
     if not qualified:
         blocked = {
             "schema_version": "rival-native-source-research-v1",
+            "checked_at": checked_at,
             "status": "source_months_incomplete", "venue": venue,
             "asset": asset if venue == "bitget" else None,
             "requested_months": months, "restored_manifests": len(artifacts),
             "qualified_source_scopes": 0, "published_models": 0,
+            "reason_code": ("source_partitions_incomplete" if requested
+                            else "no_source_scopes_restored"),
+            "coverage_scopes": coverage_scopes,
             "source_scopes": [
                 {
                     "contract": s["contract"], "quote": s["quote"],
@@ -243,7 +259,9 @@ async def run_native_research(
     admission = screening_receipt(logistic, boosted)
     report = {
         "schema_version": "rival-native-source-research-v1",
+        "checked_at": checked_at,
         "venue": venue, "months": months,
+        "coverage_scopes": coverage_scopes,
         "asset": asset if venue == "bitget" else None,
         "source_scopes": sorted(
             [{"venue": s[0], "contract": s[1], "quote": s[2], "interval": s[3]}
@@ -362,13 +380,14 @@ def main(argv: list[str] | None = None) -> int:
             parser.exit(
                 2, f"Unverified LFM3 research input: {type(exc).__name__}\\n",
             )
+    months = select_training_months(now=datetime.now(UTC), first_month=args.first_month)
     drive = _drive(Settings())
 
     async def worker():
         try:
             return await run_native_research(
                 drive=drive, venue=args.venue,
-                months=select_training_months(now=datetime.now(UTC), first_month=args.first_month),
+                months=months,
                 root=args.root, report_dir=args.report_dir,
                 publish=args.publish, asset=args.asset,
                 llm_hypotheses=llm_hypotheses,
@@ -378,7 +397,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = asyncio.run(worker())
     except (HistoryImportError, OSError, RuntimeError) as exc:
-        parser.exit(1, f"RivaL native research blocked safely: {exc}\n")
+        reason = ("oauth_invalid_grant" if "invalid_grant" in str(exc) else
+                  "source_verification_failed" if isinstance(exc, HistoryImportError)
+                  else "source_access_failed")
+        _report(args.report_dir / f"source-{args.venue}-research.json", {
+            "schema_version": "rival-native-source-research-v1", "status": "run_failed",
+            "checked_at": datetime.now(UTC).isoformat(),
+            "venue": args.venue, "asset": args.asset, "requested_months": months,
+            "reason_code": reason, "error_class": type(exc).__name__,
+            "published_models": 0, "live_approved": False,
+        })
+        parser.exit(1, f"RivaL native research failed: {reason} ({type(exc).__name__})\n")
     print(json.dumps(result, sort_keys=True))
     # A green Actions job must mean verified publication, not merely a clean
     # Python exit after zero restored months or zero published candidates.

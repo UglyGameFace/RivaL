@@ -113,9 +113,9 @@ async def close(ai):
 
 # --- config defaults (D5) -------------------------------------------------
 
-def test_budget_config_defaults_are_18_per_day_and_opt_in_off():
+def test_private_cpu_has_no_default_daily_billing_cap_and_opt_in_stays_off():
     settings = Settings(_env_file=None)
-    assert settings.rival_llm_daily_max == 18
+    assert settings.rival_llm_daily_max == 0
     assert settings.rival_llm_background_opt_in is False
     assert not llm_background_enabled(settings)
     opted_in = Settings(_env_file=None, rival_llm_background_opt_in=True)

@@ -176,7 +176,10 @@ async def test_watchdog_health_check_runs_under_twelve_seconds(tmp_path):
         await asyncio.wait_for(acceptance_seen.wait(), timeout=5)
     finally:
         await _stop(health)
-        await client.zip_resolver.aclose()
+        auxiliary = [getattr(client, attr) for attr in client._AUXILIARY_TASK_ATTRS
+                     if getattr(client, attr) is not None]
+        await client.close()
+        assert all(task.done() for task in auxiliary)
 
     assert seen["inspect"] == [WATCHDOG_STATEMENT_TIMEOUT_MS]
     assert seen["settle"] == [WATCHDOG_STATEMENT_TIMEOUT_MS]

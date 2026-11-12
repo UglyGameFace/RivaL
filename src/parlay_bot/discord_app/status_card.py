@@ -3,8 +3,8 @@
 Built only from real runtime state: the Healthchecks.io heartbeat outcome,
 background worker tasks and restarts, persisted watchdog incidents, per-feed
 collection freshness, websocket feeds, the liquidity record, memory, and the
-recent warning/error log digest. Posted when the problem set changes and
-once a day, never on a timer that floods the channel.
+recent warning/error log digest. One restart-safe message is refreshed every two minutes; updates do not
+create repeated status posts.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import discord
 from parlay_bot.discord_app.answer_cards import rename_text
 from parlay_bot.discord_app.embed_text import fit_embed_field_value
 
-STALE_FEED_AFTER = timedelta(minutes=20)
+STALE_FEED_AFTER = timedelta(minutes=8)
 HEARTBEAT_PROBLEM_CHARS = 300
 STALE_LIQUIDITY_AFTER = timedelta(minutes=15)
 # A live book stream that has delivered nothing for this long is a problem
@@ -28,11 +28,11 @@ STREAM_STALLED_AFTER = timedelta(minutes=2)
 # Streams need a few minutes to connect after a restart before "stalled" counts.
 STREAM_STARTUP_GRACE = timedelta(minutes=5)
 HEARTBEAT_FAILING_AFTER = 3  # consecutive failed pings
-DAILY = timedelta(hours=24)
 # A logged problem counts as "still happening" only if it repeated within
 # this window; startup noise is the burst while every worker starts at once.
 ACTIVE_WINDOW = timedelta(minutes=60)
 STARTUP_GRACE = timedelta(minutes=10)
+STARTUP_QUIET = timedelta(minutes=10)
 COLORS = {"healthy": discord.Color.green(), "degraded": discord.Color.orange(),
           "down": discord.Color.red()}
 LABELS = {"healthy": "🟢 All good", "degraded": "🟡 Something needs a look",
@@ -61,6 +61,8 @@ class StatusFacts:
     # only the other three checks, and the card must not claim a review.
     # Default True keeps every existing constructor meaning "check 4 ran".
     intelligence_checked: bool = True
+    watchdog_checked_at: str | None = None
+    watchdog_expected: bool = False
 
 
 def _ago(when: datetime | None, now: datetime) -> str:
@@ -92,7 +94,8 @@ def _parse(value) -> datetime | None:
 _PROGRESS = re.compile(
     r"^📊 (?P<family>\S+): day (?P<days>\d+)/(?P<min_days>\d+) · "
     r"(?P<targets>\d+)/(?P<min_targets>\d+) targets"
-    r"(?: · gain (?P<gain>[+-]?\d+(?:\.\d+)?))?$")
+    r"(?: · gain (?P<gain>[+-]?\d+(?:\.\d+)?))?"
+    r"(?: · scope (?P<scope>[^·]+))?(?: · gates: (?P<gates>.+))?$")
 # Below this many graded results a score is not a verdict (audit rule 6).
 TOO_FEW_TO_JUDGE = 20
 # A score difference smaller than this reads as level, not ahead or behind.
@@ -133,9 +136,9 @@ def _verdict(targets: int, gain: str | None) -> str:
         return "no score yet"
     value = float(gain)
     if value > LEVEL_WITHIN:
-        return "ahead of the main model so far"
+        return "ahead on raw score; qualification pending"
     if value < -LEVEL_WITHIN:
-        return "behind the main model"
+        return "behind the main model on raw score"
     return "level with the main model"
 
 
@@ -168,18 +171,21 @@ def prediction_lines(research) -> list[str]:
     min_days = int(leaders[0][2]["min_days"])
     furthest = int(leaders[0][2]["days"])
     count = len(leaders)
-    summary = (f"📊 {count} test model{'s' if count != 1 else ''} being tested. "
-               f"The furthest along is on day {furthest} of {min_days}.")
+    summary = (f"📊 {count} model group{'s' if count != 1 else ''} in forward testing. "
+               f"Longest observation: day {furthest} of {min_days}. "
+               "Examples below are ordered by observation time, not accuracy.")
     lines = [summary]
     for name, versions, lead in leaders[:SHOWN_CLOSEST]:
         targets, needed = int(lead["targets"]), int(lead["min_targets"])
-        results = ("enough results" if targets >= needed
+        results = (f"{targets} results (minimum met)" if targets >= needed
                    else f"{targets} of {needed} results")
         label = name + (f" ({versions} versions)" if versions > 1 else "")
-        lines.append(f"• {label}: day {lead['days']} of {lead['min_days']}, "
-                     f"{results}, {_verdict(targets, lead['gain'])}")
+        scope = f" [{lead['scope'].strip()}]" if lead['scope'] else " [scope unspecified]"
+        gates = f"; still needs: {lead['gates']}" if lead['gates'] else "; full gates unverified"
+        lines.append(f"• {label}{scope}: day {lead['days']} of {lead['min_days']}, "
+                     f"{results}, {_verdict(targets, lead['gain'])}{gates}")
     if count > SHOWN_CLOSEST:
-        lines.append(f"• and {count - SHOWN_CLOSEST} more, further behind")
+        lines.append(f"• {count - SHOWN_CLOSEST} other groups; less observation time")
     return [*lines, *others]
 
 
@@ -193,22 +199,41 @@ def _job(text: str) -> str:
     return f" ({words})" if words else ""
 
 
-def _clip(lines: list[str], limit: int = 1000) -> str:
-    out, used = [], 0
+def _add_section(embed: discord.Embed, name: str, lines: list[str], *, budget: int) -> None:
+    """Keep complete checks visible across fields within Discord's message limit."""
+    budget = min(budget, max(0, 5650 - len(embed)))
+    chunks, current, used = [], [], 0
     for line in lines:
-        if used + len(line) + 1 > limit:
-            out.append("…")
+        line = fit_embed_field_value(str(line), budget=990)
+        if used + len(line) + 1 > budget:
+            line = '… Additional details are retained in the diagnostic records.'
+            if used + len(line) + 1 > budget:
+                break
+            if len('\n'.join(current)) + len(line) + 1 > 1000:
+                chunks.append('\n'.join(current))
+                current = []
+            current.append(line)
             break
-        out.append(line)
+        if len('\n'.join(current)) + len(line) + 1 > 1000:
+            chunks.append('\n'.join(current))
+            current = []
+        current.append(line)
         used += len(line) + 1
-    return "\n".join(out) or "—"
+    if current:
+        chunks.append('\n'.join(current))
+    for index, chunk in enumerate(chunks):
+        embed.add_field(name=name if index == 0 else f'{name} (continued)',
+                        value=chunk, inline=False)
 
 
 def _stream_stalled(s: dict) -> bool:
     """Connected, has delivered before, but nothing accepted for a while."""
     age = s.get("last_update_age_s")
-    return bool(s.get("connected") and s.get("updates") and age is not None
-                and age > STREAM_STALLED_AFTER.total_seconds())
+    if s.get("blocked"):
+        return False
+    return bool(s.get("connected") and (
+        (age is not None and age > STREAM_STALLED_AFTER.total_seconds())
+        or (not s.get("updates") and not s.get("fresh_assets"))))
 
 
 def _stream_line(venue: str, s: dict) -> str:
@@ -217,6 +242,8 @@ def _stream_line(venue: str, s: dict) -> str:
     reconnects = s.get("reconnects", 0)
     counts = (f"{s.get('updates', 0):,} updates, {reconnects} "
               f"reconnect{'' if reconnects == 1 else 's'}")
+    if s.get("blocked"):
+        return f"⚪ {venue}: access blocked (HTTP {s.get('blocked_status', '?')}); retry scheduled"
     if not s.get("connected"):
         return f"🛑 {venue}: disconnected ({counts})"
     age = s.get("last_update_age_s")
@@ -229,7 +256,7 @@ def _stream_line(venue: str, s: dict) -> str:
     if not s.get("fresh_assets"):
         return (f"⚠️ {venue}: connected but nothing recent ({counts})"
                 if s.get("updates") else
-                f"⚪ {venue}: connected but nothing received (the exchange may block this server)")
+                f"⚠️ {venue}: connected but no usable books received; reconnect monitored")
     return f"✅ {venue}: {counts}"
 
 
@@ -267,6 +294,10 @@ def assess(facts: StatusFacts) -> tuple[str, tuple[str, ...]]:
         keys.append("watchdog:unreadable")
     else:
         keys.extend(f"incident:{i['issue_key']}" for i in facts.incidents)
+    if facts.watchdog_expected and now - facts.boot_at > STREAM_STARTUP_GRACE:
+        last_watchdog = _parse(facts.watchdog_checked_at)
+        if last_watchdog is None or not timedelta(0) <= now - last_watchdog <= timedelta(minutes=6):
+            keys.append('watchdog:stalled')
     if facts.feeds is not None:
         for feed in facts.feeds:
             last = _parse(feed.get("last_success_at"))
@@ -276,6 +307,8 @@ def assess(facts: StatusFacts) -> tuple[str, tuple[str, ...]]:
                 keys.append(f"feed:{feed['venue']}/{feed['asset']}")
     if facts.streams:
         for venue, state in facts.streams.items():
+            if state.get("blocked"):
+                continue
             if not state.get("connected"):
                 keys.append(f"stream:{venue}")
             elif _stream_stalled(state) and now - facts.boot_at > STREAM_STARTUP_GRACE:
@@ -286,9 +319,25 @@ def assess(facts: StatusFacts) -> tuple[str, tuple[str, ...]]:
             keys.append("liquidity:stale")
     if facts.memory and facts.memory.get("pressure"):
         keys.append("memory:pressure")
-    keys.extend(f"research:{key}" for key, _ in facts.research or ())
+    keys.extend(f"research:{key}" for key, text in facts.research or ()
+                if research_problem(key, text))
+    for group in facts.problems:
+        if problem_state(group, now=now, boot_at=facts.boot_at,
+                         open_incidents=(None if facts.incidents is None else
+                                         {i['issue_key'] for i in facts.incidents})) == 'active':
+            digest = sha1((group.logger + group.level + plain(group.text)).encode()).hexdigest()[:12]
+            keys.append(f"log:{digest}")
     severity = "down" if down else ("degraded" if keys else "healthy")
     return severity, tuple(sorted(keys))
+
+
+def research_problem(key: str, text: str) -> bool:
+    """Progress and verified promotion receipts are information, not faults."""
+    if str(text).startswith(("⚠", "⛔", "🛑")):
+        return True
+    return not (str(key).startswith(("shadow-progress:", "research-loop:counts",
+                                    "research-experiment:promoted:"))
+                or str(text).startswith(("✅", "🔬", "📊", "⏳")))
 
 
 def _sub(lines) -> list[str]:
@@ -350,7 +399,10 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
     active = [w for w in facts.workers if w["state"] != "disabled"]
     running = sum(w["state"] == "running" for w in active)
     checks.append(f"{'✅' if running == len(active) else '⚠️'} **Jobs:** "
-                  f"{running} of {len(active)} running")
+                  f"{running} of {len(active)} running (tasks alive; output checked separately)")
+    if facts.watchdog_expected:
+        checked = _parse(facts.watchdog_checked_at)
+        checks.append(f"**Watchdog:** last completed pass {_ago(checked, now)}")
     checks += _sub([f"🛑 {w['name']}: stopped" for w in active if w["state"] == "stopped"])
     checks += _sub([f"↻ {w['name']}: restarted {w['restarts_last_hour']}× in the last hour"
                     for w in active if w.get("restarts_last_hour")])
@@ -382,7 +434,7 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
                     + (f" ({feed['status']})" if feed.get("status") else ""))
         live = len(facts.feeds) - len(off)
         checks.append(f"{'✅' if not stale else '⚠️'} **Prices:** {live - len(stale)} of "
-                      f"{live} up to date (new prices in the last 20 min)")
+                      f"{live} up to date (enabled feeds, last 8 min; forecasts check exact input age)")
         checks += _sub(stale)
         if off:
             checks += _sub([f"⚪ off, the exchange blocks this server: {', '.join(off)}"])
@@ -409,17 +461,15 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
     if not facts.problems:
         checks.append(f"✅ **Errors:** none in the last 24 h "
                       f"({totals.get('ERROR', 0)} errors, {totals.get('WARNING', 0)} warnings)")
-    embed.add_field(name="Checks", value=_clip(checks), inline=False)
+    _add_section(embed, 'Checks', checks, budget=2000)
 
     if facts.research:
-        embed.add_field(name="Predictions", value=_clip(prediction_lines(facts.research)),
-                        inline=False)
+        _add_section(embed, 'Predictions', prediction_lines(facts.research), budget=2200)
     if facts.problems:
         lines = problem_lines(facts.problems, now=now, boot_at=facts.boot_at,
                               totals=totals, open_incidents=open_incidents)
-        embed.add_field(name="Errors and warnings (last 24 h)", value=_clip(lines),
-                        inline=False)
-    embed.set_footer(text="Posts when something changes, and once a day • "
+        _add_section(embed, 'Errors and warnings (last 24 h)', lines, budget=1400)
+    embed.set_footer(text="Live snapshot • refreshed every 2 min • "
                           f"Check version {_prediction_health_revision()}")
     return embed, severity, signature
 
@@ -526,8 +576,9 @@ def problem_state(group, *, now: datetime, boot_at: datetime,
         return "recovered"
     last = group.last_at
     if last < boot_at:
-        return "stopped"
-    if last <= boot_at + STARTUP_GRACE:
+        return "stopped"  # label explicitly says recovery has not been verified
+    if (last <= boot_at + STARTUP_GRACE and now >= boot_at + STARTUP_GRACE
+            and now - last >= STARTUP_QUIET):
         return "startup"
     return "active" if now - last <= ACTIVE_WINDOW else "quiet"
 
@@ -544,53 +595,30 @@ def problem_lines(problems, *, now: datetime, boot_at: datetime, totals: dict,
     lines = [
         # A warning seen only in the minutes after a restart comes back after
         # the next restart: it is restart noise, not "fixed". Counted apart.
-        (f"🔴 {len(states['active'])} happening now • 🟢 {len(states['quiet'])} calmed "
-         f"down (none in the last hour) • ⚪ {len(states['startup'])} only while starting "
-         f"up • ✅ {len(states['stopped']) + len(states['recovered'])} stopped"),
+        (f"🔴 {len(states['active'])} active/recent • 🟢 {len(states['quiet'])} quiet "
+         f"for an hour • ⚪ {len(states['startup'])} startup groups quiet for 10+ min • "
+         f"{len(states['stopped'])} seen only before this boot • "
+         f"✅ {len(states['recovered'])} watchdog incidents resolved"),
         (f"({totals.get('ERROR', 0)} errors and {totals.get('WARNING', 0)} warnings in "
          "the last 24 h, counting restarts; the × number is how many times each happened)"),
     ]
     for g in states["active"]:
-        lines.append(f"🔴 `{g.count}×` **{_said(g)}** ({_ago(g.last_at, now)})")
+        boot = f"; {g.boot_count} this boot" if g.boot_count is not None else ""
+        lines.append(f"🔴 `{g.count}× in 24 h{boot}` **{_said(g)}** "
+                     f"(last {_ago(g.last_at, now)}; recovery unverified)")
     for g in states["quiet"]:
         lines.append(f"🟢 `{g.count}×` {fit_embed_field_value(_said(g), budget=100)} (last {_ago(g.last_at, now)})")
     for g in states["startup"]:
-        lines.append(f"⚪ `{g.count}×` {fit_embed_field_value(_said(g), budget=80)} (only right after the "
-                     f"{started} restart)")
+        boot = f", {g.boot_count} this boot" if g.boot_count is not None else ""
+        lines.append(f"⚪ `{g.count}× in 24 h{boot}` "
+                     f"{fit_embed_field_value(_said(g), budget=80)} "
+                     "(last seen during startup; no repeats for 10+ min)")
     for g in states["recovered"]:
         lines.append(f"✅ `{g.count}×` {fit_embed_field_value(_said(g), budget=80)} (fixed itself; last alert "
                      f"{_ago(g.last_at, now)})")
     for g in states["stopped"]:
-        lines.append(f"✅ `{g.count}×` {fit_embed_field_value(_said(g), budget=80)} (not since the {started} "
-                     "restart)")
+        lines.append(f"⚪ `{g.count}×` {fit_embed_field_value(_said(g), budget=80)} "
+                     f"(not seen since {started}; recovery unverified)")
     if not problems:
         lines.append("None")
     return lines
-
-
-class StatusPostPolicy:
-    """Post on a confirmed change of problem set, or daily."""
-
-    def __init__(self) -> None:
-        self.last_posted_signature: tuple[str, ...] | None = None
-        self.last_posted_at: datetime | None = None
-        self._pending: tuple[str, ...] | None = None
-
-    def should_post(self, signature: tuple[str, ...], now: datetime) -> bool:
-        if self.last_posted_at is None:
-            return True
-        if now - self.last_posted_at >= DAILY:
-            return True
-        if signature == self.last_posted_signature:
-            self._pending = None
-            return False
-        # Require the same new state on two consecutive checks so a single
-        # slow query or reconnect blip does not post twice.
-        if self._pending == signature:
-            return True
-        self._pending = signature
-        return False
-
-    def posted(self, signature: tuple[str, ...], now: datetime) -> None:
-        self.last_posted_signature, self.last_posted_at = signature, now
-        self._pending = None

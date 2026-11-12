@@ -31,6 +31,11 @@ try:
         try:
             trials = json.loads(base64.b64decode(__TRIALS__))
             out = {'status': 'saved', 'saved': record_trials(store, trials, report_sha256=__SHA__)}
+            source = __SOURCE__
+            if source is not None:
+                from parlay_bot.research.source_runs import record_source_run
+                out['source_saved'] = record_source_run(store, receipt=source,
+                    report_sha256=__SHA__, run_url=__RUN_URL__)
         finally:
             store.close()
 except Exception as exc:
@@ -49,7 +54,13 @@ try:
         store = PostgresHotStore(settings.rival_database_url.get_secret_value())
         try:
             receipt = json.loads(base64.b64decode(__RECEIPT__))
+            source = receipt.pop('source_run', None)
+            run_url = receipt.pop('run_url', '')
             out = {'status': 'saved', 'saved': record_blocked_receipt(store, **receipt)}
+            if source is not None:
+                from parlay_bot.research.source_runs import record_source_run
+                out['source_saved'] = record_source_run(store, receipt=source,
+                    report_sha256=receipt['report_sha256'], run_url=run_url)
         finally:
             store.close()
 except Exception as exc:
@@ -113,9 +124,11 @@ def _send_console(script: str, marker: str, *, token: str, app_id: str) -> dict:
     raise ValueError("no on-host receipt")
 
 
-def send(trials: list, sha: str, *, token: str, app_id: str) -> dict:
+def send(trials: list, sha: str, *, token: str, app_id: str,
+         source_run: dict | None = None, run_url: str = "") -> dict:
     payload = base64.b64encode(json.dumps(trials, separators=(",", ":")).encode()).decode()
     script = HOST_SCRIPT.replace("__TRIALS__", repr(payload)).replace("__SHA__", repr(sha))
+    script = script.replace("__SOURCE__", repr(source_run)).replace("__RUN_URL__", repr(run_url))
     return _send_console(script, MARKER, token=token, app_id=app_id)
 
 
@@ -132,12 +145,21 @@ def main(argv=None) -> int:
     parser.add_argument("--reports-dir", type=Path, default=Path("data/native-reports"))
     args = parser.parse_args(argv)
     token, app = os.getenv("DISCLOUD_TOKEN"), os.getenv("DISCLOUD_APP_ID")
+    from parlay_bot.research.source_runs import source_run_receipt
+
+    run_url = (f"https://github.com/UglyGameFace/RivaL/actions/runs/{os.getenv('GITHUB_RUN_ID')}"
+               if str(os.getenv('GITHUB_RUN_ID', '')).isdigit() else '')
+    failed = False
     for path in sorted(args.reports_dir.glob("source-*-research*.json")):
         try:
             sha, trials = experiments(path)
         except (OSError, ValueError):
             print(f"RivaL hypothesis results: unreadable report {path.name}")
             continue
+        try:
+            source = source_run_receipt(json.loads(path.read_bytes()))
+        except (ValueError, TypeError, KeyError):
+            source = None  # legacy reports may not retain exact month identity
         if not trials:
             # A blocked run produces zero trials and previously recorded
             # nothing (spec D17). Its receipt reaches Postgres through
@@ -146,30 +168,39 @@ def main(argv=None) -> int:
                 receipt = blocked_receipt(path)
             except (OSError, ValueError):
                 receipt = None
-            if receipt is None:
+            if receipt is None and source is None:
                 print(f"RivaL hypothesis results: {path.name} has no idea experiments")
                 continue
             if not (token and app):
                 print("RivaL hypothesis results: Discloud not configured; not saved")
                 return 0
             try:
-                result = send_blocked(receipt, sha, token=token, app_id=app)
+                if receipt is not None:
+                    if source is not None:
+                        receipt = {**receipt, 'source_run': source, 'run_url': run_url}
+                    result = send_blocked(receipt, sha, token=token, app_id=app)
+                else:
+                    result = send([], sha, token=token, app_id=app,
+                                  source_run=source, run_url=run_url)
             except (error.URLError, ValueError, KeyError, TypeError, OSError, TimeoutError) as exc:
                 result = {"status": "unavailable", "saved": 0, "error": type(exc).__name__}
-            print(f"RivaL hypothesis results: {path.name} blocked "
-                  f"venue={receipt.get('venue')} status={result.get('status')} "
+            failed |= result.get('status') != 'saved'
+            print(f"RivaL source results: {path.name} "
+                  f"venue={(receipt or source or {}).get('venue')} status={result.get('status')} "
                   f"saved={result.get('saved')}")
             continue
         if not (token and app):
             print("RivaL hypothesis results: Discloud not configured; not saved")
             return 0
         try:
-            result = send(trials, sha, token=token, app_id=app)
+            result = send(trials, sha, token=token, app_id=app,
+                          source_run=source, run_url=run_url)
         except (error.URLError, ValueError, KeyError, TypeError, OSError, TimeoutError) as exc:
             result = {"status": "unavailable", "saved": 0, "error": type(exc).__name__}
         print(f"RivaL hypothesis results: {path.name} trials={len(trials)} "
               f"status={result.get('status')} saved={result.get('saved')}")
-    return 0
+        failed |= result.get('status') != 'saved'
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

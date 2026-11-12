@@ -517,6 +517,26 @@ def open_scheduled_variant(store, *, now: datetime | None = None) -> dict | None
     return None
 
 
+def scheduling_status(store, *, now: datetime) -> dict:
+    """Explain an idle driver using the same grid and capacity policy."""
+    counts = pool_counts(store, now=now)
+    recent = recent_experiments(store, now=now, days=SCHEDULED_RETRY_DAYS)
+    if counts['offline'] >= OFFLINE_POOL_MAX:
+        return {'reason': 'offline_pool_full', 'open_offline': counts['offline']}
+    if _scheduled_opened_this_week(recent, now=now) >= SCHEDULED_WEEKLY_CAP:
+        opened = sorted(_parse_time(e['created_at']) for e in recent
+                        if e.get('proposer') == 'scheduled'
+                        and _parse_time(e['created_at']) is not None
+                        and now - _parse_time(e['created_at']) <= timedelta(days=7))
+        return {'reason': 'configured_weekly_design_limit',
+                'next_available_at': (opened[0] + timedelta(days=7, seconds=1)).isoformat()}
+    if any(not _design_tried_recently(recent, design_sha256(design))
+           and not _design_failed_ablation_twice(store, design_sha256(design))
+           for design in SCHEDULED_VARIANTS):
+        return {'reason': 'registered_design_available'}
+    return {'reason': 'registered_grid_exhausted_or_cooling_down'}
+
+
 def scheduled_request(experiment: dict) -> dict:
     return {
         "schema_version": REQUEST_SCHEMA,

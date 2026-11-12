@@ -5,6 +5,7 @@ receipt or a Discord interaction. Alerts are transition-based to avoid spam.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -87,6 +88,9 @@ class RuntimeHealthMonitor:
                     started_at TEXT NOT NULL
                 );
             """)
+            from parlay_bot.storage.diagnostics import SCHEMA as DIAGNOSTICS_SCHEMA
+
+            conn.execute(DIAGNOSTICS_SCHEMA)
         self._initialized = True
 
     def record_boot(self) -> None:
@@ -107,6 +111,7 @@ class RuntimeHealthMonitor:
         import_checked_at: datetime | None = None,
         import_status: str = "",
         regressions_inline: bool = True,
+        research_loop_enabled: bool = False,
     ) -> dict[str, str]:
         """Inspect causal host evidence without network calls or writes.
 
@@ -133,6 +138,22 @@ class RuntimeHealthMonitor:
                     "WHERE state='OPEN'"
                 ).fetchall()
             }
+            if research_loop_enabled:
+                driver = conn.execute("""SELECT checked_at,payload_json
+                    FROM rival_runtime_diagnostics WHERE component='research_loop'""").fetchone()
+                if driver:
+                    age = _age(stamp, driver['checked_at'])
+                    if (age is None and warm) or (age is not None and age > timedelta(minutes=75)):
+                        faults['research_driver_stalled'] = 'No completed research-driver tick for 75 min'
+                    try:
+                        state = json.loads(driver['payload_json'])
+                    except (TypeError, ValueError):
+                        state = {}
+                    if state.get('status') in ('failed', 'drive_unavailable'):
+                        faults['research_driver_failed'] = (
+                            f"Research driver {state['status']}; diagnostic reason recorded; retry scheduled")
+                elif warm:
+                    faults['research_driver_missing'] = 'No persisted research-driver outcome'
             if learning_enabled:
                 cycle = conn.execute(
                     """SELECT completed_at,math_ok,ai_settlement_ok,model_review_ok

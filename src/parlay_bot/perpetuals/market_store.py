@@ -573,7 +573,7 @@ class PerpetualMarketStore:
         The limit here is RivaL's own conservative cap, not any provider
         quota. The same persisted row is used by the atomic reservation path.
         """
-        if not model or daily_max < 1 or cooldown_seconds < 60:
+        if not model or daily_max < 0 or cooldown_seconds < 60:
             raise ValueError("invalid AI budget policy")
         if requester_id is not None and (type(requester_id) is not int
                                        or requester_id <= 0):
@@ -622,9 +622,9 @@ class PerpetualMarketStore:
                 next_call = last_call + timedelta(seconds=cooldown_seconds)
                 if next_call > instant:
                     checks.append(("minimum_spacing", next_call))
-        if used >= daily_max:
+        if daily_max and used >= daily_max:
             checks.append(("daily_budget_exhausted", day_reset))
-        requester_limit = min(3, daily_max)
+        requester_limit = min(3, daily_max) if daily_max else 3
         if requester_id is not None and requester_used >= requester_limit:
             checks.append(("requester_budget_exhausted", day_reset))
         # The earliest safe retry is after *all* active restrictions expire.
@@ -645,7 +645,7 @@ class PerpetualMarketStore:
         cooldown_seconds: int, requester_id: int | None = None,
     ) -> bool:
         """Atomic shared and per-requester budget, cross-process and restart-safe."""
-        if daily_max < 1 or cooldown_seconds < 60:
+        if daily_max < 0 or cooldown_seconds < 60:
             raise ValueError("invalid AI budget policy")
         if requester_id is not None and (type(requester_id) is not int
                                        or requester_id <= 0):
@@ -668,7 +668,7 @@ class PerpetualMarketStore:
                    ON CONFLICT(model,utc_day) DO UPDATE SET
                      used=perp_ai_quota.used+1,
                      last_called_at=excluded.last_called_at
-                   WHERE perp_ai_quota.used < ?
+                   WHERE (?=0 OR perp_ai_quota.used < ?)
                      AND perp_ai_quota.last_called_at <= ?
                      AND (perp_ai_quota.blocked_until IS NULL OR
                           perp_ai_quota.blocked_until <= ?)
@@ -681,7 +681,7 @@ class PerpetualMarketStore:
                 (
                     model, instant.date().isoformat(), stamp,
                     model, instant.date().isoformat(), cutoff, stamp,
-                    daily_max, cutoff, stamp,
+                    daily_max, daily_max, cutoff, stamp,
                     model, instant.date().isoformat(), cutoff, stamp,
                 ),
                 ).fetchone()
@@ -700,7 +700,7 @@ class PerpetualMarketStore:
                            WHERE perp_ai_requester_quota.used<?
                            RETURNING used""",
                         (model, instant.date().isoformat(),
-                         digest, min(3, daily_max)),
+                         digest, min(3, daily_max) if daily_max else 3),
                     ).fetchone()
                     if personal is None:
                         # Context manager rolls back the shared reservation too.

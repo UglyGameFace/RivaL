@@ -159,7 +159,6 @@ jobs:
           fi
       - name: Send idea-experiment results back to RivaL (closes the LFM3 research loop)
         if: always()
-        continue-on-error: true
         run: python tools/discloud_hypothesis_results.py --reports-dir data/native-reports
       - name: Summarize verified source-native acceptance
         if: always()

@@ -54,7 +54,7 @@ def integrated_receipt(report: dict) -> bool:
 # Right after a deploy the bot is still restarting and has not collected
 # fresh prices yet, so the host check defers with this reason. That is not
 # a failure: wait for a few 5-minute collection cycles and ask again.
-RESTART_REASONS = frozenset({"insufficient_live_venues"})
+RESTART_REASONS = frozenset({"insufficient_live_venues", "minimum_spacing"})
 RESTART_WAIT_SECONDS = 120
 RESTART_ATTEMPTS = 5
 

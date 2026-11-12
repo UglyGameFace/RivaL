@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import random
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import websockets
@@ -30,6 +30,8 @@ BINANCE_WS = "wss://fstream.binance.com/market/stream?streams=" + "/".join(
 )
 VENUES = ("hyperliquid", "binance")
 RECONNECT_CAP_SECONDS = 60.0
+BOOK_SILENCE_SECONDS = 120
+RECEIVE_CHECK_SECONDS = 30
 # Liquidity-only Binance feeds (issue #295), on Binance's documented routes:
 # partial depth is a /public stream, aggregate trades a /market stream.
 OKX_PUBLIC_WS = "wss://ws.okx.com:443/ws/v5/public"
@@ -108,6 +110,9 @@ class StreamingBookHub:
         # uses a 10 s quote age, but Hyperliquid pushes each coin only about
         # every 5 s, so a coin can be briefly stale while the stream is fine.
         self._last_accept: dict[str, datetime | None] = dict.fromkeys(VENUES, None)
+        self._blocked_until: dict[str, datetime | None] = dict.fromkeys(VENUES, None)
+        self._blocked_status: dict[str, int | None] = dict.fromkeys(VENUES, None)
+        self._silence_restarts: dict[str, int] = dict.fromkeys(VENUES, 0)
         # Optional 5-minute liquidity recorder; attach before start().
         self.recorder = None
         self._liquidity_frames = 0
@@ -133,6 +138,10 @@ class StreamingBookHub:
                 "connected": self._connected[venue],
                 "updates": self._accepted[venue],
                 "reconnects": self._reconnects[venue],
+                "blocked": bool(self._blocked_until[venue]
+                                and clock < self._blocked_until[venue]),
+                "blocked_status": self._blocked_status[venue],
+                "silent_reconnects": self._silence_restarts[venue],
                 "fresh_assets": tuple(
                     a for a in self.assets
                     if self.snapshot(venue, a, now=clock) is not None
@@ -185,6 +194,9 @@ class StreamingBookHub:
                     max_size=1_048_576, max_queue=32,
                 ) as socket:
                     self._connected[venue] = True
+                    self._blocked_until[venue] = None
+                    self._blocked_status[venue] = None
+                    last_book = datetime.now(UTC)
                     attempts = 0
                     if venue == "hyperliquid":
                         for asset in self.assets:
@@ -197,14 +209,27 @@ class StreamingBookHub:
                                     "method": "subscribe",
                                     "subscription": {"type": "trades", "coin": asset},
                                 }))
-                    async for message in socket:
-                        self.accept(venue, message)
+                    while True:
+                        try:
+                            message = await asyncio.wait_for(socket.recv(),
+                                                             timeout=RECEIVE_CHECK_SECONDS)
+                            if self.accept(venue, message):
+                                last_book = datetime.now(UTC)
+                        except TimeoutError:
+                            pass
+                        if (datetime.now(UTC) - last_book).total_seconds() >= BOOK_SILENCE_SECONDS:
+                            self._silence_restarts[venue] += 1
+                            _LOG.warning("RivaL %s book stream silent for %ds; reconnecting",
+                                         venue, BOOK_SILENCE_SECONDS)
+                            break
             except asyncio.CancelledError:
                 raise
             except websockets.exceptions.InvalidStatus as exc:
                 status = getattr(exc.response, "status_code", None)
                 if status in (401, 403, 418, 451):
                     backoff_override = 3600.0
+                    self._blocked_until[venue] = datetime.now(UTC) + timedelta(hours=1)
+                    self._blocked_status[venue] = status
                     _LOG.warning("RivaL %s stream region/access blocked (HTTP %s)",
                                  venue, status)
                 elif status == 429:

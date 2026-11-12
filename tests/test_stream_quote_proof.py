@@ -314,12 +314,13 @@ async def test_websocket_subscription_reconnect_and_stop_without_network(monkeyp
         async def send(self, raw):
             self.sent.append(json.loads(raw))
 
-        def __aiter__(self):
-            async def events():
-                yield wire_hyper(datetime.now(UTC))
-                if self.number > 1:
-                    await asyncio.Future()  # hold the restored WS until shutdown
-            return events()
+        async def recv(self):
+            if not getattr(self, 'delivered', False):
+                self.delivered = True
+                return wire_hyper(datetime.now(UTC))
+            if self.number > 1:
+                await asyncio.Future()  # hold the restored WS until shutdown
+            raise stream_quotes.websockets.exceptions.ConnectionClosedOK(None, None)
 
     def fake_connect(url, **kwargs):
         assert url == stream_quotes.HYPERLIQUID_WS

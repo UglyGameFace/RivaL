@@ -1,10 +1,10 @@
 """Private RivaL Intelligence LFM3: local-only, cached, CPU serialized.
 
-No third-party AI transport. Local inference is capped by the persisted
-quota tables (batch 2 §3.4, D5): 18 requests/day by default, 60 s minimum
-spacing, 3 per Discord requester per day. Every LLM call reserves quota
-first; a cap hit raises ResearchUnavailable with the reason and retry_at,
-never runs inference, and never falls back to an unmetered path. The
+No third-party AI transport. Private inference has no daily cap by default;
+an explicit positive daily limit is respected. Persisted reservations enforce
+60 s minimum spacing, 3 per Discord requester per day and backend quarantine.
+Every LLM call reserves capacity first. Background callers can wait for the
+reported spacing deadline; other refusals remain explicit. The
 deterministic evidence-only summary is not an LLM call and needs no quota.
 Background loops run only when the operator opts in
 (rival_llm_background_opt_in); user-initiated asks reserve quota but do
@@ -32,8 +32,8 @@ LOCAL_MODEL = "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
 EVIDENCE_MODEL = "RivaL/verified-evidence-summary-v1"
 LOCAL_ENDPOINT = "http://rival-llm:8765/v1/research"
 MAX_LOCAL_EVIDENCE_BYTES = 24_000
-# Batch 2 §3.4 / D5 budget numbers (Felix-approved in #135, re-wired here).
-DEFAULT_DAILY_MAX = 18
+# The private CPU worker needs spacing, not a paid-provider daily allowance.
+DEFAULT_DAILY_MAX = 0
 DEFAULT_COOLDOWN_SECONDS = 60
 # Circuit breaker (batch 2 §3.4): the gateway has no Postgres access, so the
 # bot mirrors its BackendRepair quarantine threshold — 3 backend failures
@@ -55,6 +55,16 @@ _SAFE_CODE = re.compile(r"[a-z][a-z0-9_]{0,47}")
 
 class LocalBusy(ResearchUnavailable):
     """The private gateway is busy or briefly unavailable; safe to retry later."""
+
+
+class LocalCapacityDeferred(LocalBusy):
+    """Atomic spacing reservation refused; inference has not run."""
+
+    def __init__(self, status: dict) -> None:
+        self.retry_at = status.get("retry_at")
+        self.reasons = tuple(status.get("reasons", ()))
+        super().__init__(f"Local AI deferred (reasons={','.join(self.reasons)}; "
+                         f"retry_at={self.retry_at}). No inference ran.")
 
 
 def failure_detail(response: httpx.Response) -> str:
@@ -96,10 +106,16 @@ async def _with_busy_retry(attempt, *, retry: bool, label: str):
     for index in range(len(delays) + 1):
         try:
             return await attempt()
-        except LocalBusy:
+        except LocalBusy as exc:
             if index >= len(delays):
                 raise
             delay = delays[index] * random.uniform(0.8, 1.2)
+            if isinstance(exc, LocalCapacityDeferred):
+                if exc.retry_at is None or set(exc.reasons) != {"minimum_spacing"}:
+                    raise
+                delay = max(0.05, (exc.retry_at - datetime.now(UTC)).total_seconds() + 0.05)
+                if delay > DEFAULT_COOLDOWN_SECONDS + 1:
+                    raise
             _LOG.info("Private %s busy; retry %d/%d in %.1fs",
                       label, index + 1, len(delays), delay)
             await asyncio.sleep(delay)
@@ -122,7 +138,7 @@ def validated(reply: object, expected: str) -> bool:
 
 
 class LocalFirstResearch:
-    """Private AI requests are quota-capped, not unmetered.
+    """Private AI requests share persisted CPU capacity and optional daily caps.
 
     Every LLM call reserves one unit from the persisted quota tables
     before any inference runs. Cached evidence summaries cost no quota.
@@ -134,7 +150,7 @@ class LocalFirstResearch:
         daily_max: int = DEFAULT_DAILY_MAX,
         cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
     ) -> None:
-        if daily_max < 1 or cooldown_seconds < 60:
+        if daily_max < 0 or cooldown_seconds < 60:
             raise ValueError("invalid AI budget policy")
         self.market = market
         self._key = local_key
@@ -174,6 +190,8 @@ class LocalFirstResearch:
             cooldown_seconds=self._cooldown_seconds, requester_id=requester_id,
         )
         if not status["ready"]:
+            if set(status["reasons"]) == {"minimum_spacing"}:
+                raise LocalCapacityDeferred(status)
             raise ResearchUnavailable(
                 "Local AI budget exhausted "
                 f"(reasons={','.join(status['reasons'])}; "
@@ -192,6 +210,8 @@ class LocalFirstResearch:
                 cooldown_seconds=self._cooldown_seconds,
                 requester_id=requester_id,
             )
+            if set(status["reasons"]) == {"minimum_spacing"}:
+                raise LocalCapacityDeferred(status)
             raise ResearchUnavailable(
                 "Local AI budget exhausted "
                 f"(reasons={','.join(status['reasons'])}; "
@@ -365,6 +385,16 @@ class LocalFirstResearch:
 
     async def explain_models(self, *, asset: str, venues: tuple[str, ...],
                              calls: dict, market_context: dict | None = None) -> dict:
+        reservation: list[bool] = []
+        return await _with_busy_retry(
+            lambda: self._explain_models_once(asset=asset, venues=venues, calls=calls,
+                                              market_context=market_context,
+                                              _reservation=reservation),
+            retry=True, label="model review")
+
+    async def _explain_models_once(self, *, asset: str, venues: tuple[str, ...],
+                                   calls: dict, market_context: dict | None = None,
+                                   _reservation: list[bool] | None = None) -> dict:
         """RivaL Intelligence reviews the prediction models' current calls.
 
         Returns per-timeframe 'follow'/'abstain' stances plus a short
@@ -387,7 +417,7 @@ class LocalFirstResearch:
                               default=str).encode("utf-8")) > MAX_LOCAL_EVIDENCE_BYTES:
                 raise ResearchUnavailable("Model review evidence too large.")
             # Background-only path: reserves shared quota (no requester cap).
-            await self._reserve_quota()
+            await self._reserve_once(_reservation if _reservation is not None else [])
             headers = {"Authorization": f"Bearer {self._key}",
                        "Content-Type": "application/json"}
             payload = json.loads(json.dumps({"asset": asset, "evidence": evidence},

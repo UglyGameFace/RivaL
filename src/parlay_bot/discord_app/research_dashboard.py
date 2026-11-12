@@ -2851,6 +2851,11 @@ class ResearchDashboard(discord.ui.View):
             try:
                 state = await self.ai.request_status()
                 configured = bool(state["ready"])
+                usage = (
+                    f"{state['requests_today']}/{state['rival_daily_limit']} requests today"
+                    if state['rival_daily_limit'] else
+                    f"{state['requests_today']} requests today; no daily cap"
+                )
                 embed.add_field(
                     name="Private LFM3 Intelligence",
                     value=fit_embed_field_value(
@@ -2858,8 +2863,7 @@ class ResearchDashboard(discord.ui.View):
                         + (
                             "Configured for on-demand inference. **No paid tokens "
                             "or external fallback.**\n"
-                            f"Local LFM3 budget: **{state['requests_today']}/"
-                            f"{state['rival_daily_limit']} requests today**, "
+                            f"Local LFM3 usage: **{usage}**, "
                             "60 s minimum spacing, 3 per requester per day. "
                             "Background loops run only with operator opt-in.\n"
                             "The inference service queues/limits CPU work. "

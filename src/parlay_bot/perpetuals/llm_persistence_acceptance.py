@@ -16,7 +16,11 @@ from parlay_bot.perpetuals.ai_types import ResearchUnavailable
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence, build_evidence
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
-from parlay_bot.perpetuals.local_first_research import LOCAL_MODEL, LocalFirstResearch
+from parlay_bot.perpetuals.local_first_research import (
+    LOCAL_MODEL,
+    LocalCapacityDeferred,
+    LocalFirstResearch,
+)
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
 from parlay_bot.storage.hot import PostgresHotStore
@@ -53,6 +57,7 @@ async def _ask(market: PerpetualMarketStore, settings: Settings,
     ai = LocalFirstResearch(
         market,
         local_key=settings.rival_local_ai_token.get_secret_value(),
+        daily_max=settings.rival_llm_daily_max,
     )
     try:
         started = time.monotonic()
@@ -109,6 +114,9 @@ def verify_once() -> dict:
         # Private inference is CPU-serialized by the gateway, not quota-gated.
         try:
             result, elapsed = asyncio.run(_ask(market, settings))
+        except LocalCapacityDeferred as exc:
+            return {**report, "outcome": "deferred", "reason": "minimum_spacing",
+                    "retry_at": exc.retry_at.isoformat() if exc.retry_at else None}
         except ResearchUnavailable as exc:
             return {**report, "outcome": "failed",
                     "reason": "ordinary_research_unavailable",
@@ -154,6 +162,9 @@ def verify_once() -> dict:
         try:
             xrp_result, xrp_elapsed = asyncio.run(
                 _ask(market, settings, asset="XRP"))
+        except LocalCapacityDeferred as exc:
+            return {**report, "outcome": "deferred", "reason": "minimum_spacing",
+                    "retry_at": exc.retry_at.isoformat() if exc.retry_at else None}
         except ResearchUnavailable as exc:
             return {**report, "outcome": "failed",
                     "reason": "xrp_research_unavailable",

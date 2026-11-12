@@ -259,6 +259,7 @@ async def test_optional_input_capture_failure_does_not_break_existing_formula_he
 
 @pytest.mark.asyncio
 async def test_completed_day_export_is_not_blocked_by_failed_records_backup(monkeypatch, caplog):
+    caplog.set_level("INFO")
     from parlay_bot.discord_app import bot as module
     from parlay_bot.perpetuals import records_backup
 

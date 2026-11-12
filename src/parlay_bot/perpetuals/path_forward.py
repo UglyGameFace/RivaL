@@ -250,6 +250,30 @@ class ProspectivePathLedger:
                 ON rival_forward_paths(state,target_opened_at);
             CREATE INDEX IF NOT EXISTS idx_rival_forward_paths_score
                 ON rival_forward_paths(asset,horizon_minutes,side,issued_at);
+            CREATE TABLE IF NOT EXISTS rival_forward_path_targets (
+                venue TEXT NOT NULL,contract TEXT NOT NULL,quote TEXT NOT NULL,
+                asset TEXT NOT NULL,horizon_minutes INTEGER NOT NULL,
+                model_version TEXT NOT NULL,side TEXT NOT NULL,
+                reference_opened_at TEXT NOT NULL,issued_at TEXT NOT NULL,
+                target_opened_at TEXT NOT NULL,reference_close DOUBLE PRECISION NOT NULL,
+                sigma_horizon DOUBLE PRECISION NOT NULL,
+                direction_probability DOUBLE PRECISION NOT NULL,
+                direction_baseline DOUBLE PRECISION NOT NULL,
+                early_move_probability DOUBLE PRECISION NOT NULL,
+                early_move_baseline DOUBLE PRECISION NOT NULL,
+                absolute_move_p50 DOUBLE PRECISION NOT NULL,
+                absolute_move_baseline DOUBLE PRECISION NOT NULL,
+                close_target_training_count INTEGER NOT NULL,
+                state TEXT NOT NULL,settled_at TEXT,
+                direction_positive INTEGER,early_move_by_half INTEGER,
+                absolute_move_realized DOUBLE PRECISION,
+                first_close_hit_bars INTEGER,
+                PRIMARY KEY(venue,contract,quote,horizon_minutes,side,reference_opened_at)
+            );
+            CREATE INDEX IF NOT EXISTS idx_rival_path_targets_pending
+                ON rival_forward_path_targets(state,target_opened_at);
+            CREATE INDEX IF NOT EXISTS idx_rival_path_targets_score
+                ON rival_forward_path_targets(asset,horizon_minutes,side,issued_at);
             """)
 
     def issue(self, conn, *, candles, asset, horizon, now, issued_at, options=None):
@@ -289,6 +313,28 @@ class ProspectivePathLedger:
                  sample["training_count"],sample["cohort_count"],
                  sample["training_sha256"],"pending"),
             )
+            if result.rowcount == 1:
+                # Only issue a companion task for a genuinely NEW prospect.
+                # No hindsight backfill for previously issued path forecasts.
+                conn.execute(
+                    """INSERT INTO rival_forward_path_targets (
+                         venue,contract,quote,asset,horizon_minutes,
+                         model_version,side,reference_opened_at,issued_at,
+                         target_opened_at,reference_close,sigma_horizon,
+                         direction_probability,direction_baseline,
+                         early_move_probability,early_move_baseline,
+                         absolute_move_p50,absolute_move_baseline,
+                         close_target_training_count,state)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT DO NOTHING""",
+                    (last.venue,last.contract,last.quote,asset,horizon,VERSION,side,
+                     utc(last.opened_at).isoformat(),issued_at.isoformat(),
+                     target.isoformat(),last.close_price,sample["sigma"],
+                     sample["direction_probability"],sample["direction_baseline"],
+                     sample["early_move_probability"],sample["early_move_baseline"],
+                     sample["absolute_move_p50"],sample["absolute_move_baseline"],
+                     sample["close_target_training_count"],"pending"),
+                )
             count+=int(result.rowcount==1)
         return count
 

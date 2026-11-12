@@ -316,7 +316,7 @@ def _contest_progress(store, now: datetime) -> dict:
                 "COUNT(DISTINCT CASE WHEN f.model IS NOT NULL THEN r.slug END) AS with_forecasts,"
                 "COUNT(DISTINCT CASE WHEN f.model=? THEN r.slug END) AS formula_forecasts,"
                 "COUNT(DISTINCT d.slug) AS pinned_for_display,"
-                "COUNT(DISTINCT proof.slug) AS source_proven_costs "
+                "COUNT(DISTINCT proof.slug) AS registered_cost_proofs "
                 "FROM rival_poly_contest_rounds r "
                 "LEFT JOIN rival_poly_contest_forecasts f ON f.slug=r.slug "
                 "LEFT JOIN rival_poly_contest_display d ON d.slug=r.slug "
@@ -329,12 +329,13 @@ def _contest_progress(store, now: datetime) -> dict:
         return {"status": "recorded", "policy": POLICY, "started_at": policy["started_at"],
                 "captured": sum(r["captured"] for r in rows),
                 "with_forecasts": sum(r["with_forecasts"] for r in rows),
-                "source_proven_costs": sum(r["source_proven_costs"] for r in rows),
+                "registered_cost_proofs": sum(r["registered_cost_proofs"] for r in rows),
                 "unverified_cost_contracts": sum(
-                    int(r["captured"]) - int(r["source_proven_costs"]) for r in rows),
+                    int(r["captured"]) - int(r["registered_cost_proofs"]) for r in rows),
                 "scopes": [dict(r) for r in rows],
                 "does_not_prove_prediction_edge": True,
-                "does_not_prove_executed_trades": True}
+                "does_not_prove_executed_trades": True,
+                "proof_rows_rechecked_by_contest_at_scoring": True}
     except Exception:  # noqa: BLE001 - absent optional tables cannot mask worker health
         return {"status": "unavailable"}
 

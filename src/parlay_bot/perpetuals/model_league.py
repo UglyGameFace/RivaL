@@ -116,7 +116,7 @@ def _replay_ask_fills(fills: object, rate: float) -> tuple[float, float] | None:
         if first is None:
             first = price
         # Same 5-decimal fee rounding as _average_cost at issue.
-        total += amount * price + round(amount * rate * price * (1 - price), 5)
+        total += amount * price + round(amount * (rate * price * (1 - price)), 5)
         remaining -= amount
         previous = price
     if abs(remaining) > 1e-8:

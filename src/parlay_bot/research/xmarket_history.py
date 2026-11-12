@@ -45,6 +45,39 @@ PRICE_TOLERANCE = 0.02
 MAX_MISMATCH_RATE = 0.05
 
 
+def source_failure(source: str, stage: str, exc: Exception, *, window_close=None) -> dict:
+    """Keep actionable, non-secret failure evidence in offline training reports.
+
+    Generic HistoryImportError wrappers otherwise conceal whether a native
+    provider returned a 404, throttled requests, timed out, or rejected data.
+    Never record exception text, request URLs, headers, or response bodies.
+    """
+    reason = exc
+    seen = set()
+    while getattr(reason, "__cause__", None) is not None and id(reason) not in seen:
+        seen.add(id(reason))
+        reason = reason.__cause__
+    status = reason.response.status_code if isinstance(reason, httpx.HTTPStatusError) else None
+    if status is not None:
+        category = f"http_{status}"
+        retryable = status in (408, 425, 429) or 500 <= status < 600
+    elif isinstance(reason, httpx.TimeoutException):
+        category, retryable = "timeout", True
+    elif isinstance(reason, httpx.TransportError):
+        category, retryable = "transport", True
+    elif isinstance(exc, HistoryImportError):
+        category, retryable = "history_integrity", False
+    elif isinstance(exc, (ValueError, KeyError)):
+        category, retryable = "contract_identity_or_schema", False
+    else:
+        category, retryable = "unclassified", False
+    record = {"source": source, "stage": stage, "error": type(exc).__name__,
+              "failure_code": category, "retryable": retryable}
+    if window_close is not None:
+        record["window_close"] = timestamp(window_close).isoformat()
+    return record
+
+
 def validate_bundle(doc: dict) -> dict:
     if doc.get("schema") != BUNDLE_SCHEMA or doc.get("asset") not in ("BTC", "ETH", "SOL", "XRP"):
         raise ValueError("invalid XMarket input bundle")
@@ -93,8 +126,28 @@ def compare_history(live, history) -> dict:
         missing = len(set(observed) - set(historical))
         rate = mismatches / paired if paired else None
         coverage = paired / len(observed) if observed else 0
-        checks[source] = {"status": "verified" if paired >= MIN_COMPARISON_POINTS
-            and rate <= MAX_MISMATCH_RATE and coverage >= 0.8 else "unverified",
+        if not prospective:
+            blocked_reason = "no_prospective_export"
+        elif not observed:
+            blocked_reason = "no_eligible_live_feature_bars"
+        elif not retrospective:
+            blocked_reason = "no_independent_history"
+        elif not historical:
+            blocked_reason = "no_eligible_historical_feature_bars"
+        elif not paired:
+            blocked_reason = "no_exact_feature_bar_overlap"
+        elif paired < MIN_COMPARISON_POINTS:
+            blocked_reason = "insufficient_exact_pairs"
+        elif rate > MAX_MISMATCH_RATE:
+            blocked_reason = "price_mismatch"
+        elif coverage < 0.8:
+            blocked_reason = "insufficient_overlap_coverage"
+        else:
+            blocked_reason = None
+        checks[source] = {"status": "verified" if blocked_reason is None else "unverified",
+            "blocked_reason": blocked_reason,
+            "raw_live_points": len(prospective), "raw_history_points": len(retrospective),
+            "live_feature_bars": len(observed), "history_feature_bars": len(historical),
             "paired_points": paired, "comparison_unit": "native-contract-at-feature-bar",
             "mismatches": mismatches, "missing_points": missing,
             "mismatch_rate": rate, "overlap_coverage": coverage,
@@ -218,9 +271,14 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90):
                 history.extend(rows)
                 publications.append(publication)
             except (httpx.HTTPError, ValueError, HistoryImportError) as exc:
-                errors.append({"source": source, "stage": "overlap", "error": type(exc).__name__})
-                break
-    cursor = timestamp(before)
+                errors.append(source_failure(source, "overlap", exc, window_close=identity["closes_at"]))
+                # One inaccessible contract must not suppress checks of the
+                # other already-captured contracts in this bounded pass.
+                continue
+    # Archive "through" can name an unfinished native window. Never try
+    # acquiring its as-yet-unpublished history or advancing a cursor past now.
+    last_closed = datetime.fromtimestamp(int(now.timestamp()) // 900 * 900, UTC)
+    cursor = min(timestamp(before), last_closed)
     floor = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)
     for _ in range(max_windows):
         opened = cursor - timedelta(minutes=15)
@@ -236,7 +294,7 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90):
             history.extend(rows)
             publications.append(publication)
         except (httpx.HTTPError, ValueError, HistoryImportError) as exc:
-            errors.append({"source": "polymarket", "stage": "backfill", "error": type(exc).__name__})
+            errors.append(source_failure("polymarket", "backfill", exc, window_close=cursor))
             failed_window = True
         try:
             series = "KX" + asset + "15M"
@@ -257,7 +315,7 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90):
             history.extend(rows)
             publications.append(publication)
         except (httpx.HTTPError, ValueError, KeyError, HistoryImportError) as exc:
-            errors.append({"source": "kalshi", "stage": "backfill", "error": type(exc).__name__})
+            errors.append(source_failure("kalshi", "backfill", exc, window_close=cursor))
             failed_window = True
         if failed_window:
             break

@@ -63,6 +63,42 @@ def source(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_live_gamma_clob_receipt_replays_exact_frozen_fee_depth(source):
+    """Production reader and contest verifier must agree on the same ten shares."""
+    _, _, controls = source
+    controls["mutate_event"] = lambda e: e["markets"][0].update({
+        "version": "v1", "feesEnabled": True,
+        "feeSchedule": {"rate": .07, "exponent": 1},
+    })
+    controls["mutate_book"] = lambda b: b.update({
+        "bids": [{"price": "0.48", "size": "30"}],
+    })
+    reader = poly.PolymarketReader()
+    notice = await reader.market("BTC", 5)
+    assert notice is not None
+    source_receipt = notice.fee_evidence
+    assert source_receipt["cost_status"] == "gamma_fee_and_depth_paper_only"
+    assert source_receipt["up_ask_fills"] == [[.52, 10.0]]
+    assert source_receipt["down_ask_fills"] == [[.52, 10.0]]
+    assert source_receipt["up_best_bid"] == source_receipt["down_best_bid"] == .48
+    expected = (10 * .52 + round(10 * (.07 * .52 * .48), 5)) / 10
+    assert notice.up_cost == pytest.approx(expected)
+    assert notice.down_cost == pytest.approx(expected)
+    from parlay_bot.perpetuals.model_league import _verified_source_cost
+
+    raw = {
+        "slug": notice.slug, "condition_id": notice.condition_id,
+        "up_token_id": notice.up_token_id, "down_token_id": notice.down_token_id,
+        "quote_at": notice.quote_at.isoformat(),
+        "up_bid": notice.up_bid, "down_bid": notice.down_bid,
+        "up_ask": notice.up_ask, "down_ask": notice.down_ask,
+        "up_cost": notice.up_cost, "down_cost": notice.down_cost,
+        "fee_rate": notice.fee_rate, "fee_source_receipt": source_receipt,
+    }
+    assert _verified_source_cost(raw, notice.received_at) is not None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("display_first", [True, False])
 async def test_board_and_alert_share_gamma_and_both_books(source, display_first):
     clock, requests, _ = source

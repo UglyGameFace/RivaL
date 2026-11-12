@@ -638,6 +638,11 @@ class ForwardAccuracyMonitor:
                     ON perp_forward_audit (settled_at,target_opened_at);
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_asset_horizon
                     ON perp_forward_audit (asset,horizon_minutes,issued_at);
+                CREATE INDEX IF NOT EXISTS idx_perp_forward_score_recent
+                    ON perp_forward_audit (asset,model_version,issued_at,horizon_minutes);
+                CREATE INDEX IF NOT EXISTS idx_perp_forward_intel_target
+                    ON perp_forward_audit
+                       (asset,horizon_minutes,target_opened_at,model_version,issued_at);
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_asset_issued
                     ON perp_forward_audit (asset,issued_at)
                     WHERE settled_at IS NULL;
@@ -2144,6 +2149,18 @@ class ForwardAccuracyMonitor:
         """
         if asset not in ASSETS or horizon not in HORIZONS:
             raise ValueError("invalid asset or horizon")
+        from parlay_bot.storage.read_cache import shared_reads
+
+        wall = datetime.now(UTC)
+        stamp = utc(now or wall)
+        if abs((stamp - wall).total_seconds()) <= 10:
+            return shared_reads(self.store).read(
+                ("forward_calibration", asset, horizon), SUMMARY_TTL_SECONDS,
+                lambda: self._calibration_uncached(asset=asset, horizon=horizon, now=stamp))
+        return self._calibration_uncached(asset=asset, horizon=horizon, now=stamp)
+
+    def _calibration_uncached(self, *, asset: str, horizon: int,
+                              now: datetime | None = None) -> dict:
         stamp = utc(now or datetime.now(UTC))
         start = (stamp - timedelta(days=7)).isoformat()
         self.initialize()

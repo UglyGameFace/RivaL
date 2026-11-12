@@ -169,6 +169,10 @@ class ShadowModelCompetition:
             -- (1.0 s on production). This range reads only the 2-hour window.
             CREATE INDEX IF NOT EXISTS idx_rival_model_shadow_venue_issued
                 ON rival_model_shadow_forecasts (venue,issued_at);
+            CREATE INDEX IF NOT EXISTS idx_rival_model_shadow_recent_hit
+                ON rival_model_shadow_forecasts (asset,horizon_minutes,issued_at,family)
+                WHERE settled_at IS NOT NULL AND outcome_up IN (0,1)
+                  AND probability_up BETWEEN 0 AND 1 AND probability_up<>0.5;
             """)
             # Stops recorded by early_stop: issue() reads this on every
             # stream, so it must exist wherever the ledger does.

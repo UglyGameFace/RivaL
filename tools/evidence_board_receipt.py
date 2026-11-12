@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from urllib import error, parse, request
 
 from discloud_learning_cycle_receipt import CMD, parse_receipt
+from evidence_board_github import read_github_snapshot
 
 ASSETS = {"BTC", "ETH", "SOL", "XRP"}
 HORIZONS = {5, 15, 60}
@@ -278,10 +279,16 @@ def publish() -> int:
     except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
         drive = {"status": "unavailable", "reports_considered": None,
                  "latest_report_at": None, "reports": []}
+    try:
+        github = read_github_snapshot(os.getenv("GITHUB_TOKEN", ""))
+    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
+        github = {"status": "unavailable", "fetched_at": None,
+                  "prs": [], "runs": []}
     now = datetime.now(UTC).isoformat()
     payload = {
         "schema_version": 1, "captured_at": now,
         "host": host, "database": db, "drive": drive,
+        "github": github,
     }
     jwt = _github_oidc()
     result = _url_json(
@@ -296,6 +303,7 @@ def publish() -> int:
         "publication": result["status"], "host": host["status"],
         "database": db["status"], "drive": drive["status"],
         "drive_scopes": drive["reports_considered"],
+        "github": github["status"],
         "source": "read-only", "no_trades_or_db_writes": True,
     }, sort_keys=True))
     return 0

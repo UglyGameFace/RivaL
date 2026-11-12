@@ -2136,6 +2136,24 @@ class GuidedHome(discord.ui.View):
                                         "series). NOT validated or approved; "
                                         "not a trading call."
                                     )
+                                if shadow:
+                                    proof = shadow.get("execution_evidence") or {}
+                                    state = proof.get("status")
+                                    if state == "fee_schedule_unverified":
+                                        research_context += (
+                                            "\nBook timing/depth recorded; exact "
+                                            "contract fees still unverified."
+                                        )
+                                    elif state == "insufficient_top_book_depth":
+                                        research_context += (
+                                            "\nInsufficient quoted depth for "
+                                            "10 contracts; no executable edge."
+                                        )
+                                    elif state:
+                                        research_context += (
+                                            "\nExecution proof incomplete; "
+                                            "no after-fee edge verified."
+                                        )
                             except (TimeoutError, ValueError, TypeError, RuntimeError):
                                 research_context = (
                                     "Kalshi research ledger unavailable; "

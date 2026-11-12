@@ -273,7 +273,15 @@ class KalshiCryptoBrowser:
         def read() -> dict | None:
             # The background recorder may not have run yet. The first valid
             # quote wins, and the store's unique ticker prevents re-issuance.
-            self._forward.observe(asset=asset, market=market, at=observed_at)
+            self._forward.observe(
+                asset=asset, market=market,
+                # Real browser book observations must issue at execution
+                # time; the UI's earlier snapshot clock is NOT an issue clock.
+                # Legacy manually constructed fixtures retain their supplied
+                # timestamp but never qualify for source-timed economics.
+                at=(datetime.now(UTC) if market.book_observed_at is not None
+                    else observed_at),
+            )
             return self._forward.contract_preview(asset=asset, market=market)
 
         return await asyncio.to_thread(read)

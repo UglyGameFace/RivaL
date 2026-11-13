@@ -835,6 +835,17 @@ async def test_backfill_checkpoint_persists_zero_row_progress_and_gap_recovery(
     drive = Drive()
     await module.weekly_inputs(drive, asset="BTC", through=now,
                                cache=tmp_path / "cache", max_windows=1)
+    # An unacknowledged local checkpoint (e.g. after failed Drive upload)
+    # cannot override a previously read-back, verified Drive cursor.
+    poison = {
+        "schema": BUNDLE_SCHEMA, "asset": "BTC", "samples": [],
+        "created_at": (now + timedelta(days=1)).isoformat(),
+        "backfill_checkpoint": True,
+        "backfill_before": (now - timedelta(days=60)).isoformat(),
+        "backfill_pending": {"polymarket": [], "kalshi": []},
+    }
+    (tmp_path / "cache" / "xmarket-inputs-BTC-local-unverified.json"
+     ).write_text(json.dumps(poison))
     await module.weekly_inputs(drive, asset="BTC", through=now,
                                cache=tmp_path / "cache", max_windows=1)
     assert calls[1] == calls[0] - timedelta(minutes=15)

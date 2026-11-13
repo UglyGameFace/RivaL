@@ -145,6 +145,7 @@ async def test_public_endpoint_raw_gzip_and_private_drive_readbacks(tmp_path):
     "https://cdn.tardis.dev/objects/signed/BTCUSDT.csv.gz",
     "https://tardis-bucket.s3.amazonaws.com/BTCUSDT.csv.gz?token=secret",
     "https://d123456abcdef.cloudfront.net/signed/BTCUSDT.csv.gz",
+    "https://s3.us-east-1.wasabisys.com/tardis-sample/BTCUSDT.csv.gz?signature=redacted",
 ])
 async def test_documented_public_sample_redirects_are_bounded_and_source_verified(
     tmp_path, destination,
@@ -182,6 +183,7 @@ async def test_documented_public_sample_redirects_are_bounded_and_source_verifie
     "https://not-tardis.example/data",
     "https://datasets.tardis.dev.evil.example/data",
     "https://test.amazonaws.com:8443/unsafe",
+    "https://s3.us-east-2.wasabisys.com/unverified-storage-origin",
     "https://user:pass@datasets.tardis.dev/private",
 ])
 async def test_tardis_redirect_fails_closed_before_unsafe_get(tmp_path, destination):

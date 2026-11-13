@@ -727,7 +727,6 @@ def test_missing_native_windows_advance_and_remain_repairable(tmp_path, monkeypa
 
 def test_rate_limit_preserves_cursor_and_records_missing_identity(tmp_path, monkeypatch):
     from parlay_bot.research import xmarket_history as module
-    from parlay_bot.research.free_history import HistoryImportError
 
     class FrozenDateTime(datetime):
         @classmethod

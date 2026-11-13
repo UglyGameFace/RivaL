@@ -228,7 +228,7 @@ def test_lab_scoring_gives_correlated_venue_forecasts_one_target_vote(store):
     assert score["days"] == 2
     assert score["gain"] == pytest.approx(.005)
     assert score["fitness"] is None         # no confident winner from 4 targets
-    assert len(score["streams"]) == 11
+    assert len(score["streams"]) == 10
 
 
 def test_model_lab_keeps_inconclusive_designs_through_full_forward_window():

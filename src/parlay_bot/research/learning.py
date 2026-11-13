@@ -37,7 +37,9 @@ def provider_source_sha256(meta: dict) -> str | None:
     provider original at all -- their ``source_sha256`` is a hash of the
     ledger-derived records -- so they honestly report None here.
     """
-    if meta.get("source_integrity") == "postgres-first-observed-at-v1":
+    if meta.get("source_integrity") in {
+        "postgres-first-observed-at-v1", "drive-daily-records-first-observed-at-v1",
+    }:
         return None
     sha = meta.get("source_sha256")
     return sha if isinstance(sha, str) and _SHA64.fullmatch(sha) else None
@@ -115,6 +117,10 @@ def _rows(manifest_path: Path) -> tuple[dict, list[dict]]:
                     or _as_datetime(row["first_observed_at"]) <
                        _as_datetime(row["closed_at"])):
                     raise HistoryImportError("unverified source-native historical record")
+        if manifest.get("source_integrity") == "drive-daily-records-first-observed-at-v1":
+            from parlay_bot.research.recorded_candles import validate_partition
+
+            validate_partition(manifest, rows, manifest_path.parent)
         return manifest, rows
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         raise HistoryImportError("unreadable or invalid history manifest") from exc
@@ -137,6 +143,8 @@ def assemble(manifests: list[Path]) -> tuple[dict, list[dict], dict]:
     sources: dict[str, str] = {}
     providers: dict[str, str] = {}
     without_provider: list[str] = []
+    recorded_partitions: dict[str, dict] = {}
+    manifests_sha, normalized_sha = {}, {}
     for path in manifests:
         meta, records = _rows(path)
         key = (meta.get("venue"), meta.get("contract"),
@@ -162,6 +170,14 @@ def assemble(manifests: list[Path]) -> tuple[dict, list[dict], dict]:
         if first_month in months:
             raise HistoryImportError("duplicate monthly dataset")
         months.add(first_month)
+        manifests_sha[first_month] = hashlib.sha256(path.read_bytes()).hexdigest()
+        normalized_sha[first_month] = meta["data_sha256"]
+        if meta.get("source_integrity") == "drive-daily-records-first-observed-at-v1":
+            recorded_partitions[first_month] = {
+                "coverage": meta["partition_coverage"],
+                "source_files": meta["recorded_source_files"],
+                "normalized_sha256": meta["data_sha256"],
+            }
         # Record the manifest's DECLARED source hash, never the normalized
         # NDJSON hash: for Binance/Bitget/Gate this is the provider-original
         # bytes' hash; for Postgres-ledger months it is the ledger digest
@@ -206,6 +222,9 @@ def assemble(manifests: list[Path]) -> tuple[dict, list[dict], dict]:
     }, rows, {"months": sorted(months), "source_sha256_by_month": sources,
               "provider_sha256_by_month": providers,
               "months_without_provider_hash": sorted(without_provider),
+              "recorded_partitions": recorded_partitions,
+              "manifest_sha256_by_month": manifests_sha,
+              "normalized_sha256_by_month": normalized_sha,
               "gaps_between_rows": gaps}
 
 

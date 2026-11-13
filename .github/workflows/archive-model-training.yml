@@ -103,13 +103,24 @@ jobs:
       # is names-only; every month still has to pass restore verification.
       - name: Drive census (measure first)
         run: python -m parlay_bot.research.drive_source_census
-      # Step 2: restore verified months (Bitget/OKX/Gate bridges re-prove
-      # bytes per month). A month failing verification is excluded and
-      # listed in the restore report, never silently skipped.
+      # Step 2: restore verified complete months plus missing/partial candle
+      # partitions from SHA-verified original daily ledger backups. Gaps and
+      # absent source days remain explicit; partials never count as full months.
       - name: Restore verified months
         run: |
           python tools/restore_archive_months.py --asset ${{ matrix.asset }} \
             --root data/archive-v1-restore
+          mkdir -p archive-v1-models
+          cp data/archive-v1-restore/restore-report.json archive-v1-models/restore-report.json
+      # Publish metadata immediately so source availability can be checked
+      # without waiting for all model families/horizons to finish training.
+      - name: Upload restoration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-v1-restore-${{ matrix.asset }}-${{ github.run_id }}
+          path: data/archive-v1-restore/restore-report.json
+          if-no-files-found: error
       # Step 3: train once per (asset, horizon). The shared weekly run
       # (train_weekly_archive) trains archive-v1, gbm-v1 and volcal-v1
       # for every (asset, horizon) on the same restored bytes, same

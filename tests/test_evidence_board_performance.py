@@ -1,19 +1,26 @@
 """Read-only, source-paired Brier proof without model promotion or trading."""
 from __future__ import annotations
 
+import io
+import json
+import os
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 from evidence_board_github import read_public_intelligence
 from evidence_board_receipt import (
+    _oidc_contract_summary,
+    _receiver_http_error,
     _safe_receiver_error,
     read_intelligence_host,
     read_paired_performance,
+    receiver_preflight,
 )
 
 from parlay_bot.perpetuals.evidence_score_receipt import (
@@ -77,6 +84,83 @@ class ModelScoreEvidenceTests(unittest.TestCase):
             _safe_receiver_error(502, b'{"error":"PRIVATE_TOKEN_EXPOSED"}'),
             "receiver_http_502",
         )
+
+    def test_upstream_403_is_not_mistaken_for_oidc_denial(self) -> None:
+        err = HTTPError(
+            "https://not-logged.example/ingest", 403, "denied",
+            {"Content-Type": "text/html"}, io.BytesIO(b"TOP_SECRET_HTML"),
+        )
+        self.assertEqual(_receiver_http_error(err),
+                         "receiver_http_403_non_json_upstream")
+        self.assertNotIn("TOP_SECRET", _receiver_http_error(err))
+
+    def test_explicit_worker_oidc_denial_has_only_fixed_labels(self) -> None:
+        body = b'{"error":"unverified_github_identity","reason":"claim_mismatch","credential":"DO_NOT_ECHO"}'
+        err = HTTPError(
+            "https://not-logged.example/ingest", 403, "forbidden",
+            {"Content-Type": "application/json; charset=utf-8"}, io.BytesIO(body),
+        )
+        self.assertEqual(_receiver_http_error(err),
+                         "receiver_http_403_unverified_github_identity_claim_mismatch")
+
+    def test_receiver_preflight_rejects_any_non_worker_or_open_ingest(self) -> None:
+        health = {"ok": True, "receiver": "rival-evidence-collector"}
+        denied = HTTPError(
+            "https://not-logged.example/ingest", 401, "unauthorized",
+            {"Content-Type": "application/json"},
+            io.BytesIO(b'{"error":"authorization_required"}'),
+        )
+        with patch("evidence_board_receipt._url_json",
+                   side_effect=[health, denied]) as fetch:
+            receiver_preflight()
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(fetch.call_args_list[1].kwargs["body"], b"{}")
+        self.assertNotIn("Authorization", fetch.call_args_list[1].kwargs["headers"])
+
+        with patch("evidence_board_receipt._url_json",
+                   return_value={"ok": True, "receiver": "someone_else"}):
+            with self.assertRaisesRegex(ValueError, "identity_mismatch"):
+                receiver_preflight()
+        with patch("evidence_board_receipt._url_json", side_effect=[
+                health, {"status": "accepted"}]):
+            with self.assertRaisesRegex(ValueError, "write_not_rejected"):
+                receiver_preflight()
+        blocked = HTTPError(
+            "https://not-logged.example/ingest", 403, "forbidden",
+            {"Content-Type": "text/html"}, io.BytesIO(b"DO_NOT_ECHO"),
+        )
+        with patch("evidence_board_receipt._url_json",
+                   side_effect=[health, blocked]):
+            with self.assertRaisesRegex(
+                    ValueError, "receiver_anonymous_receiver_http_403_non_json_upstream"):
+                receiver_preflight()
+
+    def test_oidc_diagnostic_returns_only_mismatch_field_names(self) -> None:
+        import base64
+
+        def make_token(claims: dict) -> str:
+            payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+            return "header." + payload + ".signature"
+
+        claims = {
+            "iss": "https://token.actions.githubusercontent.com",
+            "aud": "https://rival-evidence-collector.staytrippynlw.workers.dev",
+            "repository": "UglyGameFace/RivaL",
+            "ref": "refs/heads/main",
+            "workflow_ref": (
+                "UglyGameFace/RivaL/.github/workflows/"
+                "evidence-board-receipt.yml@refs/heads/main"
+            ),
+            "run_id": "43330102811", "event_name": "push",
+        }
+        with patch.dict(os.environ, {"GITHUB_RUN_ID": "43330102811",
+                                     "GITHUB_EVENT_NAME": "push"}):
+            self.assertEqual(_oidc_contract_summary(make_token(claims)),
+                             "local_oidc_contract_match")
+            bad = {**claims, "aud": "https://attacker.example/private-credential"}
+            self.assertEqual(_oidc_contract_summary(make_token(bad)),
+                             "local_oidc_mismatch_aud")
+        self.assertNotIn("attacker", _oidc_contract_summary("bad.token.value"))
 
     def test_unavailable_intelligence_app_is_not_reported_offline(self) -> None:
         with patch.dict("os.environ", {"DISCLOUD_LLM_APP_ID": "",

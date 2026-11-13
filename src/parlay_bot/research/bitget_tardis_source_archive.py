@@ -168,19 +168,19 @@ def _validated_dataset_redirect(response: httpx.Response) -> str:
     try:
         target = urljoin(str(response.url), location)
         parsed = urlsplit(target)
-        host = (parsed.hostname or "").lower().rstrip(".")
-        allowed = any(
-            host == suffix or host.endswith("." + suffix)
-            for suffix in REDIRECT_SUFFIXES
-        )
-        if (parsed.scheme != "https" or parsed.username is not None
-                or parsed.password is not None
-                or parsed.port not in (None, 443)
-                or not allowed or parsed.fragment):
-            raise HistoryImportError("Tardis dataset redirected to untrusted origin")
-        return target
+        port = parsed.port
     except ValueError as exc:
         raise HistoryImportError("Tardis dataset redirect URL invalid") from exc
+    host = (parsed.hostname or "").lower().rstrip(".")
+    allowed = any(
+        host == suffix or host.endswith("." + suffix)
+        for suffix in REDIRECT_SUFFIXES
+    )
+    if (parsed.scheme != "https" or parsed.username is not None
+            or parsed.password is not None or port not in (None, 443)
+            or not allowed or parsed.fragment):
+        raise HistoryImportError("Tardis dataset redirected to untrusted origin")
+    return target
 
 
 async def obtain(client: httpx.AsyncClient, *, asset: str, month: str,

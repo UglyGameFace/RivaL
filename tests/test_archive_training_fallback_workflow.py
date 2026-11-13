@@ -55,6 +55,11 @@ def test_one_off_xmarket_archive_training_guard(
 def test_fallback_cannot_trigger_on_arbitrary_source_changes() -> None:
     workflow = WORKFLOW.read_text()
     assert '  push:\n    branches: [main]\n    paths:\n      - ".github/workflows/archive-model-training.yml"' in workflow
+    push = workflow.split("  push:\n", 1)[1].split("  workflow_dispatch:\n", 1)[0]
+    paths = [line.strip().removeprefix('- "').removesuffix('"')
+             for line in push.splitlines() if line.strip().startswith('- "')]
+    assert paths == [".github/workflows/archive-model-training.yml",
+                     "src/parlay_bot/research/xmarket_training.py"]
     assert '17 15 13 11 *' not in workflow, "expired annual cron must not rerun"
     assert '    - cron: "30 7 * * 0"' in workflow, "weekly training must be preserved"
     assert '          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "push" || "${{ inputs.publish }}" == "true" ]]; then' in workflow

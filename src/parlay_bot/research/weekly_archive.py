@@ -143,7 +143,10 @@ async def train_weekly_archive(frames: dict, *, training: dict, census: dict,
             try:
                 extra = {}
                 if module is xmarket_training:
-                    from parlay_bot.research.xmarket_history import load_local_inputs, weekly_inputs_once
+                    from parlay_bot.research.xmarket_history import (
+                        load_local_inputs,
+                        weekly_inputs_once,
+                    )
                     cache = out.parent / "data" / "xmarket-inputs"
                     market_data = (await weekly_inputs_once(drive, asset=asset, through=through, cache=cache)
                                    if drive is not None else

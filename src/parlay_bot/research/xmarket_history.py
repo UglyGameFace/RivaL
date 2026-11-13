@@ -296,87 +296,153 @@ def _archived_kalshi_windows(client, *, series: str, max_pages: int = 24) -> dic
     raise ValueError("Kalshi historical market listing exceeded bounded pages")
 
 
-def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90):
-    """Bounded/resumable historical acquisition plus fresh fidelity overlap checks."""
+def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
+             pending=None, retry_gaps=12):
+    """Advance over unavailable windows, and retain exact missing-source gaps.
+
+    A single 404/absent native contract must not strand an entire older archive.
+    Incomplete windows remain in a persisted pending ledger, never imputed or
+    considered verified. A transient rate limit/network failure stops the
+    current traversal to avoid overwhelming a provider. Prior gaps get a
+    rotating, bounded recheck on later archive passes.
+    """
     now = datetime.now(UTC)
     history, publications, errors = [], [], []
+    gaps = pending if pending is not None else {source: set() for source in PRICE_SEMANTICS}
+    if set(gaps) != set(PRICE_SEMANTICS):
+        raise ValueError("invalid XMarket gap sources")
     historical_kalshi = None
+    archived_kalshi_failure = None
     identities = {}
     for bundle in bundles:
         for p in bundle["samples"]:
             if p.get("origin") == "live":
-                identity = {k: p[k] for k in
-                    ("asset", "contract_id", "opens_at", "closes_at", "token_id", "slug") if k in p}
+                identity = {k: p[k] for k in (
+                    "asset", "contract_id", "opens_at", "closes_at", "token_id", "slug"
+                ) if k in p}
                 identities[p["source"], p["contract_id"]] = identity
-    # Compare up to 16 recent native contracts per source, on independently
-    # fetched history; 30+ actual timestamp pairs are required to pass.
+
+    # Independently establish overlap with actual prospective observations.
+    # Acquiring old samples alone must never turn fidelity status green.
     for source in PRICE_SEMANTICS:
         items = [(key, val) for key, val in identities.items() if key[0] == source]
         consecutive_failures = 0
-        for (src, _), identity in sorted(items, key=lambda x: x[1]["opens_at"], reverse=True)[:32]:
+        for (src, _), identity in sorted(
+            items, key=lambda x: x[1]["opens_at"], reverse=True
+        )[:32]:
             try:
-                rows, publication = collect_contract(client, source=src, identity=identity, root=root, now=now)
+                rows, publication = collect_contract(
+                    client, source=src, identity=identity, root=root, now=now
+                )
                 history.extend(rows)
                 publications.append(publication)
                 consecutive_failures = 0
             except (httpx.HTTPError, ValueError, HistoryImportError) as exc:
-                failure = source_failure(source, "overlap", exc, window_close=identity["closes_at"])
+                failure = source_failure(
+                    source, "overlap", exc, window_close=identity["closes_at"]
+                )
                 errors.append(failure)
-                # Try other contracts after an isolated bad identity. Don't
-                # spend 32 network timeouts on a throttled/down provider.
                 consecutive_failures += 1
                 if failure["retryable"] or consecutive_failures >= 3:
                     break
-    # Archive "through" can name an unfinished native window. Never try
-    # acquiring its as-yet-unpublished history or advancing a cursor past now.
+
     last_closed = datetime.fromtimestamp(int(now.timestamp()) // 900 * 900, UTC)
     cursor = min(timestamp(before), last_closed)
     floor = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)
+
+    def one_source(source, closes, *, stage):
+        nonlocal historical_kalshi, archived_kalshi_failure
+        opened = closes - timedelta(minutes=15)
+        try:
+            if source == "polymarket":
+                from parlay_bot.discord_app.polymarket_watch import market_slug
+
+                event = _json_get(
+                    client, f"{GAMMA}/events/slug/{market_slug(asset, 15, opened)}",
+                    {}, timeout=8,
+                )
+                identity = _identity_pm(event, asset=asset, opens=opened)
+            else:
+                series = "KX" + asset + "15M"
+                params = {
+                    "series_ticker": series,
+                    "min_close_ts": int(closes.timestamp()) - 1,
+                    "max_close_ts": int(closes.timestamp()) + 1,
+                    "limit": 10,
+                }
+                live = kalshi_public_json(
+                    client, KALSHI + "/markets", params,
+                    timeout=8, rate_limit_retries=2, pace_seconds=0.35,
+                )
+                if not isinstance(live, dict) or not isinstance(live.get("markets"), list):
+                    raise HistoryImportError("malformed Kalshi current market page")
+                markets = live["markets"]
+                if not markets:
+                    if archived_kalshi_failure is not None:
+                        raise archived_kalshi_failure
+                    if historical_kalshi is None:
+                        try:
+                            historical_kalshi = _archived_kalshi_windows(
+                                client, series=series
+                            )
+                        except (httpx.HTTPError, ValueError, HistoryImportError) as exc:
+                            # Avoid repeating up to 24 archive-listing pages for
+                            # every missing 15-minute window this same pass.
+                            archived_kalshi_failure = exc
+                            raise
+                    markets = historical_kalshi.get((opened, closes), [])
+                candidates = [
+                    m for m in markets if isinstance(m.get("ticker"), str)
+                    and m["ticker"].startswith(series + "-")
+                    and timestamp(m["open_time"]) == opened
+                    and timestamp(m["close_time"]) == closes
+                ]
+                if len(candidates) != 1:
+                    raise ValueError("native Kalshi contract not uniquely bound")
+                identity = {
+                    "asset": asset, "contract_id": candidates[0]["ticker"],
+                    "opens_at": opened.isoformat(), "closes_at": closes.isoformat(),
+                }
+            rows, publication = collect_contract(
+                client, source=source, identity=identity, root=root, now=now
+            )
+            history.extend(rows)
+            publications.append(publication)
+            gaps[source].discard(closes.isoformat())
+            return False
+        except (httpx.HTTPError, ValueError, KeyError, HistoryImportError) as exc:
+            failure = source_failure(source, stage, exc, window_close=closes)
+            errors.append(failure)
+            gaps[source].add(closes.isoformat())
+            return bool(failure["retryable"])
+
+    # A rolling, deterministic offset stops a permanently unavailable first
+    # gap from monopolizing all future rechecks. All retained gap identities
+    # remain visible even if they are not selected by this bounded pass.
+    candidates = sorted(
+        (timestamp(close), source)
+        for source in PRICE_SEMANTICS for close in gaps[source]
+        if timestamp(close) <= last_closed
+    )
+    if candidates and retry_gaps:
+        rotation = now.date().toordinal() % len(candidates)
+        selected = (candidates[rotation:] + candidates[:rotation])[:retry_gaps]
+        for close, source in selected:
+            one_source(source, close, stage="gap_repair")
+
     for _ in range(max_windows):
         opened = cursor - timedelta(minutes=15)
         if opened < floor:
             break
-        from parlay_bot.discord_app.polymarket_watch import market_slug
-        failed_window = False
-        try:
-            event = _json_get(client, f"{GAMMA}/events/slug/{market_slug(asset, 15, opened)}", {}, timeout=8)
-            identity = _identity_pm(event, asset=asset, opens=opened)
-            rows, publication = collect_contract(client, source="polymarket", identity=identity,
-                                                  root=root, now=now)
-            history.extend(rows)
-            publications.append(publication)
-        except (httpx.HTTPError, ValueError, HistoryImportError) as exc:
-            errors.append(source_failure("polymarket", "backfill", exc, window_close=cursor))
-            failed_window = True
-        try:
-            series = "KX" + asset + "15M"
-            params = {"series_ticker": series, "min_close_ts": int(cursor.timestamp()) - 1,
-                      "max_close_ts": int(cursor.timestamp()) + 1, "limit": 10}
-            live = kalshi_public_json(client, KALSHI + "/markets", params,
-                timeout=8, rate_limit_retries=2, pace_seconds=0.35)
-            if not isinstance(live, dict) or not isinstance(live.get("markets"), list):
-                raise HistoryImportError("malformed Kalshi current market page")
-            markets = live["markets"]
-            if not markets:
-                if historical_kalshi is None:
-                    historical_kalshi = _archived_kalshi_windows(client, series=series)
-                markets = historical_kalshi.get((opened, cursor), [])
-            candidates = [m for m in markets if isinstance(m.get("ticker"), str)
-                          and m["ticker"].startswith(series + "-")
-                          and timestamp(m["open_time"]) == opened
-                          and timestamp(m["close_time"]) == cursor]
-            if len(candidates) != 1:
-                raise ValueError("native Kalshi contract not uniquely bound")
-            identity = {"asset": asset, "contract_id": candidates[0]["ticker"],
-                        "opens_at": opened.isoformat(), "closes_at": cursor.isoformat()}
-            rows, publication = collect_contract(client, source="kalshi", identity=identity, root=root, now=now)
-            history.extend(rows)
-            publications.append(publication)
-        except (httpx.HTTPError, ValueError, KeyError, HistoryImportError) as exc:
-            errors.append(source_failure("kalshi", "backfill", exc, window_close=cursor))
-            failed_window = True
-        if failed_window:
+        transient = False
+        for source in PRICE_SEMANTICS:
+            transient |= one_source(source, cursor, stage="backfill")
+        if transient:
+            # Keep cursor before this uncompleted window; a subsequent
+            # archived pass will retry after rate limits/outages clear.
             break
+        # This window has either verified original bytes or an explicit
+        # pending gap for each unavailable source. Never silently skip it.
         cursor = opened
     return history, publications, cursor, errors
 
@@ -400,35 +466,91 @@ async def weekly_inputs(drive, *, asset: str, through, cache: Path, max_windows=
         payload = path.read_bytes()
         bundles.append({**validate_bundle(json.loads(payload)),
                         "_bundle_sha256": hashlib.sha256(payload).hexdigest()})
-    # A new restore starts at yesterday's close. Persisted cursors advance
-    # older work rather than downloading the same day every Sunday.
-    before = min([timestamp(b["backfill_before"]) for b in bundles if b.get("backfill_before")]
-                 or [timestamp(through).replace(second=0, microsecond=0) + timedelta(minutes=5)])
+    # Only a committed checkpoint can advance the cursor or retire gaps.
+    # Source chunks may be published before a process interruption, but they
+    # must never masquerade as an acknowledged progress checkpoint.
+    checkpoints = [b for b in bundles if b.get("backfill_checkpoint") is True]
+    latest_checkpoint = max(
+        checkpoints, key=lambda b: b.get("created_at", ""), default=None
+    )
+    raw_pending = latest_checkpoint.get("backfill_pending", {}) if latest_checkpoint else {}
+    if not isinstance(raw_pending, dict) or set(raw_pending) - set(PRICE_SEMANTICS):
+        raise ValueError("invalid XMarket backfill pending-source journal")
+    pending = {}
+    for source in PRICE_SEMANTICS:
+        values = raw_pending.get(source, [])
+        if not isinstance(values, list) or len(values) > 9000 or len(set(values)) != len(values):
+            raise ValueError("invalid XMarket bounded source-gap journal")
+        for close in values:
+            t = timestamp(close)
+            if t.second or t.microsecond or int(t.timestamp()) % 900:
+                raise ValueError("invalid XMarket native gap clock")
+        pending[source] = set(values)
+
+    before = (
+        timestamp(latest_checkpoint["backfill_before"])
+        if latest_checkpoint else
+        min(
+            [timestamp(b["backfill_before"]) for b in bundles if b.get("backfill_before")]
+            or [timestamp(through).replace(second=0, microsecond=0) + timedelta(minutes=5)]
+        )
+    )
     before = datetime.fromtimestamp(int(before.timestamp()) // 900 * 900, UTC)
     def collect():
         with httpx.Client(timeout=8, follow_redirects=False) as client:
-            return backfill(client, asset=asset, bundles=bundles, root=cache / "supplements",
-                            before=before, max_windows=max_windows)
+            return backfill(
+                client, asset=asset, bundles=bundles, root=cache / "supplements",
+                before=before, max_windows=max_windows, pending=pending,
+            )
     history, publications, next_before, failures = await asyncio.to_thread(collect)
     errors.extend(failures)
     newest = max(bundles, key=lambda b: b.get("created_at", ""), default={})
-    bundle = {"schema": BUNDLE_SCHEMA, "asset": asset, "samples": history,
-              "live_venues": newest.get("live_venues", []), "verification": {},
-              "backfill_before": next_before.isoformat(), "created_at": datetime.now(UTC).isoformat()}
-    if history:
-        # Split files stay under the existing 2.2 MB report import ceiling.
-        for offset in range(0, len(history), 2000):
-            doc = {**bundle, "samples": history[offset:offset + 2000]}
-            digest = hashlib.sha256(canonical(doc)).hexdigest()
-            path = cache / f"{BUNDLE_PREFIX}{asset}-backfill-{digest[:16]}.json"
-            path.write_bytes(canonical(doc))
-            if drive is not None:
-                for publication in publications:
-                    await publish(drive, publication)
-                publications = []
-                await drive.ensure_research_output(artifact=_artifact(path, len(doc["samples"])),
-                    batch_id="xmarket-inputs-" + digest[:24], kind="report")
+    bundle = {
+        "schema": BUNDLE_SCHEMA, "asset": asset, "samples": history,
+        "live_venues": newest.get("live_venues", []), "verification": {},
+        "backfill_before": next_before.isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    # Keep original provider publication before any archive checkpoint is
+    # acknowledged, even when there were no source rows in this pass.
+    if drive is not None:
+        for publication in publications:
+            await publish(drive, publication)
+    for offset in range(0, len(history), 2000):
+        doc = {**bundle, "samples": history[offset:offset + 2000]}
+        digest = hashlib.sha256(canonical(doc)).hexdigest()
+        path = cache / f"{BUNDLE_PREFIX}{asset}-backfill-{digest[:16]}.json"
+        path.write_bytes(canonical(doc))
+        if drive is not None:
+            await drive.ensure_research_output(
+                artifact=_artifact(path, len(doc["samples"])),
+                batch_id="xmarket-inputs-" + digest[:24], kind="report",
+            )
+    # Persist a bounded missing-native-window ledger as a separate, small
+    # verified report. Re-run gaps on subsequent passes, independently of new
+    # backfills. Never record missing source bars as accepted model inputs.
+    journal = {
+        **bundle, "samples": [], "backfill_checkpoint": True,
+        "backfill_pending": {
+            source: sorted(pending[source]) for source in PRICE_SEMANTICS
+        },
+        "backfill_pending_counts": {
+            source: len(pending[source]) for source in PRICE_SEMANTICS
+        },
+    }
+    checkpoint_bytes = canonical(journal)
+    if len(checkpoint_bytes) > 2_000_000:
+        raise ValueError("XMarket pending source-gap journal exceeds bounded report budget")
+    digest = hashlib.sha256(checkpoint_bytes).hexdigest()
+    path = cache / f"{BUNDLE_PREFIX}{asset}-progress-{digest[:16]}.json"
+    path.write_bytes(checkpoint_bytes)
+    if drive is not None:
+        await drive.ensure_research_output(
+            artifact=_artifact(path, 1),
+            batch_id="xmarket-inputs-" + digest[:24], kind="report",
+        )
     return combine([*bundles, bundle], errors=errors)
+
 
 
 

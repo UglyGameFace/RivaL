@@ -11,13 +11,17 @@ name: RivaL archive model weekly training
 # The GBM trains as a step in this same workflow (no separate workflow
 # file): same restored bytes, same --train-end / --test-start /
 # --trained-through, same manifests dir, per-horizon + per-step failure
-# isolation. Never on every push: weekly retrain + one-off post-export + manual dispatch only.
+# isolation. Never on ordinary pushes: weekly retrain + a tightly date-locked
+# one-off 2026-11-13 post-export recovery run + manual dispatch only.
 on:
   schedule:
     - cron: "30 7 * * 0"
-    # One-off post-export XMarket verification run: Nov 13 2026 15:17 UTC.
-    # The date gate below rejects this annual cron on any other year/date.
-    - cron: "17 15 13 11 *"
+    # Nov 13's cron did not appear in GitHub Actions after its scheduled time.
+    # The fallback uses a one-time workflow-file push on the actual date.
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/archive-model-training.yml"
   workflow_dispatch:
     inputs:
       publish:
@@ -37,8 +41,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Date-lock the one-time post-export run without modifying manual dispatch
-  # or the existing Nov 15 weekly-run exclusion.
+  # The one-time source-ready fallback runs ONLY from main on 2026-11-13
+  # when this workflow file is updated. No future push can train with this
+  # retired trigger. Manual dispatch and Sunday schedule remain unchanged.
   schedule_guard:
     runs-on: ubuntu-latest
     outputs:
@@ -52,8 +57,8 @@ jobs:
           EVENT_CRON: ${{ github.event.schedule }}
         run: |
           today="$(date -u +%F)"
-          if [[ "$EVENT_NAME" == "schedule" && "$EVENT_CRON" == "17 15 13 11 *" && "$today" != "2026-11-13" ]]; then
-            echo "One-time XMarket post-export run is expired; skip without training."
+          if [[ "$EVENT_NAME" == "push" && "$today" != "2026-11-13" ]]; then
+            echo "One-time XMarket post-export fallback expired; skip without training."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
           elif [[ "$EVENT_NAME" == "schedule" && "$EVENT_CRON" == "30 7 * * 0" && "$today" == "2026-11-15" ]]; then
             echo "Skipping the 2026-11-15 scheduled archive training."
@@ -120,7 +125,7 @@ jobs:
           train_end="$(date -u -d "-56 days" +%Y-%m-%dT00:00:00+00:00)"
           trained_through="$(date -u -d yesterday +%Y-%m-%dT23:55:00+00:00)"
           publish_flag=""
-          if [[ "${{ github.event_name }}" == "schedule" || "${{ inputs.publish }}" == "true" ]]; then
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "push" || "${{ inputs.publish }}" == "true" ]]; then
             publish_flag="--publish"
           fi
           failed=0

@@ -898,6 +898,89 @@ def test_backfill_never_requests_a_future_native_contract(tmp_path, monkeypatch)
     }
 
 
+
+def test_overlap_recovery_queries_only_missing_prospective_contracts(tmp_path, monkeypatch):
+    """Existing verified history must not consume the fixed 32-query budget."""
+    from parlay_bot.research import xmarket_history as module
+
+    at = NOW.replace(second=0, microsecond=0)
+    live = [point("polymarket", at - timedelta(minutes=15 * n)) for n in range(40)]
+    existing = [{**p, "origin": "backfill"} for p in live[:32]]
+    expected = {p["contract_id"] for p in live[32:]}
+    called = []
+
+    def collect(client, *, source, identity, root, now, fidelity=1):
+        called.append(identity["contract_id"])
+        return [{**p, "origin": "backfill"} for p in live
+                if p["contract_id"] == identity["contract_id"]], SimpleNamespace()
+
+    monkeypatch.setattr(module, "collect_contract", collect)
+    bundle = {"schema": BUNDLE_SCHEMA, "asset": "BTC", "samples": live + existing}
+    history, publications, _, errors = module.backfill(
+        None, asset="BTC", bundles=[bundle], root=tmp_path, before=at,
+        max_windows=0,
+    )
+    assert len(history) == len(publications) == 8
+    assert set(called) == expected
+    assert len(called) == len(set(called)) == 8
+    assert errors == []
+    assert all(check["status"] == "verified" for check in
+               module.compare_history(live, existing + history).values()
+               if check["raw_live_points"])
+
+
+def test_overlap_recovery_rotates_pending_contracts_not_only_newest_32(
+    tmp_path, monkeypatch,
+):
+    from parlay_bot.research import xmarket_history as module
+
+    class Clock(datetime):
+        current = NOW
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    at = NOW.replace(second=0, microsecond=0)
+    live = [point("polymarket", at - timedelta(minutes=15 * n)) for n in range(75)]
+    bundle = {"schema": BUNDLE_SCHEMA, "asset": "BTC", "samples": live}
+    visited = []
+    def collect(client, *, source, identity, root, now, fidelity=1):
+        visited[-1].append(identity["contract_id"])
+        return [], SimpleNamespace()
+
+    monkeypatch.setattr(module, "collect_contract", collect)
+    for clock in (NOW, NOW + timedelta(hours=6)):
+        Clock.current = clock
+        visited.append([])
+        _, publications, _, errors = module.backfill(
+            None, asset="BTC", bundles=[bundle], root=tmp_path, before=NOW,
+            max_windows=0,
+        )
+        assert not publications and not errors
+        assert len(visited[-1]) == 32
+    assert not (set(visited[0]) & set(visited[1]))
+    assert len(set(visited[0] + visited[1])) == 64
+
+
+def test_overlap_recovery_does_not_fake_coverage_when_provider_has_no_bars(
+    tmp_path, monkeypatch,
+):
+    from parlay_bot.research import xmarket_history as module
+
+    at = NOW.replace(second=0, microsecond=0)
+    live = [point("polymarket", at - timedelta(minutes=15 * n)) for n in range(45)]
+    bundle = {"schema": BUNDLE_SCHEMA, "asset": "BTC", "samples": live}
+    monkeypatch.setattr(module, "collect_contract",
+                        lambda *_a, **_kw: ([], SimpleNamespace()))
+    rows, _, _, errors = module.backfill(
+        None, asset="BTC", bundles=[bundle], root=tmp_path,
+        before=NOW, max_windows=0,
+    )
+    assert rows == [] and errors == []
+    assert module.compare_history(live, rows)["polymarket"]["status"] == "unverified"
+
 def test_one_failed_overlap_contract_does_not_hide_other_contracts(tmp_path, monkeypatch):
     from parlay_bot.research import xmarket_history as module
     from parlay_bot.research.free_history import HistoryImportError

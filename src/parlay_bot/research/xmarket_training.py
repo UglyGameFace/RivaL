@@ -121,6 +121,7 @@ def train_run(
         "cross_horizon_input": horizon != 15, "pm_fidelity_minutes": fidelity,
         "data_checks": market_data.get("verification", {}),
         "data_errors": market_data.get("errors", []),
+        "native_history_acquisition": market_data.get("backfill_progress", {}),
         "venue_frame_coverage": {key: {"rows": len(k),
             "first": str(k.index.min()) if len(k) else None,
             "last": str(k.index.max()) if len(k) else None}

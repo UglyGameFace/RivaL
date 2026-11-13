@@ -118,22 +118,21 @@ class ModelScoreEvidenceTests(unittest.TestCase):
         self.assertNotIn("Authorization", fetch.call_args_list[1].kwargs["headers"])
 
         with patch("evidence_board_receipt._url_json",
-                   return_value={"ok": True, "receiver": "someone_else"}):
-            with self.assertRaisesRegex(ValueError, "identity_mismatch"):
-                receiver_preflight()
+                   return_value={"ok": True, "receiver": "someone_else"}), (
+                self.assertRaisesRegex(ValueError, "identity_mismatch")):
+            receiver_preflight()
         with patch("evidence_board_receipt._url_json", side_effect=[
-                health, {"status": "accepted"}]):
-            with self.assertRaisesRegex(ValueError, "write_not_rejected"):
-                receiver_preflight()
+                health, {"status": "accepted"}]), (
+                self.assertRaisesRegex(ValueError, "write_not_rejected")):
+            receiver_preflight()
         blocked = HTTPError(
             "https://not-logged.example/ingest", 403, "forbidden",
             {"Content-Type": "text/html"}, io.BytesIO(b"DO_NOT_ECHO"),
         )
         with patch("evidence_board_receipt._url_json",
-                   side_effect=[health, blocked]):
-            with self.assertRaisesRegex(
-                    ValueError, "receiver_anonymous_receiver_http_403_non_json_upstream"):
-                receiver_preflight()
+                   side_effect=[health, blocked]), self.assertRaisesRegex(
+                ValueError, "receiver_anonymous_receiver_http_403_non_json_upstream"):
+            receiver_preflight()
 
     def test_oidc_diagnostic_returns_only_mismatch_field_names(self) -> None:
         import base64

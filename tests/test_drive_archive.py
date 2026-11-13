@@ -222,6 +222,183 @@ async def test_resumable_upload_recovers_from_transient_503(tmp_path, monkeypatc
     assert puts == [full, f"bytes */{len(payload)}", full]
 
 
+@pytest.mark.parametrize("recovery", ("committed", "absent", "partial", "status_timeout"))
+@pytest.mark.asyncio
+async def test_timed_out_drive_chunk_uses_authoritative_session_offset(
+    tmp_path, monkeypatch, recovery,
+) -> None:
+    """Never resend source bytes until the resumable session proves the offset."""
+    from parlay_bot.archive import drive as drive_module
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(drive_module.asyncio, "sleep", no_sleep)
+    payload = b"verified-original-historical-bytes"
+    path = tmp_path / "native.ndjson"
+    path.write_bytes(payload)
+    artifact = ArchiveArtifact(
+        path=path, file_name=path.name, size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        md5=hashlib.md5(payload, usedforsecurity=False).hexdigest(), row_count=1,
+    )
+    seen = []
+    completed = {
+        "id": "f1", "name": path.name, "size": str(len(payload)),
+        "md5Checksum": artifact.md5, "parents": ["staging-id"],
+    }
+    full = f"bytes 0-{len(payload) - 1}/{len(payload)}"
+    partial = f"bytes 4-{len(payload) - 1}/{len(payload)}"
+    query = f"bytes */{len(payload)}"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.host == "www.googleapis.com":
+            return httpx.Response(
+                200, headers={"Location": "https://upload.example/s"}
+            )
+        assert request.method == "PUT" and request.url.host == "upload.example"
+        seen.append((request.headers["content-range"], request.content))
+        if len(seen) == 1:
+            assert seen[-1] == (full, payload)
+            raise httpx.ReadTimeout("timed-out-committed-state-unknown", request=request)
+        if request.headers["content-range"] == query:
+            assert request.content == b""
+            if recovery == "committed":
+                return httpx.Response(200, json=completed)
+            if recovery == "status_timeout" and len(seen) == 2:
+                raise httpx.ReadTimeout("probe lost response", request=request)
+            if recovery == "partial":
+                return httpx.Response(308, headers={"Range": "bytes=0-3"})
+            return httpx.Response(308)
+        if recovery == "partial":
+            assert seen[-1] == (partial, payload[4:])
+        else:
+            assert seen[-1] == (full, payload)
+        return httpx.Response(200, json=completed)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        drive = GoogleDriveArchiveClient(
+            client_id="client", client_secret="secret", refresh_token="refresh",
+            folders=DriveArchiveFolders(
+                root="root-id", history="history-id",
+                manifests="manifests-id", staging="staging-id",
+            ), client=http, chunk_size_bytes=256 * 1024,
+        )
+        stored = await drive._upload_resumable(
+            artifact=artifact, parent_id="staging-id",
+            batch_id="native-source-verified", kind="history",
+            mime_type="application/x-ndjson",
+        )
+
+    assert stored.file_id == "f1"
+    assert seen[0] == (full, payload)
+    assert seen[1] == (query, b"")
+    if recovery == "committed":
+        assert len(seen) == 2, "already committed source bytes never resend"
+    elif recovery == "status_timeout":
+        assert [x[0] for x in seen] == [full, query, query, full]
+    else:
+        assert len(seen) == 3
+
+
+@pytest.mark.asyncio
+async def test_timed_out_drive_status_probes_fail_closed_before_reupload(
+    tmp_path, monkeypatch,
+) -> None:
+    from parlay_bot.archive import drive as drive_module
+    from parlay_bot.archive.drive import DriveArchiveError, MAX_TRANSIENT_UPLOAD_RETRIES
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(drive_module.asyncio, "sleep", no_sleep)
+    payload = b"immutable-original-bytes"
+    path = tmp_path / "BTC.ndjson"
+    path.write_bytes(payload)
+    artifact = ArchiveArtifact(
+        path=path, file_name=path.name, size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        md5=hashlib.md5(payload, usedforsecurity=False).hexdigest(), row_count=1,
+    )
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, headers={"Location": "https://upload.example/s"})
+        assert request.method == "PUT"
+        seen.append((request.headers["content-range"], request.content))
+        raise httpx.ReadTimeout("socket timeout", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        drive = GoogleDriveArchiveClient(
+            client_id="client", client_secret="secret", refresh_token="PRIVATE",
+            folders=DriveArchiveFolders(
+                root="root-id", history="history-id",
+                manifests="manifests-id", staging="staging-id",
+            ), client=http, chunk_size_bytes=256 * 1024,
+        )
+        with pytest.raises(DriveArchiveError, match="status probe recovery budget") as exc:
+            await drive._upload_resumable(
+                artifact=artifact, parent_id="staging-id",
+                batch_id="native-source-verified", kind="history",
+                mime_type="application/x-ndjson",
+            )
+    assert "PRIVATE" not in str(exc.value)
+    assert len(seen) == MAX_TRANSIENT_UPLOAD_RETRIES + 1
+    assert seen[0][1] == payload
+    assert all(data == b"" for _, data in seen[1:])
+
+
+@pytest.mark.asyncio
+async def test_drive_session_rejects_out_of_bounds_remote_offset(
+    tmp_path, monkeypatch,
+) -> None:
+    from parlay_bot.archive import drive as drive_module
+    from parlay_bot.archive.drive import DriveArchiveError
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(drive_module.asyncio, "sleep", no_sleep)
+    payload = b"native-data"
+    path = tmp_path / "native.ndjson"
+    path.write_bytes(payload)
+    artifact = ArchiveArtifact(
+        path=path, file_name=path.name, size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        md5=hashlib.md5(payload, usedforsecurity=False).hexdigest(), row_count=1,
+    )
+    puts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, headers={"Location": "https://upload.example/s"})
+        assert request.method == "PUT"
+        puts.append(request.headers["content-range"])
+        if len(puts) == 1:
+            raise httpx.ReadTimeout("lost response", request=request)
+        return httpx.Response(
+            308, headers={"Range": f"bytes=0-{len(payload) + 1000}"}
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        drive = GoogleDriveArchiveClient(
+            client_id="client", client_secret="secret", refresh_token="refresh",
+            folders=DriveArchiveFolders(
+                root="root-id", history="history-id",
+                manifests="manifests-id", staging="staging-id",
+            ), client=http, chunk_size_bytes=256 * 1024,
+        )
+        with pytest.raises(DriveArchiveError, match="out-of-bounds Range"):
+            await drive._upload_resumable(
+                artifact=artifact, parent_id="staging-id",
+                batch_id="native-source-verified", kind="history",
+                mime_type="application/x-ndjson",
+            )
+    assert len(puts) == 2, "never reupload based on an impossible remote offset"
+
+
+
 @pytest.mark.parametrize(("body", "expected"), (
     ({"error": "invalid_grant", "error_description": "Token has been expired or revoked."},
      "Google OAuth refresh failed with 400 (invalid_grant)"),

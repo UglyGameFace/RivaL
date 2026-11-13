@@ -123,6 +123,7 @@ def train_run(
     code_version: str,
     months_requested=None,
     groups_off: tuple[str, ...] = (),
+    include_research_diagnostics: bool = True,
 ) -> dict:
     """Train one (asset, horizon) artifact and gate it.
 
@@ -255,19 +256,22 @@ def train_run(
     # A separate research diagnostic must never weaken, block or select the
     # VolCal candidate's own training/promotion decision. Reuses exactly the
     # same causal source frames and chronological split; no uploaded weights.
-    try:
-        from parlay_bot.research.volatility_blend_research import evaluate_blend
+    # The independently refitted group-off candidate already serves one
+    # research purpose; don't repeat the expensive 30-day blend on its rows.
+    if include_research_diagnostics:
+        try:
+            from parlay_bot.research.volatility_blend_research import evaluate_blend
 
-        report["volatility_blend_research"] = evaluate_blend(
-            frames, horizon=horizon, train_end=train_end, test_start=test_start)
-    except Exception:  # optional research, never a serving gate
-        import logging
+            report["volatility_blend_research"] = evaluate_blend(
+                frames, horizon=horizon, train_end=train_end, test_start=test_start)
+        except Exception:  # optional research, never a serving gate
+            import logging
 
-        logging.getLogger(__name__).exception(
-            "VolCal independent volatility-blend research diagnostic failed")
-        report["volatility_blend_research"] = {
-            "status": "diagnostic_unavailable", "qualified_for_live_use": False,
-        }
+            logging.getLogger(__name__).exception(
+                "VolCal independent volatility-blend research diagnostic failed")
+            report["volatility_blend_research"] = {
+                "status": "diagnostic_unavailable", "qualified_for_live_use": False,
+            }
     if not gates_passed:
         return {"publish_kind": "report", "artifact": None, "report": report}
     doc = {

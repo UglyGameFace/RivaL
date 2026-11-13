@@ -11,8 +11,11 @@ on:
       - ".github/workflows/evidence-board-receipt.yml"
       - "tools/evidence_board_receipt.py"
       - "tools/evidence_board_github.py"
+  # A 10-minute read-only evidence cadence bounds dashboard lag without
+  # turning a website refresh into a host console/Drive API request.
+  # GitHub scheduled jobs can be delayed or skipped, so UI displays age.
   schedule:
-    - cron: "37 * * * *"
+    - cron: "7,17,27,37,47,57 * * * *"
   workflow_dispatch:
 
 permissions:

@@ -90,7 +90,15 @@ the archive trainer later restored and compared that file.
 
 The existing weekly archive entry point restores these byte-verified
 bundles. It independently queries native history for recent captured
-contracts to measure fidelity. It also discovers and backfills a bounded
+contracts to measure fidelity. **Within one asset's 5/15/60-minute
+GitHub Actions job, it performs this expensive source acquisition once**
+and reuses a content-hashed, UTC-clock-bound local training snapshot
+for the other two horizons. This reduces repeated Kalshi calls and
+keeps horizon comparisons tied to identical restored source observations;
+the cache is not a substitute for the initial Drive source verification,
+a prospective export, or independent history. A corrupt cache fails
+closed and a failed first acquisition is not cached. Separate assets and
+new trained-through clocks never share the local snapshot. It also discovers and backfills a bounded
 96 earlier native windows per asset/pass, with a saved cursor over a
 90-day maximum lookback. An incomplete window keeps its cursor for retry.
 XMarket's Kalshi overlap and backfill requests now prefer the live candlestick

@@ -61,6 +61,8 @@ class PolymarketResearch:
         self.learner = PolymarketOutcomeLearner(store)
         self.oracle_challenger = PolymarketOracleChallenger(store)
         self._learning_tasks: dict[str, asyncio.Task[bool]] = {}
+        # Thread workers must finish before the bot closes the database pool.
+        self._study_workers: set[asyncio.Task] = set()
         self._math_calls: dict[str, ContractCall] = {}
         self._initialized = False
         self._closed = False
@@ -140,7 +142,20 @@ class PolymarketResearch:
 
         async def learn() -> bool:
             try:
-                result = await asyncio.to_thread(self.study, notice)
+                worker = asyncio.create_task(
+                    asyncio.to_thread(self.study, notice),
+                    name="rival-polymarket-study-db-worker",
+                )
+                self._study_workers.add(worker)
+                def finished_study(finished: asyncio.Task) -> None:
+                    self._study_workers.discard(finished)
+                    if not finished.cancelled():
+                        # A cancelled coordinator may no longer consume this.
+                        finished.exception()
+
+                worker.add_done_callback(finished_study)
+                # Cancelling the coordinator must not orphan its database work.
+                result = await asyncio.shield(worker)
                 if cache_call and result is not None and not self._closed:
                     self._math_calls[notice.slug] = ContractCall(
                         slug=notice.slug, asset=notice.asset, horizon=notice.horizon,
@@ -516,4 +531,9 @@ class PolymarketResearch:
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
+        # asyncio.to_thread cannot stop an already-running DB operation. Wait
+        # for the owned workers before the caller shuts down the store.
+        if self._study_workers:
+            await asyncio.gather(*tuple(self._study_workers), return_exceptions=True)
         self._pending.clear()
+        self._learning_tasks.clear()

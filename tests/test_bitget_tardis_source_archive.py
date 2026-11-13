@@ -140,6 +140,86 @@ async def test_public_endpoint_raw_gzip_and_private_drive_readbacks(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("destination", [
+    "https://datasets.tardis.dev/v1/download/123.csv.gz",
+    "https://cdn.tardis.dev/objects/signed/BTCUSDT.csv.gz",
+    "https://tardis-bucket.s3.amazonaws.com/BTCUSDT.csv.gz?token=secret",
+    "https://d123456abcdef.cloudfront.net/signed/BTCUSDT.csv.gz",
+])
+async def test_documented_public_sample_redirects_are_bounded_and_source_verified(
+    tmp_path, destination,
+):
+    original = gzip.compress(COLUMNS["trades"].encode(), mtime=0)
+    requests = []
+
+    def route(req):
+        requests.append(str(req.url))
+        if req.url.host == "datasets.tardis.dev" and req.url.path.startswith("/v1/bitget-futures/"):
+            return httpx.Response(302, headers={"Location": destination})
+        assert str(req.url) == destination
+        return httpx.Response(200, content=original,
+                              headers={"Content-Type": "application/gzip"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as client:
+        saved, source_url = await obtain(
+            client, asset="BTC", family="trades", month="2024-12",
+            root=tmp_path, now=NOW,
+        )
+    assert len(requests) == 2
+    assert source_url == validate_selection(
+        asset="BTC", family="trades", month="2024-12", now=NOW,
+    )
+    assert saved.read_bytes() == original
+    assert verify_gzip_csv(saved, asset="BTC", family="trades",
+                           month="2024-12", now=NOW)["source_rows"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("destination", [
+    "http://datasets.tardis.dev/unsafe",
+    "https://localhost/internal",
+    "https://127.0.0.1/internal",
+    "https://not-tardis.example/data",
+    "https://datasets.tardis.dev.evil.example/data",
+    "https://test.amazonaws.com:8443/unsafe",
+    "https://user:pass@datasets.tardis.dev/private",
+])
+async def test_tardis_redirect_fails_closed_before_unsafe_get(tmp_path, destination):
+    seen = []
+
+    def route(req):
+        seen.append(str(req.url))
+        return httpx.Response(302, headers={"Location": destination})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as client:
+        with pytest.raises(HistoryImportError, match="untrusted origin"):
+            await obtain(
+                client, asset="BTC", family="trades",
+                month="2024-12", root=tmp_path, now=NOW,
+            )
+    assert len(seen) == 1
+    assert not list(tmp_path.glob("*.part"))
+
+
+@pytest.mark.asyncio
+async def test_dataset_redirect_cycle_cannot_loop_or_escape_byte_budget(tmp_path):
+    seen = []
+
+    def route(req):
+        seen.append(str(req.url))
+        return httpx.Response(
+            302, headers={"Location": "/v1/another/" + str(len(seen))},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as client:
+        with pytest.raises(HistoryImportError, match="redirected too often"):
+            await obtain(client, asset="BTC", family="trades", month="2024-12",
+                         root=tmp_path, now=NOW)
+    assert len(seen) == 3
+    assert not list(tmp_path.glob("*.part"))
+
+
+@pytest.mark.asyncio
 async def test_redirect_or_access_restriction_does_not_bypass_site(tmp_path):
     for code in (302, 403, 451):
         def route(_, status=code):

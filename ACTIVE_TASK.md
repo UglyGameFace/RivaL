@@ -1,3 +1,13 @@
+## 2026-11-12 — ZIP-derived VolCal group evidence (after XMarket repair)
+
+- **Objective:** Retain the already-merged native XMarket acquisition repairs (#549, #550); next evaluate the four pre-existing RivaL-native ZIP-derived VolCal feature groups without cross-asset score confusion. Branch `feat/volcal-paired-zip-group-evidence-20261112` based on `main@5e89812`. No overlapping PR at branch creation.
+- **Confirmed gap:** The existing `scheduled_variants.py` grid places full VolCal BTC, no-vol ETH, no-compression SOL, no-volume XRP and no-DC BTC at different market scopes. Comparing their absolute hit/Brier results would conflate the feature effect with asset difficulty and future outcomes.
+- **Research implementation:** Each normal weekly VolCal 5/15/60 asset run fits a *single*, deterministic UTC-week rotated ablation on **the same source frames, target horizon, purged train/validation/test dates and identical row populations**. Feature group and source clock are frozen before looking at outcomes. The paired test Brier gain difference is descriptive, not a significance test or economic edge. Group-off model files are discarded; only existing full model gates/publication apply, with independent ablation errors isolated to its report. Four weeks of genuine executions are needed to sample all groups on each asset/horizon; model development continues concurrently under existing safety gates.
+- **Verification:** Exact-head targeted/full CI, merge-main/Discloud host verification and first real source-backed weekly `paired_feature_ablation_research` reports required. No laboratory results are claimed from synthetic tests, no accepted winner automatically selected, and no weakened 150/21d/80%-coverage/after-cost gates.
+- **Next:** Source-exact prospective shadow comparisons and independently validated fee/book economics, followed by repairing the Evidence Board signed HTTP publication failure. See [paired group research](docs/VOLCAL_PAIRED_RESEARCH.md).
+
+---
+
 ## 2026-11-12 — XMarket per-asset weekly source consistency
 
 - **Objective:** After PR #549 restored Kalshi live/archived native history and bounded HTTP 429 retry, remove three repeated expensive market-history restores per asset's 5/15/60-minute archive job. This reduces pressure on the existing provider quotas without sacrificing correctness. Branch `fix/xmarket-asset-scoped-training-evidence-20261112`, starting from merged `main@1b41ca8`.

@@ -958,7 +958,7 @@ def test_overlap_recovery_rotates_pending_contracts_not_only_newest_32(
             None, asset="BTC", bundles=[bundle], root=tmp_path, before=NOW,
             max_windows=0,
         )
-        assert not publications and not errors
+        assert len(publications) == 32 and not errors
         assert len(visited[-1]) == 32
     assert not (set(visited[0]) & set(visited[1]))
     assert len(set(visited[0] + visited[1])) == 64

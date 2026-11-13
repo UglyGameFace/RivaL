@@ -366,7 +366,6 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
         items = missing_overlap_identities(
             bundles, asset=asset, source=source, now=now, limit=32
         )
-        consecutive_failures = 0
         for identity in items:
             try:
                 rows, publication = collect_contract(
@@ -374,14 +373,15 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
                 )
                 history.extend(rows)
                 publications.append(publication)
-                consecutive_failures = 0
             except (httpx.HTTPError, ValueError, HistoryImportError) as exc:
                 failure = source_failure(
                     source, "overlap", exc, window_close=identity["closes_at"]
                 )
                 errors.append(failure)
-                consecutive_failures += 1
-                if failure["retryable"] or consecutive_failures >= 3:
+                # Missing exact contracts must not block all remaining
+                # prospective overlap repairs. Keep the 32-contract cap;
+                # stop immediately on provider timeout/rate-limit instead.
+                if failure["retryable"]:
                     break
 
     last_closed = datetime.fromtimestamp(int(now.timestamp()) // 900 * 900, UTC)

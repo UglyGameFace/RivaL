@@ -147,7 +147,13 @@ class PolymarketResearch:
                     name="rival-polymarket-study-db-worker",
                 )
                 self._study_workers.add(worker)
-                worker.add_done_callback(self._study_workers.discard)
+                def finished_study(finished: asyncio.Task) -> None:
+                    self._study_workers.discard(finished)
+                    if not finished.cancelled():
+                        # A cancelled coordinator may no longer consume this.
+                        finished.exception()
+
+                worker.add_done_callback(finished_study)
                 # Cancelling the coordinator must not orphan its database work.
                 result = await asyncio.shield(worker)
                 if cache_call and result is not None and not self._closed:

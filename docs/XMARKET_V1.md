@@ -86,8 +86,9 @@ original capture timestamp and contemporaneous live-venue set, rather than
 silently changing the content address when the clock or active venues change.
 The staged payload is retired in the same database transaction as the
 successful verified export receipt; it is not another independent source,
-training system or long-lived duplicate archive. **This export now runs independently before
-the larger records-backup job**: a failed, slow or timed-out ordinary records
+training system or long-lived duplicate archive.
+
+**This export now runs independently before the larger records-backup job**: a failed, slow or timed-out ordinary records
 backup cannot suppress the prospective native-source publication in that
 cycle. The original memory-pressure guard still avoids running either export
 under pressure, and failed exports retry on the existing hourly cycle.

@@ -651,6 +651,216 @@ def test_historical_kalshi_incomplete_pages_fail_closed(monkeypatch):
     assert seen == [None, "next"]
 
 
+
+def test_missing_native_windows_advance_and_remain_repairable(tmp_path, monkeypatch):
+    from parlay_bot.research import xmarket_history as module
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+
+    monkeypatch.setattr(module, "datetime", FrozenDateTime)
+    close = datetime.fromtimestamp(int(NOW.timestamp()) // 900 * 900, UTC)
+    previous = close - timedelta(minutes=15)
+    pending = {"polymarket": set(), "kalshi": set()}
+    collected = []
+    available = {previous}
+    def gamma(client, url, params, **kwargs):
+        opened = close - timedelta(minutes=15)
+        if opened.isoformat() in url:
+            raise AssertionError("unexpected source URL")
+        return {"found": True}
+    def identity(event, *, asset, opens):
+        if opens + timedelta(minutes=15) not in available:
+            raise ValueError("exact native contract absent")
+        row = point("polymarket", opens + timedelta(minutes=5), asset=asset)
+        return {k: row[k] for k in (
+            "asset", "contract_id", "opens_at", "closes_at", "token_id", "slug"
+        )}
+    def kalshi(client, url, params, **kwargs):
+        candidate = previous if params.get("max_close_ts") == int(previous.timestamp()) + 1 else close
+        if candidate not in available:
+            return {"markets": []}
+        start = candidate - timedelta(minutes=15)
+        return {"markets": [{
+            "ticker": "KXBTC15M-" + start.strftime("%y%m%d%H%M"),
+            "open_time": start.isoformat(), "close_time": candidate.isoformat(),
+        }]}
+    def collect(client, *, source, identity, root, now, fidelity=1):
+        collected.append(source)
+        return [point(source, module.timestamp(identity["opens_at"]) + timedelta(minutes=5),
+                      origin="backfill")], SimpleNamespace()
+
+    monkeypatch.setattr(module, "_json_get", gamma)
+    monkeypatch.setattr(module, "_identity_pm", identity)
+    monkeypatch.setattr(module, "kalshi_public_json", kalshi)
+    monkeypatch.setattr(module, "_archived_kalshi_windows", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(module, "collect_contract", collect)
+
+    history, publications, cursor, errors = module.backfill(
+        None, asset="BTC", bundles=[], root=tmp_path, before=NOW,
+        max_windows=2, pending=pending, retry_gaps=0,
+    )
+    assert cursor == close - timedelta(minutes=30), (
+        "an absent contract must not permanently strand earlier native windows"
+    )
+    assert len(history) == len(publications) == 2
+    assert collected == ["polymarket", "kalshi"]
+    assert pending == {
+        "polymarket": {close.isoformat()}, "kalshi": {close.isoformat()}
+    }
+    assert {(e["source"], e["window_close"]) for e in errors} == {
+        ("polymarket", close.isoformat()), ("kalshi", close.isoformat())
+    }
+
+    # An independently reverified historical window clears only its own
+    # source-specific outstanding gaps, without altering a training label.
+    available.add(close)
+    _, _, same_cursor, repaired_errors = module.backfill(
+        None, asset="BTC", bundles=[], root=tmp_path, before=cursor,
+        max_windows=0, pending=pending, retry_gaps=2,
+    )
+    assert same_cursor == cursor and repaired_errors == []
+    assert pending == {"polymarket": set(), "kalshi": set()}
+
+
+def test_rate_limit_preserves_cursor_and_records_missing_identity(tmp_path, monkeypatch):
+    from parlay_bot.research import xmarket_history as module
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+
+    monkeypatch.setattr(module, "datetime", FrozenDateTime)
+    close = datetime.fromtimestamp(int(NOW.timestamp()) // 900 * 900, UTC)
+    def transient(client, url, params, **kwargs):
+        response = httpx.Response(429, request=httpx.Request("GET", url))
+        raise httpx.HTTPStatusError("rate limited", request=response.request,
+                                    response=response)
+    monkeypatch.setattr(module, "_json_get", transient)
+    monkeypatch.setattr(module, "kalshi_public_json", transient)
+    pending = {"polymarket": set(), "kalshi": set()}
+    _, _, cursor, errors = module.backfill(
+        None, asset="BTC", bundles=[], root=tmp_path, before=NOW,
+        max_windows=5, pending=pending, retry_gaps=0,
+    )
+    assert cursor == close
+    assert len(errors) == 2
+    assert all(e["retryable"] and e["failure_code"] == "http_429" for e in errors)
+    assert all(gaps == {close.isoformat()} for gaps in pending.values())
+
+
+def test_gap_rechecks_rotate_across_six_hour_runs_and_stop_on_rate_limit(
+    tmp_path, monkeypatch,
+):
+    from parlay_bot.research import xmarket_history as module
+
+    class Clock(datetime):
+        current = NOW
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    close = datetime.fromtimestamp(int(NOW.timestamp()) // 900 * 900, UTC)
+    old = {
+        (close - timedelta(minutes=15 * (i + 1))).isoformat()
+        for i in range(12)
+    }
+    pending = {"polymarket": set(old), "kalshi": set(old)}
+
+    def absent(*args, **kwargs):
+        raise ValueError("source day absent")
+
+    monkeypatch.setattr(module, "_json_get", absent)
+    monkeypatch.setattr(module, "kalshi_public_json", absent)
+    runs = []
+    for now in (NOW, NOW + timedelta(hours=6)):
+        Clock.current = now
+        _, _, _, failures = module.backfill(
+            None, asset="BTC", bundles=[], root=tmp_path, before=NOW,
+            max_windows=0, pending=pending, retry_gaps=4,
+        )
+        runs.append({(x["source"], x["window_close"]) for x in failures})
+        assert len(failures) == 4
+    assert not (runs[0] & runs[1]), "rechecks must move by an entire bounded batch"
+    assert all(pending[source] == old for source in pending)
+
+    count = []
+    def throttle(client, url, params, **kwargs):
+        count.append(url)
+        response = httpx.Response(429, request=httpx.Request("GET", url))
+        raise httpx.HTTPStatusError("rate limit", request=response.request,
+                                    response=response)
+    monkeypatch.setattr(module, "_json_get", throttle)
+    monkeypatch.setattr(module, "kalshi_public_json", throttle)
+    _, _, _, failures = module.backfill(
+        None, asset="BTC", bundles=[], root=tmp_path, before=NOW,
+        max_windows=0, pending=pending, retry_gaps=12,
+    )
+    assert len(count) == 1
+    assert len(failures) == 1 and failures[0]["retryable"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_checkpoint_persists_zero_row_progress_and_gap_recovery(
+    tmp_path, monkeypatch,
+):
+    from parlay_bot.research import xmarket_history as module
+
+    now = NOW.replace(second=0, microsecond=0)
+    checkpoints, observed, calls = [], [], []
+    class Drive:
+        async def read_verified_research_reports(self, **kwargs):
+            return [(str(i), doc) for i, doc in enumerate(checkpoints)], None
+        async def ensure_research_output(self, **kwargs):
+            doc = kwargs["artifact"].path.read_bytes()
+            checkpoints.append(doc)
+            return SimpleNamespace(file_id=str(len(checkpoints)))
+
+    def acquire(client, *, asset, bundles, root, before, max_windows, pending,
+                retry_gaps=12, days=90):
+        calls.append(before)
+        observed.append({s: sorted(pending[s]) for s in pending})
+        if len(calls) == 1:
+            pending["kalshi"].add(before.isoformat())
+        else:
+            pending["kalshi"].clear()
+        return [], [], before - timedelta(minutes=15), []
+
+    monkeypatch.setattr(module, "backfill", acquire)
+    drive = Drive()
+    await module.weekly_inputs(drive, asset="BTC", through=now,
+                               cache=tmp_path / "cache", max_windows=1)
+    # An unacknowledged local checkpoint (e.g. after failed Drive upload)
+    # cannot override a previously read-back, verified Drive cursor.
+    poison = {
+        "schema": BUNDLE_SCHEMA, "asset": "BTC", "samples": [],
+        "created_at": (now + timedelta(days=1)).isoformat(),
+        "backfill_checkpoint": True,
+        "backfill_before": (now - timedelta(days=60)).isoformat(),
+        "backfill_pending": {"polymarket": [], "kalshi": []},
+    }
+    (tmp_path / "cache" / "xmarket-inputs-BTC-local-unverified.json"
+     ).write_text(json.dumps(poison))
+    await module.weekly_inputs(drive, asset="BTC", through=now,
+                               cache=tmp_path / "cache", max_windows=1)
+    assert calls[1] == calls[0] - timedelta(minutes=15)
+    assert observed == [
+        {"polymarket": [], "kalshi": []},
+        {"polymarket": [], "kalshi": [calls[0].isoformat()]},
+    ]
+    assert len(checkpoints) == 2, "checkpoint even when source rows are absent"
+    assert all(json.loads(p)["backfill_checkpoint"] is True for p in checkpoints)
+    assert json.loads(checkpoints[1])["backfill_pending"] == {
+        "polymarket": [], "kalshi": []
+    }
+
+
+
 def test_backfill_never_requests_a_future_native_contract(tmp_path, monkeypatch):
     from parlay_bot.research import xmarket_history as module
     from parlay_bot.research.free_history import HistoryImportError
@@ -671,14 +881,21 @@ def test_backfill_never_requests_a_future_native_contract(tmp_path, monkeypatch)
 
     monkeypatch.setattr(module, "_json_get", provider)
     monkeypatch.setattr(module, "kalshi_public_json", provider)
+    pending = {"polymarket": set(), "kalshi": set()}
     _, _, cursor, errors = backfill(
         None, asset="BTC", bundles=[], root=tmp_path,
-        before=NOW + timedelta(hours=2), max_windows=1)
+        before=NOW + timedelta(hours=2), max_windows=1, pending=pending)
     expected = datetime.fromtimestamp(int(NOW.timestamp()) // 900 * 900, UTC)
-    assert cursor == expected
+    # The newly missing *closed* window becomes an explicit retryable gap,
+    # while the cursor can advance exactly one window, never into the future.
+    assert cursor == expected - timedelta(minutes=15)
     assert len(calls) == 3  # One PM lookup and the bounded live/archive Kalshi pair
     assert {e["source"] for e in errors} == {"polymarket", "kalshi"}
     assert all(e["window_close"] == expected.isoformat() for e in errors)
+    assert pending == {
+        "polymarket": {expected.isoformat()},
+        "kalshi": {expected.isoformat()},
+    }
 
 
 def test_one_failed_overlap_contract_does_not_hide_other_contracts(tmp_path, monkeypatch):

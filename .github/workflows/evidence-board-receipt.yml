@@ -39,6 +39,8 @@ jobs:
           python-version: "3.11"
       - name: Validate receipt parsing and safety invariants
         run: python -m unittest discover -s tests -p 'test_evidence_board_receipt.py'
+      - name: Verify Cloudflare receiver reachability and anonymous-write rejection
+        run: python -c "import sys;sys.path.insert(0,'tools');from evidence_board_receipt import receiver_preflight;receiver_preflight()"
       - name: Collect host, database, and private Drive evidence; publish signed summary
         env:
           GITHUB_TOKEN: ${{ github.token }}

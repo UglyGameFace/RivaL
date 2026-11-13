@@ -25,6 +25,44 @@ class ReceiptTests(unittest.TestCase):
         self.assertIsNone(host["xmarket_shadow_rows"])
         self.assertIsNone(db["qualified_paper_scopes"])
         self.assertIsNone(db["weight_updates_observed"])
+        self.assertEqual(host["xmarket_stage"], "read_unavailable")
+        self.assertIsNone(host["xmarket_exports"])
+
+    def test_export_chain_preserves_known_zero_and_discards_private_ids(self) -> None:
+        host, _ = summarize_host({"xmarket": {
+            "status": "waiting_for_completed_day_export", "export_coverage": {
+                "published": [{"asset": "BTC", "exported_days": 1,
+                               "latest_exported_day": "2026-11-12", "drive_file_id": "PRIVATE"}],
+                "pending_by_asset": [{"asset": "ETH", "days": 1}],
+                "recent_completed_days_pending": 1,
+                "eligible_before": "2026-11-13T00:00:00+00:00",
+                "database_password": "PRIVATE",
+            }}})
+        self.assertEqual(host["xmarket_stage"], "waiting_for_completed_day_export")
+        exports = host["xmarket_exports"]
+        self.assertEqual(exports["recent_completed_days_pending"], 1)
+        self.assertEqual(exports["published"][0]["latest_exported_day"], "2026-11-12")
+        self.assertEqual(exports["pending_by_asset"], [{"asset": "ETH", "days": 1}])
+        self.assertNotIn("PRIVATE", str(host))
+        self.assertTrue(exports["does_not_prove_independent_drive_restore"])
+
+    def test_source_and_fit_failures_remain_actionable(self) -> None:
+        doc = {"schema": "rival-xmarket-model-v1", "asset": "BTC",
+               "horizon_minutes": 5, "training_status": "blocked", "data_checks": {
+                   "polymarket": {"status": "unverified", "blocked_reason": "insufficient_exact_pairs"},
+                   "kalshi": {"status": "verified"}}}
+        self.assertEqual(summarize_xmarket_report(doc, None)["reason"], "insufficient_exact_pairs")
+        doc["data_checks"] = {}
+        doc["gate_failures"] = ["split too small: train=0 val=0 test=12"]
+        self.assertEqual(summarize_xmarket_report(doc, None)["reason"], "insufficient_training_split")
+        doc["evaluation_status"] = "held-out evaluated"
+        doc["gates_passed"] = False
+        self.assertEqual(summarize_xmarket_report(doc, None)["status"], "rejected")
+        doc["gates_passed"] = True
+        result = summarize_xmarket_report(doc, None)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["reason"], "offline_gates_passed")
+        self.assertNotIn("after_cost_qualified", result)
 
     def test_recent_online_weight_change_is_not_prediction_edge(self) -> None:
         host, db = summarize_host({

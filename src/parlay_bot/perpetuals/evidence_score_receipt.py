@@ -13,6 +13,9 @@ from datetime import UTC, datetime, timedelta
 MARKER = "RIVAL_PAIRED_SCORE_RECEIPT="
 MODEL = "prospective-logistic-persistent-v3"
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
+HORIZONS = (5, 15, 60)
+SAMPLE_LIMIT_PER_SCOPE = 500
+SAMPLING_POLICY = "per-asset-horizon-v2"
 
 
 def summarize_rows(asset: str, rows: list[dict]) -> list[dict]:
@@ -42,7 +45,7 @@ def summarize_rows(asset: str, rows: list[dict]) -> list[dict]:
     for key, (issued, model, baseline) in unique.items():
         scores[key[3]].append((model, baseline))
     results = []
-    for horizon in (5, 15, 60):
+    for horizon in HORIZONS:
         pairs = scores.get(horizon, [])
         if not pairs:
             continue
@@ -53,8 +56,38 @@ def summarize_rows(asset: str, rows: list[dict]) -> list[dict]:
             "baseline_brier": round(sum(x[1] for x in pairs) / n, 6),
             "sample_bounded": True, "after_cost_qualified": False,
             "model_version": MODEL,
+            "sampling_policy": SAMPLING_POLICY,
+            "unique_target_windows": len({key[4] for key in unique if key[3] == horizon}),
+            "venue_count": len({key[0] for key in unique if key[3] == horizon}),
         })
     return results
+
+
+def _scope_rows(conn, asset: str, horizon: int, now: datetime) -> list[dict]:
+    """Bound each asset/horizon separately; busy horizons cannot hide others.
+
+    The asset/horizon/issuance index bounds this read. Venue observations
+    remain descriptive source pairs, not independent trades or outcomes.
+    """
+    if asset not in ASSETS or horizon not in HORIZONS:
+        raise ValueError("unsupported scoring scope")
+    result = conn.execute(
+        """SELECT venue,contract,quote,horizon_minutes,issued_at,
+                  target_opened_at,model_brier,baseline_brier
+           FROM perp_forward_audit
+           WHERE asset=? AND horizon_minutes=? AND model_version=?
+             AND issued_at>=? AND issued_at<=?
+             AND settled_at IS NOT NULL AND settled_at<=?
+             AND outcome_up IN (0,1)
+             AND model_brier BETWEEN 0 AND 1
+             AND baseline_brier BETWEEN 0 AND 1
+             AND issued_at < target_opened_at
+           ORDER BY issued_at DESC,venue,contract,quote,target_opened_at
+           LIMIT ?""",
+        (asset, horizon, MODEL, (now - timedelta(hours=24)).isoformat(),
+         now.isoformat(), now.isoformat(), SAMPLE_LIMIT_PER_SCOPE),
+    ).fetchall()
+    return [dict(row) for row in result]
 
 
 def read_scores() -> dict:
@@ -73,40 +106,29 @@ def read_scores() -> dict:
     failures = 0
     try:
         for asset in ASSETS:
-            try:
-                with store.connect() as conn:
-                    # Uses the existing asset + model_version + issuance index.
-                    exists = conn.execute(
-                        "SELECT to_regclass(?) AS tab", ("perp_forward_audit",)
-                    ).fetchone()["tab"]
-                    if not exists:
-                        return {"status": "unavailable",
-                                "reason": "table_not_initialized", "scopes": []}
-                    result = conn.execute(
-                        """SELECT venue,contract,quote,horizon_minutes,issued_at,
-                                  target_opened_at,model_brier,baseline_brier
-                           FROM perp_forward_audit
-                           WHERE asset=? AND model_version=?
-                             AND issued_at>=? AND issued_at<=?
-                             AND settled_at IS NOT NULL
-                             AND outcome_up IN (0,1)
-                             AND model_brier BETWEEN 0 AND 1
-                             AND baseline_brier BETWEEN 0 AND 1
-                             AND issued_at < target_opened_at
-                           ORDER BY issued_at DESC LIMIT 500""",
-                        (asset, MODEL, (now - timedelta(hours=24)).isoformat(),
-                         now.isoformat()),
-                    ).fetchall()
-                scopes.extend(summarize_rows(asset, [dict(x) for x in result]))
-            except Exception:  # noqa: BLE001 - optional isolated read must fail closed
-                failures += 1
+            for horizon in HORIZONS:
+                try:
+                    with store.connect() as conn:
+                        exists = conn.execute(
+                            "SELECT to_regclass(?) AS tab", ("perp_forward_audit",)
+                        ).fetchone()["tab"]
+                        if not exists:
+                            return {"status": "unavailable",
+                                    "reason": "table_not_initialized", "scopes": []}
+                        rows = _scope_rows(conn, asset, horizon, now)
+                    scopes.extend(summarize_rows(asset, rows))
+                except Exception:  # noqa: BLE001 - isolate each asset/horizon read
+                    failures += 1
         return {
             "status": "observed" if scopes and not failures else
                       "partial" if scopes else "unavailable" if failures else "no_pairs",
             "source": "postgres_perp_forward_audit",
             "captured_at": now.isoformat(),
-            "window_hours": 24, "sample_limit_per_asset": 500,
-            "failed_assets": failures, "scopes": scopes,
+            "window_hours": 24, "sample_limit_per_scope": SAMPLE_LIMIT_PER_SCOPE,
+            "expected_scopes": len(ASSETS) * len(HORIZONS),
+            "failed_scopes": failures, "scopes": scopes,
+            "sample_unit": "venue_contract_target",
+            "sampling_policy": SAMPLING_POLICY,
             "proper_scoring": "brier_lower_is_better",
             "after_cost_qualified": False,
             "no_statistical_superiority_claim": True,

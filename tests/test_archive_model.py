@@ -431,14 +431,19 @@ def test_dry_run_cli_writes_model_and_report(tmp_path):
     assert validate(doc)["family"] == "archive_v1"
 
 
-def test_workflow_yaml_is_weekly_and_manual_dispatch_only():
+def test_workflow_yaml_is_weekly_manual_and_date_locked_fallback_only():
     # No PyYAML in the research venv: check the workflow text directly.
     text = (
         Path(__file__).resolve().parents[1] / ".github/workflows/archive-model-training.yml"
     ).read_text()
     assert 'schedule:\n    - cron: "30 7 * * 0"' in text
     assert "workflow_dispatch:" in text
-    assert "on:\n  push" not in text and "\n  push:" not in text
+    # A single workflow-file-only main push on 2026-11-13 replaces the
+    # missed one-time scheduled run. No arbitrary source change trains models.
+    assert ('  push:\n    branches: [main]\n    paths:\n'
+            '      - ".github/workflows/archive-model-training.yml"') in text
+    assert '17 15 13 11 *' not in text
+    assert '"$EVENT_NAME" == "push" && "$today" != "2026-11-13"' in text
     assert "runs-on: ubuntu-latest" in text
     assert "timeout-minutes: 240" in text
     assert "cancel-in-progress: false" in text

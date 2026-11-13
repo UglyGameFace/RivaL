@@ -452,18 +452,24 @@ class GoogleDriveArchiveClient:
                     raise DriveArchiveError("Archive file ended before expected size")
 
                 end = offset + len(chunk) - 1
-                upload = await self._client.put(
-                    session_url,
-                    content=chunk,
-                    headers={
-                        "Content-Length": str(len(chunk)),
-                        "Content-Range": (
-                            f"bytes {offset}-{end}/{artifact.size_bytes}"
-                        ),
-                    },
-                )
+                try:
+                    upload = await self._client.put(
+                        session_url,
+                        content=chunk,
+                        headers={
+                            "Content-Length": str(len(chunk)),
+                            "Content-Range": (
+                                f"bytes {offset}-{end}/{artifact.size_bytes}"
+                            ),
+                        },
+                    )
+                except httpx.TransportError:
+                    # A timed-out PUT may have *fully committed* remotely.
+                    # Never resend those bytes until Drive confirms its
+                    # authoritative resumable-session offset.
+                    upload = None
 
-                if upload.status_code == 308:
+                if upload is not None and upload.status_code == 308:
                     received = upload.headers.get("Range")
                     if received and "-" in received:
                         try:
@@ -474,41 +480,69 @@ class GoogleDriveArchiveClient:
                             ) from exc
                     else:
                         offset = end + 1
+                    if offset < 0 or offset > artifact.size_bytes:
+                        raise DriveArchiveError(
+                            "Drive resumable upload returned out-of-bounds Range"
+                        )
                     continue
 
-                if upload.status_code in TRANSIENT_UPLOAD_STATUSES:
-                    # Google's documented recovery: wait, ask the session how
-                    # many bytes it holds, and resume from there.
+                if upload is None or upload.status_code in TRANSIENT_UPLOAD_STATUSES:
+                    # Both HTTP 5xx and transport errors have ambiguous commit
+                    # state. Query the existing session before any further
+                    # source bytes are sent; a 200 response may mean the
+                    # *entire* original PUT finished despite its timeout.
                     transient_retries += 1
                     if transient_retries > MAX_TRANSIENT_UPLOAD_RETRIES:
                         raise DriveArchiveError(
-                            f"Drive resumable upload failed with {upload.status_code} "
-                            f"after {MAX_TRANSIENT_UPLOAD_RETRIES} retries"
+                            "Drive resumable upload recovery budget exhausted"
                         )
-                    await asyncio.sleep(2 ** transient_retries)
-                    status = await self._client.put(
-                        session_url, content=b"",
-                        headers={"Content-Length": "0",
-                                 "Content-Range": f"bytes */{artifact.size_bytes}"},
-                    )
-                    if status.status_code == 308:
-                        received = status.headers.get("Range")
+                    while True:
+                        await asyncio.sleep(2 ** transient_retries)
                         try:
-                            offset = (int(received.rsplit("-", 1)[1]) + 1
-                                      if received and "-" in received else 0)
-                        except ValueError as exc:
-                            raise DriveArchiveError(
-                                "Drive resumable upload returned invalid Range header"
-                            ) from exc
-                        continue
-                    if status.status_code in {200, 201}:
-                        upload = status
-                    elif status.status_code in TRANSIENT_UPLOAD_STATUSES:
-                        continue
-                    else:
+                            status = await self._client.put(
+                                session_url, content=b"",
+                                headers={
+                                    "Content-Length": "0",
+                                    "Content-Range": f"bytes */{artifact.size_bytes}",
+                                },
+                            )
+                        except httpx.TransportError:
+                            status = None
+                        if status is None or status.status_code in TRANSIENT_UPLOAD_STATUSES:
+                            # An ambiguous status probe cannot authorize a
+                            # repeat upload. Retry only the empty probe, within
+                            # the same bounded budget.
+                            transient_retries += 1
+                            if transient_retries > MAX_TRANSIENT_UPLOAD_RETRIES:
+                                raise DriveArchiveError(
+                                    "Drive resumable status probe recovery budget exhausted"
+                                )
+                            continue
+                        if status.status_code == 308:
+                            received = status.headers.get("Range")
+                            try:
+                                next_offset = (
+                                    int(received.rsplit("-", 1)[1]) + 1
+                                    if received and "-" in received else 0
+                                )
+                            except ValueError as exc:
+                                raise DriveArchiveError(
+                                    "Drive resumable upload returned invalid Range header"
+                                ) from exc
+                            if not 0 <= next_offset <= artifact.size_bytes:
+                                raise DriveArchiveError(
+                                    "Drive resumable upload returned out-of-bounds Range"
+                                )
+                            offset = next_offset
+                            break
+                        if status.status_code in {200, 201}:
+                            upload = status
+                            break
                         raise DriveArchiveError(
                             f"Drive resumable upload status failed with {status.status_code}"
                         )
+                    if status.status_code == 308:
+                        continue
 
                 if upload.status_code not in {200, 201}:
                     raise DriveArchiveError(

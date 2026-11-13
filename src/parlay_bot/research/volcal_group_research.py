@@ -44,10 +44,10 @@ def scheduled_group(*, asset: str, trained_through) -> str:
 def _split_metrics(report: dict) -> tuple[dict, dict, dict]:
     evaluation = report.get("evaluation")
     if not isinstance(evaluation, dict):
-        raise ValueError("missing VolCal held-out evaluation")
+        raise TypeError("missing VolCal held-out evaluation")
     validation, test = evaluation.get("validation"), evaluation.get("test")
     if not isinstance(validation, dict) or not isinstance(test, dict):
-        raise ValueError("VolCal test or validation evidence missing")
+        raise TypeError("VolCal test or validation evidence missing")
     for stage in (validation, test):
         if (type(stage.get("rows")) is not int or stage["rows"] <= 0
                 or type(stage.get("days")) is not int or stage["days"] <= 0

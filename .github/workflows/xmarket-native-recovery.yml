@@ -1,0 +1,79 @@
+name: XMarket verified native history recovery
+
+# Recover original native contract evidence independently of model fitting.
+# Serialize with archive training so both workflows never advance the same
+# Drive-backed source cursor concurrently.
+on:
+  schedule:
+    - cron: "15 9 * * *"
+  workflow_dispatch:
+    inputs:
+      asset:
+        description: "Asset to recover (empty = all four)"
+        type: choice
+        options: ["", BTC, ETH, SOL, XRP]
+        default: ""
+      max_windows:
+        description: "Bounded new 15-minute windows per asset (0..384)"
+        type: number
+        default: 192
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-archive-model-training
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    if: ${{ github.event_name == 'schedule' || inputs.asset == '' || inputs.asset == matrix.asset }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]
+      fail-fast: false
+      max-parallel: 1
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install native recovery dependencies
+        run: python -m pip install -e ".[ml-research]"
+      - name: Recover verified native source windows
+        shell: bash
+        env:
+          INPUT_MAX_WINDOWS: ${{ inputs.max_windows }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          windows="${INPUT_MAX_WINDOWS:-192}"
+          if ! [[ "$windows" =~ ^[0-9]+$ ]] || (( windows > 384 )); then
+            echo "max_windows must be 0..384" >&2
+            exit 2
+          fi
+          mkdir -p xmarket-recovery
+          through="$(date -u -d yesterday +%Y-%m-%dT23:55:00+00:00)"
+          python -m parlay_bot.research.xmarket_history \
+            --asset "$ASSET" --through "$through" \
+            --max-windows "$windows" --publish \
+            --out "xmarket-recovery/${ASSET}-native-evidence.json"
+      - name: Upload recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xmarket-native-${{ matrix.asset }}-${{ github.run_id }}
+          path: xmarket-recovery/
+          if-no-files-found: warn

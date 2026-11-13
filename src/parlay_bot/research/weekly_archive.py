@@ -162,7 +162,7 @@ async def train_weekly_archive(frames: dict, *, training: dict, census: dict,
 
                     try:
                         paired = evaluate(common, training, report)
-                    except Exception as research_error:  # optional diagnostics
+                    except Exception as research_error:  # noqa: BLE001 - optional research must not gate the real model
                         paired = {"status": "diagnostic_unavailable",
                                   "error_class": type(research_error).__name__,
                                   "promotable_from_this_result": False}

@@ -754,9 +754,10 @@ class ModelLab:
                     conn.execute("SELECT 1 FROM rival_model_shadow_forecasts LIMIT 1")
             except Exception as error:  # noqa: BLE001 - optional ledger
                 if is_missing_table(error):
-                    rows = []
-            if rows is None:
-                return None
+                    return {family: {"results": 0, "targets": 0, "days": 0,
+                                     "gain": None, "se": None, "fitness": None,
+                                     "streams": set()} for family in families}
+            return None
         source_rows = optional_rows(
             self.store,
             f"""SELECT DISTINCT family, venue, contract

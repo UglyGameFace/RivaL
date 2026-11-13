@@ -252,6 +252,8 @@ async def test_timed_out_drive_chunk_uses_authoritative_session_offset(
     query = f"bytes */{len(payload)}"
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "test", "expires_in": 3600})
         if request.method == "POST" and request.url.host == "www.googleapis.com":
             return httpx.Response(
                 200, headers={"Location": "https://upload.example/s"}
@@ -323,6 +325,8 @@ async def test_timed_out_drive_status_probes_fail_closed_before_reupload(
     seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "test", "expires_in": 3600})
         if request.method == "POST":
             return httpx.Response(200, headers={"Location": "https://upload.example/s"})
         assert request.method == "PUT"
@@ -371,6 +375,8 @@ async def test_drive_session_rejects_out_of_bounds_remote_offset(
     puts = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "test", "expires_in": 3600})
         if request.method == "POST":
             return httpx.Response(200, headers={"Location": "https://upload.example/s"})
         assert request.method == "PUT"

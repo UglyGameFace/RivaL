@@ -665,13 +665,17 @@ async def signal_embed(
     # Out-the-gate call (immutable issuance snapshot) + live lean (recomputed
     # now). The OTG call is shown for every slot, including sub-threshold
     # leans (D1(a)); the WATCH verdict above is unchanged.
-    otg = otg_snapshot(chosen, market=market)
-    lean = live_lean(
-        market, asset=asset, horizon=horizon_minutes,
-        venue=chosen["venue"], contract=chosen.get("contract"),
-        quote=chosen.get("quote"), now=stamp,
-        engine=str(chosen.get("engine") or "live"),
-        model_version=chosen.get("model_version"),
+    # These helpers read persisted market evidence. Keep synchronous database
+    # work off the Discord gateway loop even when the selected venue is slow.
+    otg, lean = await asyncio.gather(
+        asyncio.to_thread(otg_snapshot, chosen, market=market),
+        asyncio.to_thread(
+            live_lean, market, asset=asset, horizon=horizon_minutes,
+            venue=chosen["venue"], contract=chosen.get("contract"),
+            quote=chosen.get("quote"), now=stamp,
+            engine=str(chosen.get("engine") or "live"),
+            model_version=chosen.get("model_version"),
+        ),
     )
     otg_lines = [otg_line(otg), lean_line(lean)]
     below = below_line_label(otg)
@@ -798,8 +802,8 @@ async def signal_embed(
             else "worse than a simple guess" if alt_beats is False
             else "not enough record"
         )
-        alt_lean = live_lean(
-            market, asset=asset, horizon=horizon_minutes,
+        alt_lean = await asyncio.to_thread(
+            live_lean, market, asset=asset, horizon=horizon_minutes,
             venue=venue, contract=alt_watch.get("contract"),
             quote=alt_watch.get("quote"), now=stamp,
             engine=str(alt_watch.get("engine") or "live"),

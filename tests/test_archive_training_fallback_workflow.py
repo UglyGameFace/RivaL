@@ -3,6 +3,7 @@
 These execute the actual GitHub Actions date guard under bash, without
 accessing private Drive, retraining models or installing GitHub Actions.
 """
+
 from __future__ import annotations
 
 import os
@@ -20,7 +21,7 @@ def _guard_script(day: str) -> str:
     section = contents.split("      - name: Check scheduled date gates\n", 1)[1]
     section = section.split("  train:\n", 1)[0]
     script = section.split("        run: |\n", 1)[1]
-    script = "\n".join(line[10:] if line.startswith("          ") else line
+    script = "\n".join(line.removeprefix("          ")
                        for line in script.splitlines())
     expected = 'today="$(date -u +%F)"'
     assert script.count(expected) == 1

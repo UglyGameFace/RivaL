@@ -90,11 +90,15 @@ cx.state.evidence.host.xmarket_exports={recent_completed_days_pending:4,
  eligible_before:at,published:[],pending_by_asset:[{asset:'BTC',days:1}]};
 assert.match(cx.xmarketExportBox(),/Waiting for completed-day export/);
 assert.match(cx.xmarketExportBox(),/awaiting publication: 4/);
-cx.state.evidence.performance.sampling_policy='per-asset-horizon-v2';
+cx.state.evidence.performance.sampling_policy='per-asset-horizon-close-v3';
+cx.state.evidence.performance.scopes[0].within_target_candle_pairs=285;
+cx.state.evidence.performance.scopes[0].minimum_lead_seconds=180;
 cx.state.history={points:[
  {captured_at:at,performance:{sampling_policy:'per-asset-v1',scopes:cx.state.evidence.performance.scopes}},
- {captured_at:at,performance:{sampling_policy:'per-asset-horizon-v2',scopes:cx.state.evidence.performance.scopes}}
+ {captured_at:at,performance:{sampling_policy:'per-asset-horizon-v2',scopes:cx.state.evidence.performance.scopes}},
+ {captured_at:at,performance:{sampling_policy:'per-asset-horizon-close-v3',scopes:cx.state.evidence.performance.scopes}}
 ]};
 assert.doesNotMatch(cx.scoreBox(),/<polyline/,'Changed sampling policies cannot become a trend');
 assert.match(cx.scoreBox(),/500 rows per asset and timeframe/);
+assert.match(cx.scoreBox(),/Minimum remaining time: 180s/);
 console.log('Evidence Board source-backed UI smoke passed');

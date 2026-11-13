@@ -59,7 +59,7 @@ class ModelScoreEvidenceTests(unittest.TestCase):
         row = {"venue": "v", "contract": "BTC-USD", "quote": "USD",
                "horizon_minutes": 15,
                "target_opened_at": "2026-11-12T17:10:00+00:00",
-               "issued_at": "2026-11-12T17:12:00+00:00",
+               "issued_at": "2026-11-12T17:16:00+00:00",
                "model_brier": 0.4, "baseline_brier": 0.5}
         self.assertEqual(summarize_rows("BTC", [row]), [])
         self.assertEqual(summarize_rows("BTC", [{**row, "issued_at":

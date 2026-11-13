@@ -15,7 +15,34 @@ MODEL = "prospective-logistic-persistent-v3"
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
 HORIZONS = (5, 15, 60)
 SAMPLE_LIMIT_PER_SCOPE = 500
-SAMPLING_POLICY = "per-asset-horizon-v2"
+SAMPLING_POLICY = "per-asset-horizon-close-v3"
+TARGET_CANDLE_MINUTES = 5
+
+
+def _causal_clock(row: dict) -> tuple[datetime, datetime] | None:
+    """Use the engine's outcome clock, not the target candle's opening.
+
+    forward_audit issues against the close of a five-minute target candle
+    for every horizon (including 15/60m offsets). Its production deadline
+    is target_open + 5m. A call inside that candle is still prospective,
+    with less lead time; never describe it as a full-window-ahead call.
+    """
+    try:
+        issued = datetime.fromisoformat(str(row["issued_at"]))
+        opened = datetime.fromisoformat(str(row["target_opened_at"]))
+        if issued.utcoffset() is None or opened.utcoffset() is None:
+            return None
+        issued, opened = issued.astimezone(UTC), opened.astimezone(UTC)
+        closes = opened + timedelta(minutes=TARGET_CANDLE_MINUTES)
+        if issued >= closes:
+            return None
+        if row.get("settled_at") is not None:
+            settled = datetime.fromisoformat(str(row["settled_at"]))
+            if settled.utcoffset() is None or settled < closes:
+                return None
+        return issued, opened
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
 
 
 def summarize_rows(asset: str, rows: list[dict]) -> list[dict]:
@@ -25,25 +52,27 @@ def summarize_rows(asset: str, rows: list[dict]) -> list[dict]:
     unique = {}
     for row in rows:
         try:
+            clock = _causal_clock(row)
+            if clock is None:
+                continue
+            issued, opened = clock
             horizon = row["horizon_minutes"]
             key = (row["venue"], row["contract"], row["quote"],
-                   horizon, row["target_opened_at"])
+                   horizon, opened.isoformat())
             model = float(row["model_brier"])
             baseline = float(row["baseline_brier"])
-            issued = str(row["issued_at"])
-            target = str(row["target_opened_at"])
             if (type(horizon) is not int or horizon not in (5, 15, 60)
-                    or not issued < target
                     or not (math.isfinite(model) and math.isfinite(baseline))
                     or not (0 <= model <= 1 and 0 <= baseline <= 1)):
                 continue
             if key not in unique or issued < unique[key][0]:
-                unique[key] = (issued, model, baseline)
+                unique[key] = (issued, model, baseline, opened)
         except (KeyError, TypeError, ValueError):
             continue
     scores = defaultdict(list)
-    for key, (issued, model, baseline) in unique.items():
-        scores[key[3]].append((model, baseline))
+    for key, (issued, model, baseline, opened) in unique.items():
+        lead = (opened + timedelta(minutes=TARGET_CANDLE_MINUTES) - issued).total_seconds()
+        scores[key[3]].append((model, baseline, lead, issued >= opened))
     results = []
     for horizon in HORIZONS:
         pairs = scores.get(horizon, [])
@@ -59,6 +88,9 @@ def summarize_rows(asset: str, rows: list[dict]) -> list[dict]:
             "sampling_policy": SAMPLING_POLICY,
             "unique_target_windows": len({key[4] for key in unique if key[3] == horizon}),
             "venue_count": len({key[0] for key in unique if key[3] == horizon}),
+            "within_target_candle_pairs": sum(int(x[3]) for x in pairs),
+            "minimum_lead_seconds": round(min(x[2] for x in pairs), 3),
+            "outcome_clock": "target_5m_candle_close",
         })
     return results
 
@@ -73,7 +105,7 @@ def _scope_rows(conn, asset: str, horizon: int, now: datetime) -> list[dict]:
         raise ValueError("unsupported scoring scope")
     result = conn.execute(
         """SELECT venue,contract,quote,horizon_minutes,issued_at,
-                  target_opened_at,model_brier,baseline_brier
+                  target_opened_at,settled_at,model_brier,baseline_brier
            FROM perp_forward_audit
            WHERE asset=? AND horizon_minutes=? AND model_version=?
              AND issued_at>=? AND issued_at<=?
@@ -81,13 +113,13 @@ def _scope_rows(conn, asset: str, horizon: int, now: datetime) -> list[dict]:
              AND outcome_up IN (0,1)
              AND model_brier BETWEEN 0 AND 1
              AND baseline_brier BETWEEN 0 AND 1
-             AND issued_at < target_opened_at
+             AND settled_at > issued_at
            ORDER BY issued_at DESC,venue,contract,quote,target_opened_at
            LIMIT ?""",
         (asset, horizon, MODEL, (now - timedelta(hours=24)).isoformat(),
          now.isoformat(), now.isoformat(), SAMPLE_LIMIT_PER_SCOPE),
     ).fetchall()
-    return [dict(row) for row in result]
+    return [dict(row) for row in result if _causal_clock(dict(row)) is not None]
 
 
 def read_scores() -> dict:

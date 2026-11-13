@@ -32,6 +32,18 @@ distinct target windows and venue count. Venue pairs remain correlated
 observations, not independent trades. Settlement must already exist at the
 capture time. The chart never joins snapshots with different sampling policies.
 
+The outcome clock is the **close of the target five-minute candle**, at
+`target_opened_at + 5 minutes`, for every horizon. This is the same clock
+used by `ForwardAccuracyMonitor.run_once` and its settlement lookup. Using
+the opening time as a deadline incorrectly excludes normal 5-minute calls
+issued after that candle opens. Such calls are prospective only until the
+closing outcome; the score receipt shows how many were issued inside the
+target candle and their minimum remaining lead time. It rejects issuance
+at/after the close, settlement before the close, naive clocks and settlement
+after the snapshot. V3 snapshots are kept separate from the earlier V2
+pre-opening-only sample. No prediction, label, model, baseline, execution
+or promotion rule is changed by this read-only reporting correction.
+
 Host XMarket receipts preserve the actual capture/export/fit/import/shadow
 stage, the eligible-day cutoff, the recent pending backlog and published-day
 counts for each asset. Private Drive file IDs and raw rows are discarded.

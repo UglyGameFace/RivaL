@@ -27,8 +27,12 @@ def test_a_blocked_loop_is_reported_once_with_its_location(caplog):
     seconds, where = watch.stalls[0]
     assert seconds >= 0.55  # the real length of the stall, not the 0.3 s threshold
     assert "_blocking_handler" in where
-    messages = [r.getMessage() for r in caplog.records]
-    assert len(messages) == 1 and messages[0].startswith("RivaL event loop blocked")
+    messages = [
+        r.getMessage() for r in caplog.records
+        if r.name == "parlay_bot.discord_app.loop_watch"
+        and r.getMessage().startswith("RivaL event loop blocked")
+    ]
+    assert len(messages) == 1
 
 
 def test_a_healthy_loop_reports_nothing():

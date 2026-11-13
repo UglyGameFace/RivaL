@@ -79,7 +79,14 @@ The existing records-export loop publishes completed UTC-day input bundles
 to the existing private Drive report folder. It exports at most three
 pending days per asset per pass and resumes older unexported days after an
 interruption. Content-addressed uploads survive a crash between upload
-and recording the export receipt. **This export now runs independently before
+and recording the export receipt: the bot now journals the exact initial
+completed-day bundle bytes and digest in the same database before attempting
+Drive publication. Retries reuse that immutable staged JSON, including its
+original capture timestamp and contemporaneous live-venue set, rather than
+silently changing the content address when the clock or active venues change.
+The staged payload is retired in the same database transaction as the
+successful verified export receipt; it is not another independent source,
+training system or long-lived duplicate archive. **This export now runs independently before
 the larger records-backup job**: a failed, slow or timed-out ordinary records
 backup cannot suppress the prospective native-source publication in that
 cycle. The original memory-pressure guard still avoids running either export

@@ -1,0 +1,126 @@
+name: RivaL XMarket native source recovery
+
+# Source collection only: never fit a model, mint a shadow forecast, or
+# promote any market call. Advance a bounded native-contract cursor for each
+# coin and recheck missing exact source windows in private Drive. Running this
+# separately prevents a weekly model training job from being the only chance
+# to obtain more source history.
+on:
+  schedule:
+    - cron: "43 2,8,14,20 * * *"
+  workflow_dispatch:
+    inputs:
+      max_windows:
+        description: "New 15-minute source windows per coin (bounded API budget)"
+        type: choice
+        options: ["24", "48", "96"]
+        default: "96"
+  push:
+    branches: [main]
+    paths: [".github/workflows/xmarket-source-recovery.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-xmarket-native-source-recovery
+  cancel-in-progress: false
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+      WINDOW_BUDGET: ${{ inputs.max_windows || '96' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install source collector
+        run: python -m pip install -e ".[archive]"
+      - name: Verify private Drive and bounded source budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in RIVAL_DRIVE_ROOT_FOLDER_ID RIVAL_DRIVE_HISTORY_FOLDER_ID \
+                     RIVAL_DRIVE_MANIFESTS_FOLDER_ID RIVAL_DRIVE_STAGING_FOLDER_ID \
+                     RIVAL_DRIVE_MODELS_FOLDER_ID RIVAL_DRIVE_REPORTS_FOLDER_ID \
+                     RIVAL_DRIVE_OAUTH_CLIENT_ID RIVAL_DRIVE_OAUTH_CLIENT_SECRET \
+                     RIVAL_DRIVE_OAUTH_REFRESH_TOKEN; do
+            if [[ -z "${!key}" ]]; then
+              echo "::error::XMarket source recovery requires private Drive ${key}"
+              exit 1
+            fi
+          done
+          if ! [[ "$WINDOW_BUDGET" =~ ^(24|48|96)$ ]]; then
+            echo "::error::Invalid bounded native window budget"
+            exit 1
+          fi
+      - name: Recover actual source windows and publish verified private checkpoints
+        shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          through="$(date -u -d yesterday +%Y-%m-%dT23:55:00+00:00)"
+          python -m parlay_bot.research.xmarket_history \
+            --asset "$ASSET" --through "$through" \
+            --max-windows "$WINDOW_BUDGET" --publish \
+            --out "data/native-reports/xmarket-source-${ASSET}.json"
+      - name: Summarize verified acquisition progress without uploading private raw rows
+        if: always()
+        shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from collections import Counter
+          from pathlib import Path
+
+          asset = os.environ["ASSET"]
+          path = Path(f"data/native-reports/xmarket-source-{asset}.json")
+          if not path.is_file():
+              print(f"XMARKET_RECOVERY_SUMMARY={{\"asset\":\"{asset}\",\"status\":\"unavailable\"}}")
+              raise SystemExit(0)
+          doc = json.loads(path.read_text())
+          progress = doc.get("backfill_progress") or {}
+          result = {
+              "asset": asset,
+              "status": "measured_source_progress_not_model_approval",
+              "source_points": len(doc.get("samples", [])),
+              "cursor_advanced": progress.get("windows_advanced"),
+              "pending_by_source": progress.get("pending_by_source"),
+              "fidelity": {
+                  source: value.get("status")
+                  for source, value in doc.get("verification", {}).items()
+              },
+              "error_types": dict(Counter(
+                  row.get("failure_code", "unknown")
+                  for row in doc.get("errors", [])
+              )),
+              "model_approved": False,
+              "profitability_verified": False,
+          }
+          print("XMARKET_RECOVERY_SUMMARY=" + json.dumps(result, sort_keys=True))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write("## XMarket source-only recovery: " + asset + "\n\n")
+              out.write("```json\n" + json.dumps(result, indent=2) + "\n```\n")
+              out.write("No source-gap checkpoint proves a fitted or profitable model.\n")
+          PY

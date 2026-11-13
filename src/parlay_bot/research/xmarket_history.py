@@ -425,10 +425,16 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
         if timestamp(close) <= last_closed
     )
     if candidates and retry_gaps:
-        rotation = now.date().toordinal() % len(candidates)
+        # Step by a full retry batch each six-hour source cycle instead of
+        # advancing only one position per day. Otherwise an old gap ledger
+        # would repeatedly examine essentially the same dozen contracts.
+        six_hour_slot = int(now.timestamp()) // (6 * 3600)
+        rotation = (six_hour_slot * retry_gaps) % len(candidates)
         selected = (candidates[rotation:] + candidates[:rotation])[:retry_gaps]
         for close, source in selected:
-            one_source(source, close, stage="gap_repair")
+            if one_source(source, close, stage="gap_repair"):
+                # Stop a whole batch immediately on provider throttling.
+                break
 
     for _ in range(max_windows):
         opened = cursor - timedelta(minutes=15)

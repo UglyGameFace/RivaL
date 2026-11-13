@@ -84,6 +84,12 @@ the larger records-backup job**: a failed, slow or timed-out ordinary records
 backup cannot suppress the prospective native-source publication in that
 cycle. The original memory-pressure guard still avoids running either export
 under pressure, and failed exports retry on the existing hourly cycle.
+The export must use the bot's existing **`research_loop_drive` report publisher**.
+The separate `research_drive` model reader deliberately has `reports=None`;
+using that client always rejects a report before any upload. The report client
+is configured whenever the required folders are available, independently of
+whether the optional research-design loop or background LLM is enabled.
+Ordinary records backup continues using its original independent client.
 The read-only host receipt separately reports uploaded completed days and
 the recent eligible-day backlog; an upload acknowledgment is not proof that
 the archive trainer later restored and compared that file.

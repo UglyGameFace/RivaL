@@ -984,6 +984,34 @@ def test_native_overlap_rotates_bounded_unverified_contracts_and_audits_mismatch
 
 
 
+
+def test_multiple_missing_contracts_cannot_starve_later_native_twins(tmp_path, monkeypatch):
+    from parlay_bot.research import xmarket_history as module
+    from parlay_bot.research.free_history import HistoryImportError
+
+    at = NOW.replace(second=0, microsecond=0)
+    live = [point("polymarket", at - timedelta(minutes=15 * i)) for i in range(5)]
+    bundle = {"schema": BUNDLE_SCHEMA, "asset": "BTC", "samples": live}
+    requests = []
+
+    def collect(client, *, source, identity, root, now, fidelity=1):
+        requests.append(identity["contract_id"])
+        if len(requests) <= 4:
+            raise HistoryImportError("exact native contract unavailable")
+        return ([{**live[4], "origin": "backfill"}], SimpleNamespace())
+
+    monkeypatch.setattr(module, "collect_contract", collect)
+    rows, docs, _, errors = module.backfill(
+        None, asset="BTC", bundles=[bundle], root=tmp_path,
+        before=NOW, max_windows=0, retry_gaps=0,
+    )
+    assert len(requests) == 5
+    assert len(rows) == len(docs) == 1
+    assert len(errors) == 4
+    assert all(e["stage"] == "overlap" and not e["retryable"] for e in errors)
+
+
+
 def test_one_failed_overlap_contract_does_not_hide_other_contracts(tmp_path, monkeypatch):
     from parlay_bot.research import xmarket_history as module
     from parlay_bot.research.free_history import HistoryImportError

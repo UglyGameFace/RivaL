@@ -93,11 +93,13 @@ def test_the_leader_line_says_what_is_left():
     lead = TrialRow(name="Trend-only", days=12, results=96, gain=.003, ahead=7,
                     exchanges=9, stopped=0, passed=False, after_fees_bps=.4)
     assert leader_line([lead]) == (
-        "Closest to passing: **Trend-only** (ahead on 7 of 9 exchanges, ahead after fees). "
-        "Needs 9 more days and 54 more results before it can be trusted.")
+        "Closest on current evidence: **Trend-only** (ahead on 7 of 9 exchanges, "
+        "positive aggregate after-fee comparison). Still needs 9 more days and 54 more "
+        "results; then all promotion checks must pass.")
     done = TrialRow(name="Trend-only", days=25, results=400, gain=.003, ahead=7,
                     exchanges=9, stopped=0, passed=False, after_fees_bps=None)
-    assert leader_line([done]).endswith("Waiting on the after-fees test.")
+    assert leader_line([done]).endswith("Still requires the complete promotion checks.")
+    assert "after-fee comparison unavailable" in leader_line([done])
     assert leader_line([]) == "No test model is beating the main model here yet."
 
 

@@ -28,6 +28,14 @@ def native_manifest_provenance(manifest: dict) -> bool:
     if not isinstance(manifest, dict):
         return False
     integrity = manifest.get("source_integrity")
+    if integrity == "drive-daily-records-first-observed-at-v1":
+        return (manifest.get("venue") in {"bitget", "okx", "gate"}
+                and manifest.get("quote") == "USDT"
+                and manifest.get("interval_minutes") == 5
+                and manifest.get("full_calendar_month_verified") is False
+                and manifest.get("provider_signed_checksum") is False
+                and manifest.get("source_original_drive_readback_checked") is True
+                and isinstance(manifest.get("recorded_source_files"), list))
     if integrity == "bitget-v3-original-api-5m-v1":
         # A derived offline view is admissible only after fresh original
         # Drive readback and every provider page was revalidated. No claim

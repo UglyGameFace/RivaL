@@ -59,7 +59,8 @@ def audit_partition(path: Path) -> dict:
         "rows": len(rows), "expected": expected,
         "missing": missing, "longest_missing_segment": longest,
         "coverage": round(len(rows) / expected, 8),
-        "full_calendar_month_verified": missing == 0,
+        "full_calendar_month_verified": missing == 0 and meta.get(
+            "full_calendar_month_verified", True) is not False,
         "research_grade": missing / expected <= 0.005 and longest <= 12,
     }
 

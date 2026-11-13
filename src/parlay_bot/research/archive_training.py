@@ -39,7 +39,7 @@ import hashlib
 import json
 import math
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from parlay_bot.perpetuals.pooled_features import ASSETS
@@ -608,10 +608,12 @@ def load_frames_manifests(root: Path, *, target_asset: str | None = None) -> tup
     import pandas as pd
 
     from parlay_bot.research.learning import assemble
+    from parlay_bot.research.recorded_candles import latest_recorded_snapshots
 
     manifests = sorted(Path(root).rglob("*.manifest.json"))
     if not manifests:
         raise TrainingDataUnavailable(f"no restored manifests under {root}")
+    manifests = latest_recorded_snapshots(manifests)
     groups: dict[tuple, list[Path]] = {}
     for path in manifests:
         info = json.loads(path.read_text(encoding="utf-8"))
@@ -622,6 +624,7 @@ def load_frames_manifests(root: Path, *, target_asset: str | None = None) -> tup
         "provider_sha256_by_month": {},
         "months_without_provider_hash": [],
         "manifest_sha256_by_month": {},
+        "normalized_sha256_by_month": {},
     }
     for key, paths in groups.items():
         identity, rows, prov = assemble(paths)
@@ -640,6 +643,9 @@ def load_frames_manifests(root: Path, *, target_asset: str | None = None) -> tup
             reference = provenance.setdefault("reference_provider_sha256_by_month", {})
             reference.update({f"{venue}:{month}": sha
                               for month, sha in (prov.get("provider_sha256_by_month") or {}).items()})
+            for month, evidence in prov.get("recorded_partitions", {}).items():
+                provenance.setdefault("reference_recorded_partitions", {})[
+                    f"{venue}:{month}"] = evidence
             continue
         for month, sha in (prov.get("provider_sha256_by_month") or {}).items():
             provenance["provider_sha256_by_month"][f"{venue}:{month}"] = sha
@@ -648,8 +654,13 @@ def load_frames_manifests(root: Path, *, target_asset: str | None = None) -> tup
         )
         for month in prov.get("months", []):
             provenance["manifest_sha256_by_month"][f"{venue}:{month}"] = prov.get(
-                "source_sha256_by_month", {}
+                "manifest_sha256_by_month", {}
             ).get(month)
+            provenance["normalized_sha256_by_month"][f"{venue}:{month}"] = prov.get(
+                "normalized_sha256_by_month", {}
+            ).get(month)
+        for month, evidence in prov.get("recorded_partitions", {}).items():
+            provenance.setdefault("recorded_partitions", {})[f"{venue}:{month}"] = evidence
     frames = {}
     for stream_key, (table, asset) in tables.items():
         if target_asset is not None and asset != target_asset:
@@ -665,7 +676,10 @@ def load_frames_manifests(root: Path, *, target_asset: str | None = None) -> tup
     return frames, provenance
 
 
-async def restore_verified_months(*, asset: str, months: list[str], root: Path) -> dict:
+async def restore_verified_months(*, asset: str, months: list[str], root: Path,
+                                  records_since: date | None = None,
+                                  records_through: date | None = None,
+                                  now: datetime | None = None) -> dict:
     """Restore verified months for one asset via the existing bridges.
 
     Bitget market months via restore_verified_bitget_market_months;
@@ -685,6 +699,7 @@ async def restore_verified_months(*, asset: str, months: list[str], root: Path) 
     from parlay_bot.research.source_native import restore_verified_source_months
 
     drive = _drive(Settings())
+    clock = now or datetime.now(UTC)
     report: dict = {
         "asset": asset,
         "months_requested": list(months),
@@ -714,6 +729,20 @@ async def restore_verified_months(*, asset: str, months: list[str], root: Path) 
                     report["excluded"][venue + suffix] = {
                         "reason": type(exc).__name__, "detail": str(exc)[:300],
                     }
+        from parlay_bot.research.recorded_candles import restore_recorded_partitions
+
+        try:
+            recorded = await restore_recorded_partitions(
+                drive, asset=asset, root=root,
+                first_day=records_since or (clock - timedelta(days=90)).date(),
+                last_day=records_through or (clock - timedelta(days=1)).date(), now=clock,
+            )
+            report["recorded_candles"] = recorded
+            report["restored"]["recorded-partial-partitions"] = recorded["restored"]
+        except Exception as exc:  # noqa: BLE001 - peer monthly sources remain available
+            report["excluded"]["recorded-partial-partitions"] = {
+                "reason": type(exc).__name__, "detail": str(exc)[:300],
+            }
     finally:
         await drive.aclose()
     _write_json(Path(root) / "restore-report.json", report)

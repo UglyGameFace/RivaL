@@ -166,6 +166,12 @@ def train_run(
             "last": str(k.index.max()) if len(k) else None}
             for key, (k, _) in frames.items()},
         "source_feature_coverage": {}, "row_admission": {},
+        "provenance": provenance,
+        "overlap_evidence": {"eligible": False, "matching": "exact UTC feature-close timestamps",
+                             "minimum_rows": {"train": 300, "validation": 100, "test": 100},
+                             "train_before": str(train_end), "test_from": str(test_start),
+                             "through": str(trained_through), "purge_minutes": horizon,
+                             "by_stream": {}, "splits": {}},
         "effective_window": {"rows": 0, "first": None, "last": None},
         "lead_lag": {"lag_bars": 1, "correlation": None, "rows": 0},
         "gates": GATES, "gates_passed": False,
@@ -179,6 +185,7 @@ def train_run(
                for source in PRICE_SEMANTICS):
         return blocked("prediction-market fidelity/aggregation overlap not verified")
     bars = sampled_bars(samples, asset=asset, pm_fidelity=fidelity)
+    bar_clocks = {source: pd.DatetimeIndex(list(rows), tz="UTC") for source, rows in bars.items()}
     report_base["source_feature_coverage"] = {
         source: {"rows": len(rows), "first": str(min(rows)) if rows else None,
                  "last": str(max(rows)) if rows else None}
@@ -190,6 +197,17 @@ def train_run(
     for key, (k, f) in frames.items():
         through = pd.to_datetime(trained_through, utc=True)
         k, f = k.loc[:through], f.loc[:through]
+        source_overlap = {
+            source: k.index.intersection(clock) for source, clock in bar_clocks.items()
+        }
+        exact = k.index
+        for clock in bar_clocks.values():
+            exact = exact.intersection(clock)
+        report_base["overlap_evidence"]["by_stream"][key] = {
+            "source_rows": {source: len(stamps) for source, stamps in source_overlap.items()},
+            "all_sources_rows": len(exact),
+            "first": str(exact[0]) if len(exact) else None, "last": str(exact[-1]) if len(exact) else None,
+        }
         part = frame_features(k, f, asset=asset, samples=samples, frames=dispersion_frames,
                               venues=venues, pm_fidelity=fidelity)
         part["y"] = build_labels(k, horizon)
@@ -232,6 +250,17 @@ def train_run(
     )
     train, val, test = data[train_mask], data[val_mask], data[test_mask]
     report_base["split_rows"] = {"train": len(train), "validation": len(val), "test": len(test)}
+    for name, split in (("train", train), ("validation", val), ("test", test)):
+        required = report_base["overlap_evidence"]["minimum_rows"][name]
+        report_base["overlap_evidence"]["splits"][name] = {
+            "rows": len(split), "unique_bars": int(split.index.nunique()),
+            "days": int(split.index.normalize().nunique()),
+            "first": str(split.index.min()) if len(split) else None,
+            "last": str(split.index.max()) if len(split) else None,
+            "shortfall": max(0, required - len(split)),
+        }
+    report_base["overlap_evidence"]["eligible"] = all(
+        s["shortfall"] == 0 for s in report_base["overlap_evidence"]["splits"].values())
     if len(data) < 300:
         return blocked(f"not enough labelled overlap rows: {len(data)}")
     if len(train) < 300 or len(val) < 100 or len(test) < 100:
@@ -424,6 +453,17 @@ def validate(doc: dict) -> dict:
                 raise ValueError(f"xmarket model provider hash for {month} is the normalized hash")
     if not isinstance(provenance.get("months_without_provider_hash"), list):
         raise TypeError("xmarket model provenance lacks months_without_provider_hash")
+    overlap = doc.get("overlap_evidence")
+    if overlap is not None or provenance.get("recorded_partitions"):
+        if (not isinstance(overlap, dict) or overlap.get("eligible") is not True
+                or overlap.get("minimum_rows") != {"train": 300, "validation": 100, "test": 100}):
+            raise ValueError("XMarket exact overlap/split eligibility not established")
+        for name, required in (("train", 300), ("validation", 100), ("test", 100)):
+            split = overlap.get("splits", {}).get(name, {})
+            count = split.get("rows")
+            if (type(count) is not int or count < required or split.get("shortfall") != 0
+                    or doc.get("split_rows", {}).get(name) != count):
+                raise ValueError("XMarket overlap split counts failed unchanged minimums")
     if doc.get("asset") not in ASSETS or doc.get("horizon_minutes") not in HORIZONS:
         raise ValueError("invalid XMarket artifact scope")
     if (doc.get("input_count") != len(names) or doc.get("price_semantics") != PRICE_SEMANTICS

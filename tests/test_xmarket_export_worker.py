@@ -140,10 +140,22 @@ async def test_completed_days_reach_reports_and_restore_through_the_real_worker(
             assert all(v["status"] == "unverified" for v in restored["verification"].values())
         assert all(f["parents"] == ["reports"] and f["name"].startswith(BUNDLE_PREFIX)
                    for f in warehouse.files.values())
-        # A later normal pass sees saved export receipts and uploads no copies.
+        # Restoring each asset now also acknowledges a separate private
+        # progress checkpoint, even with zero native rows. Re-running the
+        # bot's completed-day worker must not duplicate either daily export.
+        checkpoints = [
+            json.loads(raw) for raw in warehouse.content.values()
+            if json.loads(raw).get("backfill_checkpoint") is True
+        ]
+        assert len(warehouse.files) == 8
+        assert len(checkpoints) == 4
+        assert {p["asset"] for p in checkpoints} == {"BTC", "ETH", "SOL", "XRP"}
+        assert all(not p["samples"] and p["backfill_pending"] == {
+            "polymarket": [], "kalshi": []
+        } for p in checkpoints)
         client.closed = False
         await bot.RivalDiscordClient._records_loop(client)
-        assert len(warehouse.files) == 4
+        assert len(warehouse.files) == 8
 
 
 @pytest.mark.asyncio

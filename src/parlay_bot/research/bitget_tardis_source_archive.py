@@ -16,6 +16,7 @@ import hashlib
 import json
 import tempfile
 from datetime import UTC, datetime
+from urllib.parse import urljoin, urlsplit
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -27,6 +28,21 @@ from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.publish import _artifact, _drive
 
 SOURCE = "https://datasets.tardis.dev"
+# Tardis's documented dataset download uses curl -L: its initial datasets
+# origin can redirect to a public vendor/CDN object store. Allow *only* HTTPS
+# GET downloads to Tardis or conventional public object-storage origins.
+# No client bearer token is sent to the redirected URL; downloaded bytes must
+# still pass the existing exact CSV venue/symbol/UTC-day validation.
+REDIRECT_SUFFIXES = (
+    "tardis.dev",
+    "amazonaws.com",
+    "cloudfront.net",
+    "r2.dev",
+    "r2.cloudflarestorage.com",
+    "storage.googleapis.com",
+    "blob.core.windows.net",
+)
+MAX_DATASET_REDIRECTS = 2
 SCHEMA = "rival-bitget-tardis-public-monthly-day-v1"
 FAMILIES = ("trades", "incremental_book_L2")
 MAX_COMPRESSED_BYTES = 160 * 1024 * 1024
@@ -144,6 +160,29 @@ def verify_gzip_csv(path: Path, *, asset: str, month: str, family: str,
     }
 
 
+def _validated_dataset_redirect(response: httpx.Response) -> str:
+    """Resolve vendor CDN redirects without following arbitrary network URLs."""
+    location = response.headers.get("location")
+    if not location or len(location) > 8192:
+        raise HistoryImportError("Tardis dataset redirect missing or oversized")
+    try:
+        target = urljoin(str(response.url), location)
+        parsed = urlsplit(target)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        allowed = any(
+            host == suffix or host.endswith("." + suffix)
+            for suffix in REDIRECT_SUFFIXES
+        )
+        if (parsed.scheme != "https" or parsed.username is not None
+                or parsed.password is not None
+                or parsed.port not in (None, 443)
+                or not allowed or parsed.fragment):
+            raise HistoryImportError("Tardis dataset redirected to untrusted origin")
+        return target
+    except ValueError as exc:
+        raise HistoryImportError("Tardis dataset redirect URL invalid") from exc
+
+
 async def obtain(client: httpx.AsyncClient, *, asset: str, month: str,
                  family: str, root: Path, now: datetime) -> tuple[Path, str]:
     url = validate_selection(asset=asset, month=month, family=family, now=now)
@@ -152,38 +191,48 @@ async def obtain(client: httpx.AsyncClient, *, asset: str, month: str,
         location = Path(tmp.name)
     try:
         for attempt in range(3):
+            # Each retry starts from the canonical, public Tardis URL. Signed
+            # CDN redirects may expire, so never reuse them across attempts.
+            request_url = url
+            redirects = 0
             try:
-                async with client.stream("GET", url, follow_redirects=False) as response:
-                    if response.status_code == 200:
-                        # File gzip is an actual .csv.gz payload, not the HTTP
-                        # Content-Encoding layer. Reject encoded HTTP bodies,
-                        # which would otherwise silently change original bytes.
-                        if response.headers.get("content-encoding", "identity").lower() != "identity":
-                            raise HistoryImportError("Tardis HTTP transfer encoding is not identity")
-                        size = 0
-                        # Preserve bytes without blocking the async HTTP loop.
-                        out = await asyncio.to_thread(location.open, "wb")
-                        try:
-                            async for data in response.aiter_bytes(1024 * 1024):
-                                size += len(data)
-                                if size > MAX_COMPRESSED_BYTES:
-                                    raise HistoryImportError(
-                                        "Tardis source exceeds archive byte budget"
-                                    )
-                                await asyncio.to_thread(out.write, data)
-                        finally:
-                            await asyncio.to_thread(out.close)
-                        if size == 0:
-                            raise HistoryImportError("Tardis source file empty")
-                        return location, url
-                    if response.status_code in (401, 403, 404, 451):
-                        raise HistoryImportError(
-                            f"Tardis source day unavailable HTTP {response.status_code}"
-                        )
-                    if response.status_code not in (429, 500, 502, 503, 504):
-                        raise HistoryImportError(
-                            f"Tardis source rejected HTTP {response.status_code}"
-                        )
+                while True:
+                    async with client.stream("GET", request_url, follow_redirects=False) as response:
+                        if response.status_code in (301, 302, 303, 307, 308):
+                            if redirects >= MAX_DATASET_REDIRECTS:
+                                raise HistoryImportError("Tardis dataset redirected too often")
+                            request_url = _validated_dataset_redirect(response)
+                            redirects += 1
+                            continue
+                        if response.status_code == 200:
+                            # A gzip file is a binary source artifact, not an HTTP
+                            # content-encoded transfer body. Verify original bytes.
+                            if response.headers.get("content-encoding", "identity").lower() != "identity":
+                                raise HistoryImportError("Tardis HTTP transfer encoding is not identity")
+                            size = 0
+                            out = await asyncio.to_thread(location.open, "wb")
+                            try:
+                                async for data in response.aiter_bytes(1024 * 1024):
+                                    size += len(data)
+                                    if size > MAX_COMPRESSED_BYTES:
+                                        raise HistoryImportError(
+                                            "Tardis source exceeds archive byte budget"
+                                        )
+                                    await asyncio.to_thread(out.write, data)
+                            finally:
+                                await asyncio.to_thread(out.close)
+                            if size == 0:
+                                raise HistoryImportError("Tardis source file empty")
+                            return location, url
+                        if response.status_code in (401, 403, 404, 451):
+                            raise HistoryImportError(
+                                f"Tardis source day unavailable HTTP {response.status_code}"
+                            )
+                        if response.status_code not in (429, 500, 502, 503, 504):
+                            raise HistoryImportError(
+                                f"Tardis source rejected HTTP {response.status_code}"
+                            )
+                        break
             except httpx.HTTPError as exc:
                 if attempt == 2:
                     raise HistoryImportError("Tardis archive source unavailable") from exc

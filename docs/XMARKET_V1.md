@@ -152,9 +152,25 @@ The set commitment is labeled separately from actual provider hashes.
 
 ## Training, import and governance
 
+Both restored `venue|contract|quote` streams and CSV `venue|asset` streams
+are admitted by their actual asset. Native closes exactly one millisecond
+before a five-minute boundary use that boundary as the feature clock, just
+as the live extractor does. Other off-grid, duplicate, unordered, naive or
+mismatched candle/feature clocks are rejected. Source frames and exact
+contract/quote keys remain unchanged for peer trainers and provenance.
+Dispersion uses a separate venue/asset lookup; ambiguous concurrent source
+streams fail rather than silently replacing an instrument or quote.
+
+Reports retain each source's feature-bar dates and counts, and each exact
+archive stream's candle, complete candle-feature, market-feature, dispersion,
+labelled and complete-row counts. Split counts are also measured when zero
+rows survive. A source that passes independent fidelity checks can still
+lack chronological overlap with the perpetual archive; that remains a
+measured blocked report rather than a model or an execution exception.
+
 The archive runner adds the family beside archive, GBM and VolCal. Missing
 or unverified input history yields a blocked report and no model file;
-peer-family training continues. No workflow file is changed. The existing
+peer-family training continues. The existing
 upload step already includes the complete output directory.
 
 Training reuses the established batch logistic, train-only standardizer,

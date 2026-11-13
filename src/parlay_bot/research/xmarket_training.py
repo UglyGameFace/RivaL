@@ -14,7 +14,7 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
-from parlay_bot.perpetuals.markets import ASSETS
+from parlay_bot.perpetuals.markets import ASSETS, asset_for_contract
 from parlay_bot.research.archive_training import (
     _fit_logistic,
     _git_sha,
@@ -32,7 +32,9 @@ from parlay_bot.research.archive_training import (
 )
 from parlay_bot.research.xmarket_features import (
     BASE_FEATURES,
+    DISPERSION_FEATURES,
     FEATURE_CONTRACT,
+    MARKET_FEATURES,
     MODEL_VERSION,
     PRICE_SEMANTICS,
     feature_digest,
@@ -71,6 +73,42 @@ def _supplement_provenance(samples):
     return {"supplemental_provider_sha256": sorted(examples), "supplemental_hash_sets": sources}
 
 
+def _training_frames(frames: dict, *, asset: str) -> tuple[dict, dict]:
+    """Admit native archive streams on the live five-minute feature clock.
+
+    Manifest streams use venue|contract|quote; CSV dry runs use venue|asset.
+    Native candles close one millisecond before the feature boundary. Only
+    that exact offset (or an existing boundary) is accepted, without changing
+    the source frames shared by other trainers or collapsing stream identity.
+    """
+    import pandas as pd
+
+    selected, dispersion = {}, {}
+    for key, (candles, features) in frames.items():
+        parts = key.split("|")
+        if len(parts) not in (2, 3) or not all(parts):
+            raise ValueError("invalid XMarket archive stream identity")
+        source_asset = parts[1] if len(parts) == 2 else asset_for_contract(parts[1])
+        if source_asset != asset:
+            continue
+        if (not isinstance(candles.index, pd.DatetimeIndex) or candles.index.tz is None
+                or not candles.index.equals(features.index)):
+            raise ValueError("XMarket candle/feature clocks must match and be timezone-aware")
+        closes = candles.index.tz_convert("UTC").ceil("5min")
+        offset = closes - candles.index
+        if (not ((offset == pd.Timedelta(0)) | (offset == pd.Timedelta(milliseconds=1))).all()
+                or not closes.is_unique or not closes.is_monotonic_increasing):
+            raise ValueError("invalid XMarket five-minute candle close grid")
+        alias = f"{parts[0]}|{asset}"
+        if alias in dispersion:
+            raise ValueError("ambiguous XMarket venue/asset archive sources")
+        k, f = candles.copy(deep=False), features.copy(deep=False)
+        k.index = f.index = closes
+        selected[key] = k, f
+        dispersion[alias] = k, f
+    return selected, dispersion
+
+
 def train_run(
     frames: dict,
     *,
@@ -102,13 +140,14 @@ def train_run(
         raise ValueError(f"unsupported asset: {asset!r}")
     if horizon not in HORIZONS:
         raise ValueError(f"unsupported horizon: {horizon!r}")
+    frames, dispersion_frames = _training_frames(frames, asset=asset)
     market_data = market_data or {}
     if market_data.get("asset", asset) != asset:
         raise ValueError("cross-asset XMarket training inputs")
     samples = market_data.get("samples", [])
     fidelity = max((r["fidelity_minutes"] for r in samples if r["source"] == "polymarket"), default=1)
     live_venues = market_data.get("live_venues", [])
-    venues = tuple(v for v in VENUES if v in live_venues and f"{v}|{asset}" in frames)
+    venues = tuple(v for v in VENUES if v in live_venues and f"{v}|{asset}" in dispersion_frames)
     venues = venues if len(venues) >= 2 else ()
     names = feature_names(venues)
     report_base = {
@@ -125,7 +164,8 @@ def train_run(
         "venue_frame_coverage": {key: {"rows": len(k),
             "first": str(k.index.min()) if len(k) else None,
             "last": str(k.index.max()) if len(k) else None}
-            for key, (k, _) in frames.items() if key.endswith("|" + asset)},
+            for key, (k, _) in frames.items()},
+        "source_feature_coverage": {}, "row_admission": {},
         "effective_window": {"rows": 0, "first": None, "last": None},
         "lead_lag": {"lag_bars": 1, "correlation": None, "rows": 0},
         "gates": GATES, "gates_passed": False,
@@ -138,23 +178,39 @@ def train_run(
     if not all(market_data.get("verification", {}).get(source, {}).get("status") == "verified"
                for source in PRICE_SEMANTICS):
         return blocked("prediction-market fidelity/aggregation overlap not verified")
+    bars = sampled_bars(samples, asset=asset, pm_fidelity=fidelity)
+    report_base["source_feature_coverage"] = {
+        source: {"rows": len(rows), "first": str(min(rows)) if rows else None,
+                 "last": str(max(rows)) if rows else None}
+        for source, rows in bars.items()
+    }
+    import numpy as np
+
     parts, coverage_frames = [], {}
     for key, (k, f) in frames.items():
-        if not key.endswith("|" + asset):
-            continue
         through = pd.to_datetime(trained_through, utc=True)
         k, f = k.loc[:through], f.loc[:through]
-        part = frame_features(k, f, asset=asset, samples=samples, frames=frames, venues=venues, pm_fidelity=fidelity)
+        part = frame_features(k, f, asset=asset, samples=samples, frames=dispersion_frames,
+                              venues=venues, pm_fidelity=fidelity)
         part["y"] = build_labels(k, horizon)
         part["stream"] = str(key)
         # Diagnostic only: no future return is ever included in a feature.
         future = k["close"].shift(-1) / k["close"] - 1
         part["future_return"] = future
+        finite = part.replace([np.inf, -np.inf], np.nan)
+        report_base["row_admission"][key] = {
+            "candle_rows": len(k),
+            "candle_feature_rows": int(finite[list(BASE_FEATURES)].notna().all(axis=1).sum()),
+            "market_feature_rows": int(finite[list(MARKET_FEATURES)].notna().all(axis=1).sum()),
+            "dispersion_feature_rows": int(finite[list(DISPERSION_FEATURES)].notna().all(axis=1).sum())
+            if venues else None,
+            "labelled_rows": int(finite["y"].notna().sum()),
+            "complete_rows": int(finite[["y", *names]].notna().all(axis=1).sum()),
+        }
         parts.append(part)
         coverage_frames[key] = (k, f)
     if not parts:
         return blocked("no frames to train on")
-    import numpy as np
     data = pd.concat(parts).sort_index()
     data = data.replace([np.inf, -np.inf], np.nan).dropna(subset=["y", *names])
     report_base["effective_window"] = {"rows": len(data),
@@ -164,21 +220,21 @@ def train_run(
     # pm change at t predicts the later perp return; calculated on one
     # source stream, with exact 5m timestamp alignment across missing rows.
     diag = data[data["stream"] == min(coverage_frames)]
-    pm = pd.Series({t: r["price"] for t, r in
-                    sampled_bars(samples, asset=asset, pm_fidelity=fidelity)["polymarket"].items()})
+    pm = pd.Series([r["price"] for r in bars["polymarket"].values()],
+                   index=pd.DatetimeIndex(list(bars["polymarket"]), tz="UTC"), dtype=float)
     changes = pm - pm.reindex(pm.index - pd.Timedelta(minutes=5)).set_axis(pm.index)
     d = pd.concat([changes.rename("change"), diag["future_return"].rename("return")], axis=1).dropna()
     corr = d["change"].corr(d["return"]) if len(d) > 2 and d["change"].nunique() > 1 and d["return"].nunique() > 1 else float("nan")
     report_base["lead_lag"] = {"lag_bars": 1, "model_horizon_minutes": horizon, "return_horizon_minutes": 5,
         "correlation": float(corr) if math.isfinite(corr) else None, "rows": len(d)}
-    if len(data) < 300:
-        return blocked(f"not enough labelled overlap rows: {len(data)}")
     train_mask, val_mask, test_mask = chronological_splits(
         data.index, train_end=train_end, test_start=test_start, horizon=horizon
     )
     train, val, test = data[train_mask], data[val_mask], data[test_mask]
+    report_base["split_rows"] = {"train": len(train), "validation": len(val), "test": len(test)}
+    if len(data) < 300:
+        return blocked(f"not enough labelled overlap rows: {len(data)}")
     if len(train) < 300 or len(val) < 100 or len(test) < 100:
-        report_base["split_rows"] = {"train": len(train), "validation": len(val), "test": len(test)}
         return blocked(f"split too small: train={len(train)} val={len(val)} test={len(test)}")
     cols = list(names)
     mean, std = _standardize_fit(train[cols].to_numpy(dtype=float))

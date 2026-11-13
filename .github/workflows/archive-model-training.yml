@@ -12,7 +12,7 @@ name: RivaL archive model weekly training
 # file): same restored bytes, same --train-end / --test-start /
 # --trained-through, same manifests dir, per-horizon + per-step failure
 # isolation. Never on ordinary pushes: weekly retrain + a tightly date-locked
-# one-off 2026-11-13 post-export recovery run + manual dispatch only.
+# one-off 2026-11-13 post-export/frame-repair recovery + manual dispatch only.
 on:
   schedule:
     - cron: "30 7 * * 0"
@@ -22,6 +22,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/archive-model-training.yml"
+      - "src/parlay_bot/research/xmarket_training.py"
   workflow_dispatch:
     inputs:
       publish:
@@ -42,8 +43,8 @@ concurrency:
 
 jobs:
   # The one-time source-ready fallback runs ONLY from main on 2026-11-13
-  # when this workflow file is updated. No future push can train with this
-  # retired trigger. Manual dispatch and Sunday schedule remain unchanged.
+  # when this workflow or the broken trainer is repaired. No future push can
+  # train with this retired trigger. Manual dispatch and Sunday schedule remain unchanged.
   schedule_guard:
     runs-on: ubuntu-latest
     outputs:

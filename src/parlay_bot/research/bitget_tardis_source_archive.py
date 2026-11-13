@@ -33,6 +33,7 @@ SOURCE = "https://datasets.tardis.dev"
 # GET downloads to Tardis or conventional public object-storage origins.
 # No client bearer token is sent to the redirected URL; downloaded bytes must
 # still pass the existing exact CSV venue/symbol/UTC-day validation.
+REDIRECT_EXACT_HOSTS = ("s3.us-east-1.wasabisys.com",)
 REDIRECT_SUFFIXES = (
     "tardis.dev",
     "amazonaws.com",
@@ -172,7 +173,7 @@ def _validated_dataset_redirect(response: httpx.Response) -> str:
     except ValueError as exc:
         raise HistoryImportError("Tardis dataset redirect URL invalid") from exc
     host = (parsed.hostname or "").lower().rstrip(".")
-    allowed = any(
+    allowed = host in REDIRECT_EXACT_HOSTS or any(
         host == suffix or host.endswith("." + suffix)
         for suffix in REDIRECT_SUFFIXES
     )

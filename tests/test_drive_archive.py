@@ -306,7 +306,7 @@ async def test_timed_out_drive_status_probes_fail_closed_before_reupload(
     tmp_path, monkeypatch,
 ) -> None:
     from parlay_bot.archive import drive as drive_module
-    from parlay_bot.archive.drive import DriveArchiveError, MAX_TRANSIENT_UPLOAD_RETRIES
+    from parlay_bot.archive.drive import MAX_TRANSIENT_UPLOAD_RETRIES, DriveArchiveError
 
     async def no_sleep(_seconds):
         return None

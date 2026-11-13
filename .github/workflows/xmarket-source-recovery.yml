@@ -17,7 +17,12 @@ on:
         default: "96"
   push:
     branches: [main]
-    paths: [".github/workflows/xmarket-source-recovery.yml"]
+    # Verify each substantive native-source collector change against original
+    # providers immediately after merge, not only at the next six-hour cron.
+    # The single concurrency group still serializes credentialed runs.
+    paths:
+      - ".github/workflows/xmarket-source-recovery.yml"
+      - "src/parlay_bot/research/xmarket_history.py"
   pull_request:
     paths:
       - ".github/workflows/xmarket-source-recovery.yml"

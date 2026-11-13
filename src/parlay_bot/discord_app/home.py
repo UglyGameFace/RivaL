@@ -2402,28 +2402,41 @@ class GuidedHome(discord.ui.View):
             try:
                 price = await self.quotes.get(self.coin)
             except QuoteUnavailable:
-                reference = await self.quotes.get_reference(self.coin)
-                embed = discord.Embed(
-                    title=f"💱 {self.coin} | Live Perpetual Reference",
-                    description=(
-                        "Binance-USDT executable quotes are unavailable. "
-                        "The independently verified Hyperliquid USD-perp "
-                        "reference below is a DIFFERENT market. It cannot "
-                        "authorize a Binance practice trade or profit proof."
-                    ),
-                    color=discord.Color.orange(),
-                )
-                embed.add_field(
-                    name="Hyperliquid USD-perp top of book",
-                    value=(
-                        f"Bid **${reference.bid:,.2f}** • "
-                        f"Ask **${reference.ask:,.2f}** · "
-                        f"Exchange update "
-                        f"{discord.utils.format_dt(reference.exchange_at, style='R')} "
-                        "· Reference only, no trade"
-                    ),
-                    inline=False,
-                )
+                try:
+                    reference = await self.quotes.get_reference(self.coin)
+                except QuoteUnavailable:
+                    embed = discord.Embed(
+                        title=f"💱 {self.coin} | Quote unavailable",
+                        description=(
+                            "Neither the Binance-USDT executable top of book nor "
+                            "the separate Hyperliquid USD-perp reference could be "
+                            "verified right now. No current price or executable "
+                            "trade is confirmed. Try Refresh after the feeds recover."
+                        ),
+                        color=discord.Color.orange(),
+                    )
+                else:
+                    embed = discord.Embed(
+                        title=f"💱 {self.coin} | Live Perpetual Reference",
+                        description=(
+                            "Binance-USDT executable quotes are unavailable. "
+                            "The independently verified Hyperliquid USD-perp "
+                            "reference below is a DIFFERENT market. It cannot "
+                            "authorize a Binance practice trade or profit proof."
+                        ),
+                        color=discord.Color.orange(),
+                    )
+                    embed.add_field(
+                        name="Hyperliquid USD-perp top of book",
+                        value=(
+                            f"Bid **${reference.bid:,.2f}** • "
+                            f"Ask **${reference.ask:,.2f}** · "
+                            f"Exchange update "
+                            f"{discord.utils.format_dt(reference.exchange_at, style='R')} "
+                            "· Reference only, no trade"
+                        ),
+                        inline=False,
+                    )
             else:
                 embed = quote_embed(price, quantity=0.001)
         elif p in ("practice", "results"):

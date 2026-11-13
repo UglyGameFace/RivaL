@@ -18,6 +18,12 @@ on:
   push:
     branches: [main]
     paths: [".github/workflows/xmarket-source-recovery.yml"]
+  pull_request:
+    paths:
+      - ".github/workflows/xmarket-source-recovery.yml"
+      - "src/parlay_bot/research/xmarket_history.py"
+      - "src/parlay_bot/research/xmarket_training.py"
+      - "tests/test_xmarket_history.py"
 
 permissions:
   contents: read
@@ -27,7 +33,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  contract:
+    # Source and workflow syntax are tested before main. PRs never get Drive
+    # credentials and never perform historical provider downloads.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate source-only collector entry point
+        run: |
+          python -m pip install -e ".[archive]"
+          python -m parlay_bot.research.xmarket_history --help
+
   source:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 100
     strategy:

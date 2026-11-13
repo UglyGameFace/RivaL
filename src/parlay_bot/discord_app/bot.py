@@ -1947,14 +1947,16 @@ class RivalDiscordClient(discord.Client):
             # XMarket's completed-day proof must NOT depend on a successful
             # full records backup. A slow/failed backup otherwise suppresses
             # the only prospective Drive export before archive training.
-            if self.research_drive is not None:
+            # The model reader deliberately has no reports folder. Use the
+            # existing report publisher, independently of the optional loop.
+            if self.research_loop_drive is not None:
                 try:
                     if host_memory.snapshot().pressure:
                         _LOG.info("XMarket input export deferred: host memory pressure")
                     else:
                         from parlay_bot.perpetuals.xmarket_inputs import XmarketInputs
                         published = await asyncio.wait_for(XmarketInputs(self.store).publish_days(
-                            self.research_drive), timeout=180)
+                            self.research_loop_drive), timeout=180)
                         if published:
                             _LOG.info("XMarket completed-day source exports published=%d", published)
                 except asyncio.CancelledError:

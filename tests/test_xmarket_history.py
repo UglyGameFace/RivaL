@@ -379,7 +379,8 @@ async def test_completed_day_export_is_not_blocked_by_failed_records_backup(monk
             events.append("backup")
             raise RuntimeError("synthetic records-backup failure")
 
-    client = SimpleNamespace(store=object(), research_drive=object(), closed=False)
+    client = SimpleNamespace(store=object(), research_drive=object(),
+                             research_loop_drive=object(), closed=False)
     async def ready():
         return None
     async def advance(seconds):
@@ -446,7 +447,8 @@ async def test_optional_export_failure_does_not_misreport_a_successful_records_b
             pass
         async def run_once(self):
             saved.append(True)
-    client = SimpleNamespace(store=object(), research_drive=object(), closed=False)
+    client = SimpleNamespace(store=object(), research_drive=object(),
+                             research_loop_drive=object(), closed=False)
     async def ready():
         return None
     async def advance(seconds):

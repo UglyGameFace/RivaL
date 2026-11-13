@@ -333,19 +333,103 @@ def _safe_receiver_error(code: int, raw: bytes) -> str:
     return label
 
 
+
+def _receiver_http_error(exc: error.HTTPError) -> str:
+    """Distinguish receiver JSON denials from a proxy/challenge 403.
+
+    The identity contract is not relaxed, and we never print a response
+    body, challenge HTML, bearer token, URL or private source material.
+    """
+    content_type = str(exc.headers.get("Content-Type", "")).lower() if exc.headers else ""
+    code = int(exc.code)
+    if "application/json" not in content_type:
+        return f"receiver_http_{code}_non_json_upstream"
+    raw = exc.read(1500)
+    label = _safe_receiver_error(code, raw)
+    return label if label != f"receiver_http_{code}" else f"receiver_http_{code}_unrecognized_json"
+
+
+def receiver_preflight() -> None:
+    """Safe, anonymous check on the actual GitHub-runner egress path.
+
+    /health must be served by our intended Worker, and its /ingest route
+    must refuse anonymous POST with 401. This is deliberately before
+    collecting any private Drive/host reports or requesting an OIDC
+    bearer; no permanent data is created by this probe.
+    """
+    headers = {"Accept": "application/json", "User-Agent": "RivaL-Evidence-Board/1.0"}
+    try:
+        health = _url_json(
+            AUDIENCE + "/health", headers=headers, timeout=12, limit=2048)
+    except error.HTTPError as exc:
+        raise ValueError("receiver_health_" + _receiver_http_error(exc)) from None
+    if health.get("receiver") != "rival-evidence-collector" or health.get("ok") is not True:
+        raise ValueError("receiver_health_identity_mismatch")
+    try:
+        _url_json(INGEST_URL, method="POST", body=b"{}",
+                  headers={**headers, "Content-Type": "application/json"},
+                  timeout=12, limit=1200)
+    except error.HTTPError as exc:
+        label = _receiver_http_error(exc)
+        if label != "receiver_http_401_authorization_required":
+            raise ValueError("receiver_anonymous_" + label) from None
+    else:
+        raise ValueError("receiver_anonymous_write_not_rejected")
+    print("Evidence-board receiver preflight: identity_verified anonymous_write_rejected")
+
+
+def _oidc_contract_summary(jwt: str) -> str:
+    """Compare public GitHub OIDC claim *names/values*, never echo the JWT.
+
+    This is a local diagnostic only, not a signature verification: the
+    Cloudflare receiver remains the sole source of authenticated trust.
+    """
+    import base64
+
+    try:
+        encoded = jwt.split(".")[1]
+        decoded = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        claims = json.loads(decoded)
+        expected = {
+            "iss": "https://token.actions.githubusercontent.com",
+            "aud": AUDIENCE,
+            "repository": "UglyGameFace/RivaL",
+            "ref": "refs/heads/main",
+            "workflow_ref": (
+                "UglyGameFace/RivaL/.github/workflows/"
+                "evidence-board-receipt.yml@refs/heads/main"
+            ),
+            "run_id": os.getenv("GITHUB_RUN_ID", ""),
+            "event_name": os.getenv("GITHUB_EVENT_NAME", ""),
+        }
+        if not isinstance(claims, dict):
+            return "local_oidc_invalid"
+        missing = [key for key, value in expected.items()
+                   if not value or str(claims.get(key, "")) != value]
+        return "local_oidc_contract_match" if not missing else (
+            "local_oidc_mismatch_" + "_".join(sorted(missing)))
+    except (ValueError, KeyError, TypeError, IndexError):
+        return "local_oidc_invalid"
+
+
 def _submit_signed_receipt(payload: dict, jwt: str) -> dict:
     try:
         return _url_json(
             INGEST_URL, method="POST",
             body=json.dumps(payload, separators=(",", ":")).encode(),
             headers={"Authorization": "Bearer " + jwt,
-                     "Content-Type": "application/json"},
+                     "Content-Type": "application/json",
+                     "Accept": "application/json",
+                     "User-Agent": "RivaL-Evidence-Board/1.0"},
             timeout=20, limit=15000,
         )
     except error.HTTPError as exc:
-        # The receiver has a strictly bounded, allowlisted error vocabulary.
-        # Never print the HTTP URL, token, provider body, or raw exception.
-        raise ValueError(_safe_receiver_error(exc.code, exc.read(1500))) from None
+        # Only allowlisted diagnostics escape. The on-runner claim check
+        # neither verifies nor weakens the receiver's RSA signature gate.
+        label = _receiver_http_error(exc)
+        if exc.code == 403:
+            label += "_" + _oidc_contract_summary(jwt)
+        raise ValueError(label) from None
 
 
 def _github_oidc() -> str:
@@ -424,6 +508,8 @@ if __name__ == "__main__":
     except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
         name = str(exc) if (isinstance(exc, ValueError)
                             and str(exc).startswith(("oidc_provider_http_",
-                                                     "receiver_http_"))) else type(exc).__name__
+                                                     "receiver_http_",
+                                                     "receiver_health_",
+                                                     "receiver_anonymous_"))) else type(exc).__name__
         print("Evidence-board publication unavailable:", name)
         sys.exit(1)

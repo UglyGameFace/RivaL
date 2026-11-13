@@ -296,6 +296,53 @@ def _archived_kalshi_windows(client, *, series: str, max_pages: int = 24) -> dic
     raise ValueError("Kalshi historical market listing exceeded bounded pages")
 
 
+def missing_overlap_identities(bundles, *, asset, source, now, limit=32):
+    """Select native contracts with missing exact-feature-bar history twins.
+
+    Re-fetching the same 32 newest contracts forever strands older observed
+    contracts. Use the already verified history and exact model sampling grid
+    to choose missing/mismatched pairs, rotating a bounded batch when needed.
+    No absent bar is imputed, promoted, or counted as verified.
+    """
+    if source not in PRICE_SEMANTICS or asset not in ("BTC", "ETH", "SOL", "XRP"):
+        raise ValueError("invalid native source or asset")
+    if not 0 <= limit <= 96:
+        raise ValueError("invalid bounded XMarket overlap source budget")
+    if limit == 0:
+        return []
+    live, history = [], []
+    for bundle in bundles:
+        if bundle.get("asset") != asset:
+            raise ValueError("cross-asset XMarket native overlap")
+        for row in bundle.get("samples", []):
+            if row.get("source") == source:
+                if row.get("origin") == "live":
+                    live.append(row)
+                elif row.get("origin") == "backfill":
+                    history.append(row)
+    fidelity = max((r["fidelity_minutes"] for r in history), default=1)
+    observed = sampled_bars(live, asset=asset, pm_fidelity=fidelity)[source]
+    restored = sampled_bars(history, asset=asset, pm_fidelity=fidelity)[source]
+    outstanding = {}
+    for at, row in observed.items():
+        twin = restored.get(at)
+        if (twin is not None and twin["contract_id"] == row["contract_id"]
+                and abs(float(twin["price"]) - float(row["price"])) <= PRICE_TOLERANCE):
+            continue
+        identity = {k: row[k] for k in (
+            "asset", "contract_id", "opens_at", "closes_at", "token_id", "slug"
+        ) if k in row}
+        outstanding[row["contract_id"]] = identity
+    candidates = sorted(
+        outstanding.values(), key=lambda row: row["opens_at"], reverse=True
+    )
+    if len(candidates) <= limit:
+        return candidates
+    six_hour_slot = int(timestamp(now).timestamp()) // (6 * 3600)
+    start = (six_hour_slot * limit) % len(candidates)
+    return (candidates[start:] + candidates[:start])[:limit]
+
+
 def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
              pending=None, retry_gaps=12):
     """Advance over unavailable windows, and retain exact missing-source gaps.
@@ -313,37 +360,28 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
         raise ValueError("invalid XMarket gap sources")
     historical_kalshi = None
     archived_kalshi_failure = None
-    identities = {}
-    for bundle in bundles:
-        for p in bundle["samples"]:
-            if p.get("origin") == "live":
-                identity = {k: p[k] for k in (
-                    "asset", "contract_id", "opens_at", "closes_at", "token_id", "slug"
-                ) if k in p}
-                identities[p["source"], p["contract_id"]] = identity
-
     # Independently establish overlap with actual prospective observations.
-    # Acquiring old samples alone must never turn fidelity status green.
+    # Missing-first selection advances beyond already restored native bars.
     for source in PRICE_SEMANTICS:
-        items = [(key, val) for key, val in identities.items() if key[0] == source]
-        consecutive_failures = 0
-        for (src, _), identity in sorted(
-            items, key=lambda x: x[1]["opens_at"], reverse=True
-        )[:32]:
+        items = missing_overlap_identities(
+            bundles, asset=asset, source=source, now=now, limit=32
+        )
+        for identity in items:
             try:
                 rows, publication = collect_contract(
-                    client, source=src, identity=identity, root=root, now=now
+                    client, source=source, identity=identity, root=root, now=now
                 )
                 history.extend(rows)
                 publications.append(publication)
-                consecutive_failures = 0
             except (httpx.HTTPError, ValueError, HistoryImportError) as exc:
                 failure = source_failure(
                     source, "overlap", exc, window_close=identity["closes_at"]
                 )
                 errors.append(failure)
-                consecutive_failures += 1
-                if failure["retryable"] or consecutive_failures >= 3:
+                # Missing exact contracts must not block all remaining
+                # prospective overlap repairs. Keep the 32-contract cap;
+                # stop immediately on provider timeout/rate-limit instead.
+                if failure["retryable"]:
                     break
 
     last_closed = datetime.fromtimestamp(int(now.timestamp()) // 900 * 900, UTC)

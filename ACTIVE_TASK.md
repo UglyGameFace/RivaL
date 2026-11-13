@@ -1,3 +1,13 @@
+## 2026-11-12 — XMarket per-asset weekly source consistency
+
+- **Objective:** After PR #549 restored Kalshi live/archived native history and bounded HTTP 429 retry, remove three repeated expensive market-history restores per asset's 5/15/60-minute archive job. This reduces pressure on the existing provider quotas without sacrificing correctness. Branch `fix/xmarket-asset-scoped-training-evidence-20261112`, starting from merged `main@1b41ca8`.
+- **Verified cause:** `.github/workflows/archive-model-training.yml` loops over 5/15/60-minute horizons as separate Python processes. `weekly_archive.train_weekly_archive` currently invokes `weekly_inputs` independently for each horizon; `weekly_inputs` re-reads private Drive reports and performs 32-contract overlap requests per source and up to 96 15-minute historical windows each time. That repeats public Kalshi calls and can yield different evidence for supposedly comparable models.
+- **Repair:** The first horizon performs the exact original verified Drive restore and independently queried native comparison. Save its complete immutable source samples, verification, provider errors, original Drive receipt hashes and trained-through clock to a content-hashed, within-job snapshot outside the raw-bundle directory. Later horizons reuse the exact same source data, not a re-fetched or guessed price. A damaged snapshot or changed asset/clock fails closed; failed first acquisition is not cached. Source quality requirements and independent model validation/test/promotion gates remain untouched.
+- **Acceptance:** Exact-head CI, main CI and actual Discloud upload after merge. Re-run the scheduled Nov 13 15:17 UTC archive on the next completed-day export and require genuine provider fidelity, original hash receipts, correct split dates, fitted model, import and prospective shadow issuance. **No claim of an XMarket model yet**. Because prospective source capture began Nov 12 and the independent 28d validation/28d test are disjoint, no engineering shortcut may manufacture earlier prospective source observations.
+- **Sequence after this:** evaluate already implemented VolCal ZIP-derived features by controlled paired ablations, prove after-cost forward superiority, and fix the still-failing signed Evidence Board publisher. All errors/unavailable data remain visible as such.
+
+---
+
 ## 2026-11-12 — XMarket Kalshi native archive recovery
 
 - **Objective:** Keep the approved XMarket→ZIP-derived challengers→forward scoring→evidence publication order. Fix the confirmed Kalshi native backfill HTTP 429 obstacle before the Nov 13 15:17 UTC archive run. Branch `fix/xmarket-kalshi-rate-limit-recovery-20261112` based on `main@f6ca12c`, no overlapping PR at branch creation.

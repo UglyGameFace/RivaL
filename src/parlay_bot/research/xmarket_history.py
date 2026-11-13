@@ -431,6 +431,52 @@ async def weekly_inputs(drive, *, asset: str, through, cache: Path, max_windows=
     return combine([*bundles, bundle], errors=errors)
 
 
+
+async def weekly_inputs_once(drive, *, asset: str, through, cache: Path,
+                             max_windows=96) -> dict:
+    """One verified native-source acquisition per asset/archive-job input clock.
+
+    The archive command trains 5m/15m/60m in separate Python processes.
+    Without a local snapshot each process re-fetches the same independent
+    native histories, multiplying public Kalshi requests and possibly
+    comparing models against different upstream source observations.
+
+    This is a *within-job* cache only, never an alternative to verified
+    Drive restore, prospective source receipts or fitted-model gates.
+    Reusing a corrupted/stale cache fails closed rather than changing
+    frozen source inputs partway through the asset's horizon grid.
+    """
+    if asset not in ("BTC", "ETH", "SOL", "XRP"):
+        raise ValueError("unsupported XMarket training asset")
+    through_clock = timestamp(through).isoformat()
+    key = hashlib.sha256(through_clock.encode()).hexdigest()[:16]
+    snapshot = cache.parent / "xmarket-training-snapshots" / f"{asset}-{key}.json"
+    if snapshot.is_file():
+        doc = load_local_inputs(snapshot, asset=asset)
+        if (doc.get("asset") != asset or doc.get("trained_through") != through_clock
+                or not isinstance(doc.get("verification"), dict)
+                or not isinstance(doc.get("errors"), list)
+                or not isinstance(doc.get("receipts"), list)):
+            raise ValueError("XMarket per-asset training snapshot identity mismatch")
+        saved_sha = doc.get("source_snapshot_sha256")
+        body = {k: v for k, v in doc.items() if k != "source_snapshot_sha256"}
+        if not isinstance(saved_sha, str) or hashlib.sha256(canonical(body)).hexdigest() != saved_sha:
+            raise ValueError("XMarket per-asset training snapshot hash mismatch")
+        return doc
+
+    data = await weekly_inputs(drive, asset=asset, through=through,
+                               cache=cache, max_windows=max_windows)
+    body = {"schema": "rival-xmarket-training-inputs-v1", "asset": asset,
+            "trained_through": through_clock, **data}
+    digest = hashlib.sha256(canonical(body)).hexdigest()
+    doc = {**body, "source_snapshot_sha256": digest}
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    temporary = snapshot.with_suffix(".json.pending")
+    temporary.write_bytes(canonical(doc))
+    temporary.replace(snapshot)
+    return doc
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Restore/verify/backfill XMarket native history")
     parser.add_argument("--asset", required=True, choices=("BTC", "ETH", "SOL", "XRP"))

@@ -16,9 +16,9 @@ import hashlib
 import json
 import tempfile
 from datetime import UTC, datetime
-from urllib.parse import urljoin, urlsplit
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 

@@ -104,6 +104,10 @@ class XmarketInputs:
                 CREATE TABLE IF NOT EXISTS rival_xmarket_exports (
                     asset TEXT NOT NULL, day TEXT NOT NULL, drive_file_id TEXT NOT NULL,
                     PRIMARY KEY(asset,day));
+                CREATE TABLE IF NOT EXISTS rival_xmarket_export_staging (
+                    asset TEXT NOT NULL, day TEXT NOT NULL,
+                    payload_json TEXT NOT NULL, payload_sha256 TEXT NOT NULL,
+                    PRIMARY KEY(asset,day));
             """)
         self._ready = True
 
@@ -243,10 +247,47 @@ class XmarketInputs:
                 "live_venues": [r["venue"] for r in venues], "verification": {},
                 "created_at": now.isoformat()}
 
+    def _staged_day_bundle(self, asset: str, day: str, *, now: datetime) -> dict:
+        """Keep exact first-attempt bytes across crashes before export acknowledgment.
+
+        Daily source rows are immutable, but created_at and the current venue
+        heartbeat are not. Rebuilding an interrupted export would otherwise
+        generate a different content address and potentially duplicate Drive
+        evidence. The temporary local/PG snapshot is deleted only in the
+        transaction that records the successful, SHA-read-back Drive upload.
+        """
+        self.initialize()
+        with self.store.connect() as conn:
+            saved = conn.execute(
+                "SELECT payload_json,payload_sha256 FROM rival_xmarket_export_staging "
+                "WHERE asset=? AND day=?", (asset, day)).fetchone()
+        if saved is None:
+            bundle = self.day_bundle(asset, day, now=now)
+            payload = canonical(bundle)
+            digest = hashlib.sha256(payload).hexdigest()
+            with self.store.connect() as conn:
+                conn.execute(
+                    "INSERT INTO rival_xmarket_export_staging VALUES (?,?,?,?) "
+                    "ON CONFLICT DO NOTHING",
+                    (asset, day, payload.decode("utf-8"), digest))
+                saved = conn.execute(
+                    "SELECT payload_json,payload_sha256 FROM rival_xmarket_export_staging "
+                    "WHERE asset=? AND day=?", (asset, day)).fetchone()
+        payload = saved["payload_json"].encode("utf-8")
+        if hashlib.sha256(payload).hexdigest() != saved["payload_sha256"]:
+            raise ValueError("XMarket staged export bytes changed before publication")
+        bundle = json.loads(payload)
+        if (bundle.get("schema") != BUNDLE_SCHEMA or bundle.get("asset") != asset
+                or bundle.get("day") != day or not isinstance(bundle.get("samples"), list)):
+            raise ValueError("XMarket staged export identity changed before publication")
+        return bundle
+
     def _mark_export(self, asset, day, file_id):
         with self.store.connect() as conn:
             conn.execute("INSERT INTO rival_xmarket_exports VALUES (?,?,?) ON CONFLICT DO NOTHING",
                          (asset, day, file_id))
+            conn.execute("DELETE FROM rival_xmarket_export_staging WHERE asset=? AND day=?",
+                         (asset, day))
 
     def _pending_days(self, asset, clock):
         cutoff = (clock - timedelta(hours=3)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -269,7 +310,7 @@ class XmarketInputs:
         published = 0
         for asset in ("BTC", "ETH", "SOL", "XRP"):
             for day in await asyncio.to_thread(self._pending_days, asset, clock):
-                bundle = await asyncio.to_thread(self.day_bundle, asset, day, now=clock)
+                bundle = await asyncio.to_thread(self._staged_day_bundle, asset, day, now=clock)
                 if not bundle["samples"]:
                     continue
                 with TemporaryDirectory() as folder:

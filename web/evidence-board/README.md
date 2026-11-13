@@ -22,6 +22,38 @@ Model-source constraints stay strict: 12 XMarket November 12 reports had no elig
 
 ## Regression
 
+### Per-timeframe scores and the completed-day evidence chain
+
+The incumbent scoring receipt reads at most 500 valid settled source pairs
+**per asset and horizon**, using the existing asset/horizon/issuance index.
+The previous shared per-asset limit could let busy 15/60-minute scopes crowd
+out a 5-minute scope. Every receipt now identifies its sampling policy,
+distinct target windows and venue count. Venue pairs remain correlated
+observations, not independent trades. Settlement must already exist at the
+capture time. The chart never joins snapshots with different sampling policies.
+
+Host XMarket receipts preserve the actual capture/export/fit/import/shadow
+stage, the eligible-day cutoff, the recent pending backlog and published-day
+counts for each asset. Private Drive file IDs and raw rows are discarded.
+An old blocked training report keeps its own date; it cannot override a newer
+host export acknowledgment or prove that the trainer restored those bytes.
+Offline source/split/gate rejection reasons survive the publisher and receiver.
+Offline acceptance still does not prove import, prospective shadow issuance,
+promotion or after-cost edge.
+
+`collector.js` versions the production **module Worker** receiver. Its OIDC
+issuer/signature/repository/ref/workflow checks and KV binding are preserved.
+Deploy it with `main_module: "collector.js"` and `EVIDENCE_KV` bound to the
+existing namespace; deploy the board with the original service binding and
+legacy Service Worker format. Receiver changes are backward compatible with
+older signed payloads. Deploy the receiver before the publisher emits new fields.
+
+`node tools/test_evidence_collector.js` exercises the actual receiver with a
+locally generated RSA key, signed fixtures, claim/signature rejection, the
+sanitized KV round trip and private-field removal. It makes no network calls
+and creates no production evidence. PostgreSQL CI also executes the actual
+bounded scoring query against busy mixed-horizon fixtures.
+
 Run `node tools/test_evidence_board_ui.js`. The normal Python test suite also runs this via `tests/test_evidence_board_ui_source.py` when Node is available. The test parses and compiles the **real** Worker-served browser script, populates synthetic signed-source fixtures without network or secrets, and exercises all research queues, Experiments, CI, Audit, report/PR drill-downs, and read-only route invariants.
 
 This source snapshot and Cloudflare's previous Worker versions provide rollback evidence; any later production change must update this source and tests in the same cohesive change. The test's synthetic fixtures prove UI behavior only, not source-model accuracy.

@@ -1,3 +1,15 @@
+## 2026-11-13 — Continue bot evidence chain after #555
+
+- **Objective:** Preserve the approved XMarket → controlled ZIP-feature experiments → forward performance order. Prove actual source publication/restore/fit/import/shadow stages; never infer completion from UI, CI or changing weights.
+- **Recovered production:** #555 is merged at `a407d3f`; main CI #43362955340 passed and Discloud release #43363461282 actually uploaded. A fresh read-only daily-receipt rerun (#43278772307 attempt 2) at 04:13 UTC found 108 forecasts issued, 104 settlements, 107 changing-weight streams, 8/8 fresh native inputs, **4 asset-days awaiting export**, 0 imported XMarket scopes, 0 XMarket shadows and 0 qualified paper scopes. Best exact-source paper cohort has 14 observed days and fails baseline/after-cost gates. This is not a verified edge.
+- **Confirmed reporting defects:** The 500-row per-asset score limit can crowd out an entire timeframe. The signed publisher and receiver drop the host's export stage/backlog; the training-report reducer also discards real overlap rejection codes and labels evaluated reports unknown. An older training report can therefore look like the only evidence even after the host has progressed.
+- **Branch:** `work/rival-evidence-chain-20261113`. Implement per-asset/horizon bounded scoring, settlement cutoff, explicit correlated pairs versus target windows, sampling-policy separation in charts, sanitized export-chain propagation, genuine source/split/offline-gate reasons, and source control for the actual receiver. No market collectors, trainers, learned weights, execution controls or promotion thresholds changed.
+- **Validation:** 23 targeted tests passed locally (one PostgreSQL fixture skipped without local service), Ruff passed, real RSA-signed receiver round-trip and UI smoke passed. Exact-head full PostgreSQL CI, live Worker source comparison/deployment, signed publication of new fields and bot uptake are required before production acceptance.
+- **Still open:** #554 has no verified recurring scheduled receipt. Nov 13 15:17 UTC training is already scheduled; do not duplicate it. XMarket completed-day publication and independent restore remain unproven in the last host sample. Full Model Lab inventory, scored Intelligence quality and a statistically reliable after-cost model remain separate unfinished work.
+- **Next:** Verify exact CI and production receipt, then use the next genuine export/training outcome to fix the identified acquisition or fit blocker. Keep #299/#6/#138 open and never manufacture missing history or future outcomes.
+
+---
+
 ## 2026-11-13 — Evidence Board freshness, Android automatic refresh
 
 - **Confirmed owner complaint:** browser showed a 20:42 EST signed receipt at 20:57 EST yet labeled it "Fresh signed receipt." Root cause: `rival-evidence-board` frontend treated receipts up to **90 minutes old** as fresh and had **no polling/visibility resume timer**; the only signed GitHub source publisher cron was **hourly at minute 37**. A manual Refresh only fetched cached KV; it could not force a new Discloud, PostgreSQL or private Drive observation.

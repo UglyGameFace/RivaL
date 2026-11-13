@@ -19,6 +19,18 @@ from evidence_board_github import read_github_snapshot, read_public_intelligence
 ASSETS = {"BTC", "ETH", "SOL", "XRP"}
 HORIZONS = {5, 15, 60}
 REPORT_NAME = re.compile(r"xmarket-v1-(BTC|ETH|SOL|XRP)-(5|15|60)m-report\.json")
+XMARKET_REASONS = {
+    "no_prospective_export", "no_eligible_live_feature_bars", "no_independent_history",
+    "no_eligible_historical_feature_bars", "no_exact_feature_bar_overlap",
+    "insufficient_exact_pairs", "price_mismatch", "insufficient_overlap_coverage",
+    "insufficient_overlap", "missing_history", "mismatch", "http_429", "unverified",
+    "insufficient_training_split", "insufficient_labelled_rows", "offline_gates_failed",
+    "offline_gates_passed",
+}
+XMARKET_STAGES = {
+    "not_initialized", "waiting_for_inputs", "waiting_for_completed_day_export",
+    "waiting_for_fit", "imported_no_shadow_rows", "shadow_issuing", "read_unavailable",
+}
 INGEST_URL = "https://rival-evidence-collector.staytrippynlw.workers.dev/ingest"
 AUDIENCE = "https://rival-evidence-collector.staytrippynlw.workers.dev"
 PAIR_MARKER = "RIVAL_PAIRED_SCORE_RECEIPT="
@@ -44,6 +56,39 @@ def _nonnegative(value: object) -> int | None:
     return value if type(value) is int and 0 <= value <= 10_000_000 else None
 
 
+def _iso_timestamp(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 40:
+        return None
+    try:
+        clock = datetime.fromisoformat(value)
+        return clock.astimezone(UTC).isoformat() if clock.utcoffset() is not None else None
+    except ValueError:
+        return None
+
+
+def _export_summary(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    published, pending = [], []
+    source = value.get("published")
+    for item in (source if isinstance(source, list) else [])[:4]:
+        if not isinstance(item, dict) or item.get("asset") not in ASSETS:
+            continue
+        day = item.get("latest_exported_day")
+        published.append({"asset": item["asset"],
+            "exported_days": _nonnegative(item.get("exported_days")),
+            "latest_exported_day": day if isinstance(day, str)
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else None})
+    source = value.get("pending_by_asset")
+    for item in (source if isinstance(source, list) else [])[:4]:
+        if isinstance(item, dict) and item.get("asset") in ASSETS:
+            pending.append({"asset": item["asset"], "days": _nonnegative(item.get("days"))})
+    return {"published": published, "pending_by_asset": pending,
+        "recent_completed_days_pending": _nonnegative(value.get("recent_completed_days_pending")),
+        "eligible_before": _iso_timestamp(value.get("eligible_before")),
+        "does_not_prove_independent_drive_restore": True}
+
+
 def summarize_host(report: dict | None) -> tuple[dict, dict]:
     """Only persisted, bounded host aggregates, with unknown distinct from 0."""
     host = {
@@ -52,6 +97,7 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
         "learning_settled": None, "xmarket_fresh_inputs": None,
         "xmarket_expected_inputs": None, "xmarket_shadow_rows": None,
         "xmarket_imported_scopes": None,
+        "xmarket_stage": "read_unavailable", "xmarket_exports": None,
     }
     db = {
         "status": "unavailable", "weight_updates_observed": None,
@@ -76,6 +122,9 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
     host["learning_settled"] = _nonnegative(learning.get("settled"))
 
     xmarket = report.get("xmarket")
+    if isinstance(xmarket, dict) and xmarket.get("status") in XMARKET_STAGES:
+        host["xmarket_stage"] = xmarket["status"]
+        host["xmarket_exports"] = _export_summary(xmarket.get("export_coverage"))
     if isinstance(xmarket, dict) and xmarket.get("status") != "read_unavailable":
         cov = xmarket.get("source_coverage")
         if isinstance(cov, dict):
@@ -210,9 +259,7 @@ def summarize_xmarket_report(doc: dict, modified_at: str | None) -> dict | None:
     pm = pm if isinstance(pm, dict) else {}
     kalshi = kalshi if isinstance(kalshi, dict) else {}
     reason = pm.get("blocked_reason") or kalshi.get("blocked_reason")
-    if reason not in (
-        "no_prospective_export", "insufficient_overlap", "missing_history", "mismatch"
-    ):
+    if reason not in XMARKET_REASONS:
         failures = doc.get("data_errors") or []
         reason = (
             "http_429" if isinstance(failures, list) and any(
@@ -221,6 +268,16 @@ def summarize_xmarket_report(doc: dict, modified_at: str | None) -> dict | None:
             ) else "unverified"
         )
     status = doc.get("training_status")
+    if doc.get("evaluation_status") == "held-out evaluated":
+        status = "accepted" if doc.get("gates_passed") is True else "rejected"
+        reason = "offline_gates_passed" if status == "accepted" else "offline_gates_failed"
+    elif reason == "unverified" and isinstance(doc.get("gate_failures"), list):
+        failures = doc["gate_failures"]
+        if any(isinstance(f, str) and f.startswith("split too small:") for f in failures):
+            reason = "insufficient_training_split"
+        elif any(isinstance(f, str) and f.startswith("not enough labelled overlap rows:")
+                 for f in failures):
+            reason = "insufficient_labelled_rows"
     if status not in ("blocked", "fitted", "accepted", "rejected"):
         status = "unverified"
     window = doc.get("effective_window")

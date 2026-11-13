@@ -84,4 +84,17 @@ assert.match(source,/req\.method!=='GET'&&req\.method!=='HEAD'/);
 assert.match(source,/not-in-signed-snapshot/);
 assert.match(source,/RIVAL_EVIDENCE_RECEIPTS\.fetch/);
 assert.doesNotMatch(source,/return tracked\.map\(/);
+assert.match(cx.xmarketExportBox(),/breakdown is not available/);
+cx.state.evidence.host.xmarket_stage='waiting_for_completed_day_export';
+cx.state.evidence.host.xmarket_exports={recent_completed_days_pending:4,
+ eligible_before:at,published:[],pending_by_asset:[{asset:'BTC',days:1}]};
+assert.match(cx.xmarketExportBox(),/Waiting for completed-day export/);
+assert.match(cx.xmarketExportBox(),/awaiting publication: 4/);
+cx.state.evidence.performance.sampling_policy='per-asset-horizon-v2';
+cx.state.history={points:[
+ {captured_at:at,performance:{sampling_policy:'per-asset-v1',scopes:cx.state.evidence.performance.scopes}},
+ {captured_at:at,performance:{sampling_policy:'per-asset-horizon-v2',scopes:cx.state.evidence.performance.scopes}}
+]};
+assert.doesNotMatch(cx.scoreBox(),/<polyline/,'Changed sampling policies cannot become a trend');
+assert.match(cx.scoreBox(),/500 rows per asset and timeframe/);
 console.log('Evidence Board source-backed UI smoke passed');

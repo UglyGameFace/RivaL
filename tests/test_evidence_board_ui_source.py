@@ -26,6 +26,16 @@ class EvidenceBoardSourceTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
+    def test_actual_collector_signed_round_trip(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node is not installed")
+        result = subprocess.run(
+            [node, str(ROOT / "tools/test_evidence_collector.js")],
+            cwd=ROOT, capture_output=True, text=True, timeout=20, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

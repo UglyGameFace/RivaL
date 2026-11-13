@@ -110,10 +110,13 @@ SEEDS = (
 
 EXPLORE = 0.25            # share of refills that are fresh designs, not changes
 REVIEW_EVERY = timedelta(minutes=30)
-JUDGE_MIN_RESULTS = 300   # graded calls across exchanges before a verdict
-JUDGE_MIN_DAYS = 2
+JUDGE_MIN_RESULTS = 300   # distinct target clocks, not repeated venue forecasts
+JUDGE_MIN_DAYS = 2        # early close ONLY with strong evidence of losing
 LOSING_Z = 2.0            # clearly losing: upper bound below zero
-NO_EDGE_AFTER = timedelta(days=5)
+# Route B cannot qualify a design before 21 UTC days. Do not discard an
+# inconclusive trial after five calendar days and make promotion impossible.
+NO_EDGE_MIN_DAYS = 21
+NO_EDGE_AFTER = timedelta(days=21)
 MAX_AGE = timedelta(days=35)
 CUT_SHARE = 0.5           # early stop on at least this share of its exchanges
 SEARCH_ALPHA = 0.005      # Route B's 2.58 one-sided bar, split across designs
@@ -704,52 +707,89 @@ class ModelLab:
 
     # -- review ------------------------------------------------------------------
 
-    def _scores(self, families: list[str], horizon: int, since: str) -> dict[str, dict]:
-        """Per design: daily paired gains (main Brier - design Brier) and streams."""
+    def _scores(self, families: list[str], horizon: int, since: str,
+                *, through: datetime | None = None) -> dict[str, dict] | None:
+        """Judge unique future target clocks, not correlated venue duplicates.
+
+        Collapse all venue/asset/reference forecasts at the same UTC target
+        to one mean paired gain, then give each target equal weight within
+        its UTC day and each observed day equal weight across the trial.
+        Keep raw forecast counts separately for display, not eligibility.
+        """
         if not families:
             return {}
-        marks = ",".join("?" for _ in families)
-        days: dict[str, dict[str, list[float]]] = {f: {} for f in families}
-        streams: dict[str, set] = {f: set() for f in families}
         from parlay_bot.storage.optional_reads import is_missing_table, optional_rows
 
-        for asset in ASSETS:
-            rows = optional_rows(
-                self.store,
-                f"""SELECT family, venue, contract, SUBSTR(target_opened_at,1,10) AS day,
-                              COUNT(*) AS n, SUM(incumbent_brier-model_brier) AS gain
-                       FROM rival_model_shadow_forecasts
-                       WHERE asset=? AND horizon_minutes=? AND family IN ({marks})
-                         AND issued_at>=? AND settled_at IS NOT NULL
-                         AND model_brier IS NOT NULL AND incumbent_brier IS NOT NULL
-                       GROUP BY family, venue, contract, SUBSTR(target_opened_at,1,10)""",
-                (asset, int(horizon), *families, since), what="model lab score read")
-            if rows is None:
-                # No ledger yet is "no results"; any other failure means
-                # this timeframe is not judged this round (never closed blind).
-                try:
-                    with self.store.connect() as conn:
-                        conn.execute("SELECT 1 FROM rival_model_shadow_forecasts LIMIT 1")
-                except Exception as error:  # noqa: BLE001
-                    if is_missing_table(error):
-                        continue
-                return None
-            for r in rows:
-                family = str(r["family"])
-                cell = days[family].setdefault(str(r["day"]), [0, 0.0])
-                cell[0] += int(r["n"])
-                cell[1] += float(r["gain"] or 0.0)
-                streams[family].add((str(r["venue"]), str(r["contract"])))
+        until = utc(through or datetime.now(UTC)).isoformat()
+        marks = ",".join("?" for _ in families)
+        assets = ",".join("?" for _ in ASSETS)
+        where = (f"asset IN ({assets}) AND horizon_minutes=? "
+                 f"AND family IN ({marks}) AND issued_at>=? AND issued_at<=? "
+                 f"AND settled_at IS NOT NULL AND settled_at<=? "
+                 f"AND outcome_up IN (0,1) "
+                 f"AND model_brier BETWEEN 0 AND 1 "
+                 f"AND incumbent_brier BETWEEN 0 AND 1")
+        params = (*ASSETS, int(horizon), *families, since, until, until)
+        rows = optional_rows(
+            self.store,
+            f"""SELECT family, SUBSTR(target_opened_at,1,10) AS day,
+                       COUNT(*) AS targets, SUM(forecasts) AS forecasts,
+                       SUM(target_gain) AS gain
+                FROM (
+                    SELECT family, target_opened_at,
+                           COUNT(*) AS forecasts,
+                           AVG(incumbent_brier-model_brier) AS target_gain
+                    FROM rival_model_shadow_forecasts
+                    WHERE {where}
+                    GROUP BY family, target_opened_at
+                ) AS per_target
+                GROUP BY family, SUBSTR(target_opened_at,1,10)""",
+            params, what="model lab target-level score read",
+        )
+        if rows is None:
+            # An uninitialized ledger is harmless; a real database failure
+            # must never close/restart valuable designs on missing evidence.
+            try:
+                with self.store.connect() as conn:
+                    conn.execute("SELECT 1 FROM rival_model_shadow_forecasts LIMIT 1")
+            except Exception as error:  # noqa: BLE001 - optional ledger
+                if is_missing_table(error):
+                    return {family: {"results": 0, "targets": 0, "days": 0,
+                                     "gain": None, "se": None, "fitness": None,
+                                     "streams": set()} for family in families}
+            return None
+        source_rows = optional_rows(
+            self.store,
+            f"""SELECT DISTINCT family, venue, contract
+                FROM rival_model_shadow_forecasts WHERE {where}""",
+            params, what="model lab scored streams read",
+        )
+        if source_rows is None:
+            return None
+
+        days: dict[str, dict[str, tuple[int, float]]] = {f: {} for f in families}
+        raw_counts: dict[str, int] = {f: 0 for f in families}
+        streams: dict[str, set] = {f: set() for f in families}
+        for row in rows:
+            family = str(row["family"])
+            target_count = int(row["targets"])
+            if target_count <= 0:
+                continue
+            days[family][str(row["day"])] = (target_count, float(row["gain"]))
+            raw_counts[family] += int(row["forecasts"])
+        for row in source_rows:
+            streams[str(row["family"])].add((str(row["venue"]), str(row["contract"])))
         out = {}
         for family in families:
-            daily = [g / n for n, g in days[family].values() if n]
-            results = sum(n for n, _ in days[family].values())
+            daily = [gain / n for n, gain in days[family].values() if n]
+            targets = sum(n for n, _ in days[family].values())
             mean = statistics.mean(daily) if daily else None
             se = (statistics.stdev(daily) / math.sqrt(len(daily))
                   if len(daily) > 1 else None)
             fitness = (mean * len(daily) / (len(daily) + 3)) if mean is not None else None
-            out[family] = {"results": results, "days": len(daily), "gain": mean, "se": se,
-                           "fitness": fitness if results >= JUDGE_MIN_RESULTS // 3 else None,
+            out[family] = {"results": raw_counts[family], "targets": targets,
+                           "days": len(daily), "gain": mean, "se": se,
+                           "fitness": fitness if targets >= JUDGE_MIN_RESULTS // 3 else None,
                            "streams": streams[family]}
         return out
 
@@ -794,16 +834,21 @@ class ModelLab:
         """Why to close an active design now, or None to keep it running."""
         age = now - utc(datetime.fromisoformat(record["opened_at"]))
         streams = score.get("streams") or set()
-        if streams and len(cut) >= max(1, math.ceil(len(streams) * CUT_SHARE)):
+        # An unrelated stop record must not count toward the fraction of
+        # *scored* streams for this exact design.
+        if streams and len(streams & set(cut)) >= max(1, math.ceil(len(streams) * CUT_SHARE)):
             return "cut by early stop on most exchanges"
         gain, se = score.get("gain"), score.get("se")
-        judged = (score.get("results", 0) >= JUDGE_MIN_RESULTS
+        judged = (score.get("targets", 0) >= JUDGE_MIN_RESULTS
                   and score.get("days", 0) >= JUDGE_MIN_DAYS and gain is not None
                   and se is not None)
         if judged and gain + LOSING_Z * se < 0:
             return "clearly losing to the main model"
-        if age >= NO_EDGE_AFTER and (not judged or gain - se <= 0):
-            return "no edge after 5 days"
+        # Inconclusive research is not a failed model at day five. Require
+        # actual future evidence over the same 21-day floor as Route B.
+        if (age >= NO_EDGE_AFTER and score.get("days", 0) >= NO_EDGE_MIN_DAYS
+                and judged and gain - se <= 0):
+            return "no verified edge after 21 evaluated days"
         if age >= MAX_AGE:
             return "trial finished without passing"
         return None
@@ -818,7 +863,7 @@ class ModelLab:
             running = [r for r in here if r["status"] in ("active", "passed")]
             families = [r["family"] for r in running]
             oldest = min((r["opened_at"] for r in running), default=stamp.isoformat())
-            scores = self._scores(families, horizon, oldest)
+            scores = self._scores(families, horizon, oldest, through=stamp)
             if scores is None:
                 continue
             cuts = self._cut(families)

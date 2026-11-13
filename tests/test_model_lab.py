@@ -168,6 +168,99 @@ def _shadow_rows(store, family, *, gain, days=3, per_day=150, venue="okx"):
                      1, 0.25 - gain + (0.002 if k % 2 else -0.002), 0.25))
 
 
+
+
+def test_lab_scoring_gives_correlated_venue_forecasts_one_target_vote(store):
+    """Popular streams cannot dominate fitness by issuing duplicate forecasts."""
+    from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
+
+    ShadowModelCompetition(store).initialize()
+    family = family_of(SEEDS[0], 5)
+    with store.connect() as conn:
+        for day in (1, 2):
+            first = NOW - timedelta(days=day, hours=1)
+            # One genuine target is favorable; the other is copied across
+            # ten venues/assets. A row-weighted average would be negative,
+            # but there are only two distinct target clocks on each day.
+            for target, gain, copies in (
+                (first, 0.02, 1),
+                (first + timedelta(minutes=5), -0.01, 10),
+            ):
+                for n in range(copies):
+                    asset = "ETH" if n == 9 else "BTC"
+                    venue = f"test_venue_{n}"
+                    contract = f"{asset}-PERP-{n}"
+                    conn.execute(
+                        """INSERT INTO rival_model_shadow_forecasts
+                           (venue,contract,quote,asset,horizon_minutes,family,
+                            reference_opened_at,issued_at,target_opened_at,
+                            probability_up,incumbent_up,baseline_up,
+                            training_count,training_sha256,settled_at,outcome_up,
+                            model_brier,incumbent_brier)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (venue, contract, "USDT", asset, 5, family,
+                         (target - timedelta(minutes=5)).isoformat(),
+                         (target - timedelta(minutes=1)).isoformat(),
+                         target.isoformat(), .5, .5, .5,
+                         100, "b" * 64,
+                         (target + timedelta(minutes=5)).isoformat(), 1,
+                         .25 - gain, .25),
+                    )
+        # This future settlement must never alter an earlier review.
+        future = NOW + timedelta(days=1)
+        conn.execute(
+            """INSERT INTO rival_model_shadow_forecasts
+               (venue,contract,quote,asset,horizon_minutes,family,
+                reference_opened_at,issued_at,target_opened_at,
+                probability_up,incumbent_up,baseline_up,training_count,
+                training_sha256,settled_at,outcome_up,model_brier,incumbent_brier)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("test_future", "BTC-FUTURE", "USDT", "BTC", 5, family,
+             (NOW - timedelta(minutes=5)).isoformat(), NOW.isoformat(),
+             future.isoformat(), .5, .5, .5, 100, "b" * 64,
+             future.isoformat(), 1, 1.0, .0),
+        )
+    lab = ModelLab(store)
+    score = lab._scores([family], 5, (NOW - timedelta(days=3)).isoformat(),
+                        through=NOW)[family]
+    assert score["results"] == 22           # original raw rows are reported
+    assert score["targets"] == 4            # only 2 independent targets per day
+    assert score["days"] == 2
+    assert score["gain"] == pytest.approx(.005)
+    assert score["fitness"] is None         # no confident winner from 4 targets
+    assert len(score["streams"]) == 10
+
+
+def test_model_lab_keeps_inconclusive_designs_through_full_forward_window():
+    record = {"opened_at": (NOW - timedelta(days=6)).isoformat()}
+    uncertain = {"targets": 400, "results": 4000, "days": 6,
+                 "gain": 0.001, "se": .01, "streams": {("okx", "BTC")}}
+    assert ModelLab.verdict(record, uncertain, set(), now=NOW) is None
+    # Even after 21 calendar days, a six-day source outage is not proof
+    # that a full 21 days of prospective evaluation have occurred.
+    record["opened_at"] = (NOW - timedelta(days=22)).isoformat()
+    assert ModelLab.verdict(record, uncertain, set(), now=NOW) is None
+    eligible = {**uncertain, "days": 21}
+    assert ModelLab.verdict(record, eligible, set(), now=NOW) == (
+        "no verified edge after 21 evaluated days"
+    )
+    losing = {**uncertain, "days": 2, "gain": -.025, "se": .001}
+    assert ModelLab.verdict(record, losing, set(), now=NOW) == (
+        "clearly losing to the main model"
+    )
+
+
+def test_model_lab_ignores_early_stop_on_unrelated_exchange():
+    record = {"opened_at": (NOW - timedelta(days=1)).isoformat()}
+    score = {"targets": 3, "results": 300, "days": 1,
+             "gain": 0., "se": None, "streams": {("okx", "BTC")}}
+    assert ModelLab.verdict(record, score, {("gate", "ETH")}, now=NOW) is None
+    assert ModelLab.verdict(record, score, {("okx", "BTC")}, now=NOW) == (
+        "cut by early stop on most exchanges"
+    )
+
+
+
 def test_review_fills_slots_closes_a_loser_and_replaces_it(store):
     lab = ModelLab(store)
     opened = lab.review(NOW - timedelta(days=4))["opened"]

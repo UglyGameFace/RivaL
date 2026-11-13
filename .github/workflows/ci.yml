@@ -55,5 +55,9 @@ jobs:
         run: |
           # Surface a traceback if another async fixture hangs rather
           # than burning a whole CI runner without a useful diagnosis.
-          PYTHONUNBUFFERED=1 timeout -s SIGINT -k 20s 480s \
+          # The 3k+ PostgreSQL suite can exceed eight minutes on a busy
+          # GitHub runner even with thousands of tests already passed. Keep
+          # a strict twelve-minute ceiling while retaining SIGINT's useful
+          # traceback and per-test 75s faulthandler diagnostics.
+          PYTHONUNBUFFERED=1 timeout -s SIGINT -k 20s 720s \
             pytest -q -x -o faulthandler_timeout=75

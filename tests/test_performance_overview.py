@@ -252,8 +252,9 @@ async def test_every_model_on_trial_is_one_row_from_the_hourly_check(tmp_path, m
         assert "✂ Cut for losing" in value
         # The leader line lives in the trials embed's description now, and
         # the all-markets count in the how-to-read field under the table.
-        assert ("Closest to passing: **Trend-only** (ahead on 2 of 2 exchanges, behind after fees). "
-                "Needs 9 more days before it can be trusted.") in embeds[1].description
+        assert ("Closest on current evidence: **Trend-only** (ahead on 2 of 2 exchanges, "
+                "nonpositive aggregate after-fee comparison). Still needs 9 more days; "
+                "then all promotion checks must pass.") in embeds[1].description
         assert "All markets: 5 on trial · 0 passed · 2 cut early for losing" in fields[
             "How to read this table"]
     finally:

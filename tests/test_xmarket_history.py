@@ -898,6 +898,92 @@ def test_backfill_never_requests_a_future_native_contract(tmp_path, monkeypatch)
     }
 
 
+
+def test_native_overlap_targets_missing_older_contracts_instead_of_newest_32(
+    tmp_path, monkeypatch,
+):
+    from parlay_bot.research import xmarket_history as module
+
+    at = NOW.replace(second=0, microsecond=0)
+    live = [point("polymarket", at - timedelta(minutes=15 * i)) for i in range(55)]
+    # Existing independently restored native points cover the newest 32
+    # contracts, which the old loop redundantly refetched on EVERY run.
+    restored = [{**row, "origin": "backfill"} for row in live[:32]]
+    bundle = {"schema": BUNDLE_SCHEMA, "asset": "BTC",
+              "samples": [*live, *restored]}
+    needed = module.missing_overlap_identities(
+        [bundle], asset="BTC", source="polymarket", now=NOW,
+    )
+    assert {i["contract_id"] for i in needed} == {
+        row["contract_id"] for row in live[32:]
+    }
+    assert module.missing_overlap_identities(
+        [bundle], asset="BTC", source="kalshi", now=NOW,
+    ) == []
+
+    called = []
+    row_by_id = {row["contract_id"]: row for row in live}
+
+    def collect(client, *, source, identity, root, now, fidelity=1):
+        called.append(identity["contract_id"])
+        return ([{**row_by_id[identity["contract_id"]], "origin": "backfill"}],
+                SimpleNamespace())
+
+    monkeypatch.setattr(module, "collect_contract", collect)
+    history, publications, _, errors = module.backfill(
+        None, asset="BTC", bundles=[bundle], root=tmp_path,
+        before=NOW, max_windows=0, retry_gaps=0,
+    )
+    assert len(called) == len(history) == len(publications) == 23
+    assert not errors
+    assert {r["contract_id"] for r in history} == {
+        r["contract_id"] for r in live[32:]
+    }
+    complete = {"schema": BUNDLE_SCHEMA, "asset": "BTC",
+                "samples": [*bundle["samples"], *history]}
+    assert not module.missing_overlap_identities(
+        [complete], asset="BTC", source="polymarket", now=NOW,
+    )
+    checks = compare_history(live, [*restored, *history])
+    assert checks["polymarket"]["status"] == "verified"
+    assert checks["polymarket"]["overlap_coverage"] == 1.0
+
+
+def test_native_overlap_rotates_bounded_unverified_contracts_and_audits_mismatch():
+    from parlay_bot.research.xmarket_history import missing_overlap_identities
+
+    at = NOW.replace(second=0, microsecond=0)
+    live = [point("kalshi", at - timedelta(minutes=15 * i)) for i in range(60)]
+    bundle = {"schema": BUNDLE_SCHEMA, "asset": "BTC", "samples": live}
+    first = missing_overlap_identities(
+        [bundle], asset="BTC", source="kalshi", now=NOW, limit=10,
+    )
+    second = missing_overlap_identities(
+        [bundle], asset="BTC", source="kalshi",
+        now=NOW + timedelta(hours=6), limit=10,
+    )
+    assert len(first) == len(second) == 10
+    assert not ({i["contract_id"] for i in first}
+                & {i["contract_id"] for i in second})
+    assert len({i["contract_id"] for i in first}) == 10
+
+    # An independently restored point with a different price remains an
+    # unresolved fidelity conflict; never count it as a verified twin.
+    altered = {**live[0], "price": live[0]["price"] + .1, "origin": "backfill"}
+    exact = [{**p, "origin": "backfill"} for p in live[1:]]
+    checked = missing_overlap_identities(
+        [{"schema": BUNDLE_SCHEMA, "asset": "BTC",
+          "samples": [*live, altered, *exact]}],
+        asset="BTC", source="kalshi", now=NOW, limit=10,
+    )
+    assert [i["contract_id"] for i in checked] == [live[0]["contract_id"]]
+    with pytest.raises(ValueError, match="cross-asset"):
+        missing_overlap_identities(
+            [bundle], asset="ETH", source="kalshi", now=NOW,
+        )
+
+
+
 def test_one_failed_overlap_contract_does_not_hide_other_contracts(tmp_path, monkeypatch):
     from parlay_bot.research import xmarket_history as module
     from parlay_bot.research.free_history import HistoryImportError

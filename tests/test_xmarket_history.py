@@ -165,6 +165,85 @@ async def test_weekly_restore_keeps_real_overlaps_and_fidelity_receipts(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_weekly_xmarket_source_restore_runs_once_for_all_horizons(tmp_path, monkeypatch):
+    from parlay_bot.research import xmarket_history as module
+
+    checked, through = [], NOW.replace(second=0, microsecond=0)
+    live = [point(s, through - timedelta(minutes=1)) for s in ("polymarket", "kalshi")]
+    result = {"samples": live, "live_venues": ["bitget", "okx"],
+              "verification": {"polymarket": {"status": "unverified"},
+                               "kalshi": {"status": "unverified"}},
+              "errors": [{"source": "kalshi", "failure_code": "http_429"}],
+              "receipts": [{"file_id": "original-drive-document", "sha256": "f" * 64}]}
+
+    async def acquire(drive, *, asset, through, cache, max_windows):
+        assert asset == "BTC" and max_windows == 96
+        checked.append(through)
+        return result
+
+    monkeypatch.setattr(module, "weekly_inputs", acquire)
+    cache = tmp_path / "xmarket-inputs"
+    first = await module.weekly_inputs_once(object(), asset="BTC", through=through, cache=cache)
+    second = await module.weekly_inputs_once(object(), asset="BTC", through=through, cache=cache)
+    assert checked == [through], "5/15/60m must not repeat source history acquisition"
+    assert first == second and first["samples"] == live
+    assert first["errors"] == result["errors"]
+    assert first["receipts"] == result["receipts"]
+    assert len(list((tmp_path / "xmarket-training-snapshots").glob("BTC-*.json"))) == 1
+    # A new frozen model input clock cannot reuse an older snapshot.
+    await module.weekly_inputs_once(
+        object(), asset="BTC", through=through + timedelta(minutes=5), cache=cache)
+    assert len(checked) == 2
+
+
+@pytest.mark.asyncio
+async def test_corrupt_xmarket_cached_source_fails_closed_not_reacquired(tmp_path, monkeypatch):
+    from parlay_bot.research import xmarket_history as module
+
+    through = NOW.replace(second=0, microsecond=0)
+    calls = []
+    async def acquire(drive, **kwargs):
+        calls.append(True)
+        return {"samples": [point("polymarket", through - timedelta(minutes=1))],
+                "verification": {}, "errors": [], "receipts": [], "live_venues": []}
+
+    monkeypatch.setattr(module, "weekly_inputs", acquire)
+    cache = tmp_path / "xmarket-inputs"
+    await module.weekly_inputs_once(object(), asset="BTC", through=through, cache=cache)
+    snapshot = next((tmp_path / "xmarket-training-snapshots").glob("BTC-*.json"))
+    doc = json.loads(snapshot.read_text())
+    doc["samples"][0]["price"] = 0.91
+    snapshot.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="snapshot hash mismatch"):
+        await module.weekly_inputs_once(object(), asset="BTC", through=through, cache=cache)
+    assert calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_failed_first_xmarket_source_restore_is_retried_not_cached(tmp_path, monkeypatch):
+    from parlay_bot.research import xmarket_history as module
+
+    calls = []
+    async def acquire(drive, **kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            raise RuntimeError("synthetic source outage")
+        return {"samples": [], "verification": {}, "errors": [],
+                "receipts": [], "live_venues": []}
+
+    monkeypatch.setattr(module, "weekly_inputs", acquire)
+    through = NOW.replace(second=0, microsecond=0)
+    with pytest.raises(RuntimeError, match="source outage"):
+        await module.weekly_inputs_once(
+            object(), asset="BTC", through=through, cache=tmp_path / "data")
+    assert not list(tmp_path.rglob("*.json"))
+    receipt = await module.weekly_inputs_once(
+        object(), asset="BTC", through=through, cache=tmp_path / "data")
+    assert len(calls) == 2
+    assert receipt["verification"] == {}
+
+
+@pytest.mark.asyncio
 async def test_verified_daily_publish_is_idempotent_and_recovers_an_older_backlog(learning_store):
     inputs = XmarketInputs(learning_store)
     at = NOW.replace(second=0, microsecond=0) - timedelta(days=7)

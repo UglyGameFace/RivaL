@@ -27,7 +27,6 @@ concurrency:
 
 jobs:
   recover:
-    if: ${{ github.event_name == 'schedule' || inputs.asset == '' || inputs.asset == matrix.asset }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -53,6 +52,7 @@ jobs:
       - name: Install native recovery dependencies
         run: python -m pip install -e ".[ml-research]"
       - name: Recover verified native source windows
+        if: ${{ github.event_name == 'schedule' || inputs.asset == '' || inputs.asset == matrix.asset }}
         shell: bash
         env:
           INPUT_MAX_WINDOWS: ${{ inputs.max_windows }}
@@ -71,7 +71,7 @@ jobs:
             --max-windows "$windows" --publish \
             --out "xmarket-recovery/${ASSET}-native-evidence.json"
       - name: Upload recovery evidence
-        if: always()
+        if: ${{ always() && (github.event_name == 'schedule' || inputs.asset == '' || inputs.asset == matrix.asset) }}
         uses: actions/upload-artifact@v4
         with:
           name: xmarket-native-${{ matrix.asset }}-${{ github.run_id }}

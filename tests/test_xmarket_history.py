@@ -260,6 +260,74 @@ async def test_verified_daily_publish_is_idempotent_and_recovers_an_older_backlo
     assert documents[0]["day"] == at.date().isoformat()
 
 
+
+@pytest.mark.asyncio
+async def test_daily_export_retries_exact_frozen_bytes_and_retires_snapshot(learning_store):
+    """The upload can finish while its database acknowledgment fails."""
+    from parlay_bot.perpetuals.xmarket_inputs import XmarketInputs
+
+    inputs = XmarketInputs(learning_store)
+    at = NOW.replace(second=0, microsecond=0) - timedelta(days=7)
+    inputs.record([point(source, at) for source in ("polymarket", "kalshi")])
+    inputs.note_venues([("bitget", "BTCUSDT", "USDT"),
+                        ("okx", "BTC-USDT-SWAP", "USDT")], now=NOW)
+    attempts = []
+
+    class InterruptedDrive:
+        async def ensure_research_output(self, **kwargs):
+            artifact = kwargs["artifact"]
+            attempts.append((artifact.file_name, artifact.path.read_bytes(),
+                             kwargs["batch_id"]))
+            if len(attempts) == 1:
+                raise OSError("simulated interruption before export receipt")
+            return SimpleNamespace(file_id="verified-original")
+
+    drive = InterruptedDrive()
+    with pytest.raises(OSError, match="interruption"):
+        await inputs.publish_days(drive, now=NOW)
+    with learning_store.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS count FROM rival_xmarket_export_staging"
+                            ).fetchone()["count"] == 1
+        assert conn.execute("SELECT COUNT(*) AS count FROM rival_xmarket_exports"
+                            ).fetchone()["count"] == 0
+
+    # A later retry has a different clock and no recent venue heartbeat.
+    # It must publish the identical original bytes and content-address.
+    assert await inputs.publish_days(drive, now=NOW + timedelta(hours=2)) == 1
+    assert attempts[0] == attempts[1]
+    original = json.loads(attempts[0][1])
+    assert original["live_venues"] == ["bitget", "okx"]
+    assert original["created_at"] == NOW.isoformat()
+    with learning_store.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS count FROM rival_xmarket_export_staging"
+                            ).fetchone()["count"] == 0
+        assert conn.execute("SELECT drive_file_id FROM rival_xmarket_exports"
+                            ).fetchone()["drive_file_id"] == "verified-original"
+    assert await inputs.publish_days(drive, now=NOW + timedelta(hours=3)) == 0
+    assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_daily_export_rejects_modified_staging_before_drive_upload(learning_store):
+    from parlay_bot.perpetuals.xmarket_inputs import XmarketInputs
+
+    inputs = XmarketInputs(learning_store)
+    at = NOW.replace(second=0, microsecond=0) - timedelta(days=7)
+    inputs.record([point("polymarket", at)])
+    inputs._staged_day_bundle("BTC", at.date().isoformat(), now=NOW)
+    with learning_store.connect() as conn:
+        conn.execute("UPDATE rival_xmarket_export_staging SET payload_json='{}' "
+                     "WHERE asset=? AND day=?", ("BTC", at.date().isoformat()))
+
+    class ForbiddenDrive:
+        async def ensure_research_output(self, **kwargs):
+            pytest.fail("corrupted pending evidence must never reach Drive")
+
+    with pytest.raises(ValueError, match="staged export bytes changed"):
+        await inputs.publish_days(ForbiddenDrive(), now=NOW)
+
+
+
 def test_read_only_host_receipt_distinguishes_missing_capture_fit_and_rows(learning_store):
     from parlay_bot.perpetuals.learning_health_receipt import _xmarket_progress
     from parlay_bot.perpetuals.model_competition import ShadowModelCompetition

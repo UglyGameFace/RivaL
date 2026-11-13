@@ -33,8 +33,10 @@ on:
 permissions:
   contents: read
 
+# Serialize all private Drive cursor writers with the archive trainer.
+# PR syntax checks remain isolated so they do not block production jobs.
 concurrency:
-  group: rival-xmarket-native-source-recovery
+  group: ${{ github.event_name == 'pull_request' && format('rival-xmarket-validation-{0}', github.event.pull_request.number) || 'rival-archive-model-training' }}
   cancel-in-progress: false
 
 jobs:

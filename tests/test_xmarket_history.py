@@ -752,6 +752,59 @@ def test_rate_limit_preserves_cursor_and_records_missing_identity(tmp_path, monk
     assert all(gaps == {close.isoformat()} for gaps in pending.values())
 
 
+def test_gap_rechecks_rotate_across_six_hour_runs_and_stop_on_rate_limit(
+    tmp_path, monkeypatch,
+):
+    from parlay_bot.research import xmarket_history as module
+
+    class Clock(datetime):
+        current = NOW
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    close = datetime.fromtimestamp(int(NOW.timestamp()) // 900 * 900, UTC)
+    old = {
+        (close - timedelta(minutes=15 * (i + 1))).isoformat()
+        for i in range(12)
+    }
+    pending = {"polymarket": set(old), "kalshi": set(old)}
+
+    def absent(*args, **kwargs):
+        raise ValueError("source day absent")
+
+    monkeypatch.setattr(module, "_json_get", absent)
+    monkeypatch.setattr(module, "kalshi_public_json", absent)
+    runs = []
+    for now in (NOW, NOW + timedelta(hours=6)):
+        Clock.current = now
+        _, _, _, failures = module.backfill(
+            None, asset="BTC", bundles=[], root=tmp_path, before=NOW,
+            max_windows=0, pending=pending, retry_gaps=4,
+        )
+        runs.append({(x["source"], x["window_close"]) for x in failures})
+        assert len(failures) == 4
+    assert not (runs[0] & runs[1]), "rechecks must move by an entire bounded batch"
+    assert all(pending[source] == old for source in pending)
+
+    count = []
+    def throttle(client, url, params, **kwargs):
+        count.append(url)
+        response = httpx.Response(429, request=httpx.Request("GET", url))
+        raise httpx.HTTPStatusError("rate limit", request=response.request,
+                                    response=response)
+    monkeypatch.setattr(module, "_json_get", throttle)
+    monkeypatch.setattr(module, "kalshi_public_json", throttle)
+    _, _, _, failures = module.backfill(
+        None, asset="BTC", bundles=[], root=tmp_path, before=NOW,
+        max_windows=0, pending=pending, retry_gaps=12,
+    )
+    assert len(count) == 1
+    assert len(failures) == 1 and failures[0]["retryable"]
+
+
 @pytest.mark.asyncio
 async def test_backfill_checkpoint_persists_zero_row_progress_and_gap_recovery(
     tmp_path, monkeypatch,

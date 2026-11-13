@@ -549,7 +549,22 @@ async def weekly_inputs(drive, *, asset: str, through, cache: Path, max_windows=
             artifact=_artifact(path, 1),
             batch_id="xmarket-inputs-" + digest[:24], kind="report",
         )
-    return combine([*bundles, bundle], errors=errors)
+    combined = combine([*bundles, bundle], errors=errors)
+    combined["backfill_progress"] = {
+        "previous_cursor": before.isoformat(),
+        "next_cursor": next_before.isoformat(),
+        "windows_advanced": max(
+            0, int((before - next_before).total_seconds() // 900)
+        ),
+        "new_window_budget": max_windows,
+        "gap_retry_budget": 12,
+        "pending_by_source": {
+            source: len(pending[source]) for source in PRICE_SEMANTICS
+        },
+        "recovered_native_points": len(history),
+        "all_history_verified": False,
+    }
+    return combined
 
 
 

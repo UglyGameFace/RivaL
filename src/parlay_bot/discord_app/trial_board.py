@@ -302,12 +302,20 @@ def leader_line(rows: list[TrialRow]) -> str:
         left.append(f"{MIN_DAYS - lead.days} more days")
     if lead.results < MIN_RESULTS:
         left.append(f"{MIN_RESULTS - lead.results} more results")
-    fees = ("" if lead.after_fees_bps is None else
-            f", {'ahead' if lead.after_fees_bps > 0 else 'behind'} after fees")
+    # Aggregated fee evidence and the day count are not promotion verdicts.
+    fees = (
+        ", after-fee comparison unavailable" if lead.after_fees_bps is None
+        else f", {'positive' if lead.after_fees_bps > 0 else 'nonpositive'} "
+             "aggregate after-fee comparison"
+    )
     where = f"ahead on {lead.ahead} of {lead.exchanges} exchanges{fees}"
-    need = (" Needs " + " and ".join(left) + " before it can be trusted."
-            if left else " Waiting on the after-fees test.")
-    return f"Closest to passing: **{lead.name}** ({where}).{need}"
+    if left:
+        need = " Still needs " + " and ".join(left) + (
+            "; then all promotion checks must pass."
+        )
+    else:
+        need = " Still requires the complete promotion checks."
+    return f"Closest on current evidence: **{lead.name}** ({where}).{need}"
 
 
 def read(store, *, asset: str, horizon: int, now: datetime | None = None,

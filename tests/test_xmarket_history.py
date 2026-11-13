@@ -638,6 +638,80 @@ def test_historical_kalshi_discovery_uses_supported_pagination_once(tmp_path, mo
     assert archive_calls[1]["cursor"] == "second-page"
 
 
+
+@pytest.mark.parametrize("historical_count,expected_code", [
+    (0, "native_contract_absent"),
+    (1, None),
+    (2, "native_contract_ambiguous"),
+])
+def test_kalshi_checks_archive_when_live_page_has_unrelated_contracts(
+    tmp_path, monkeypatch, historical_count, expected_code,
+):
+    """A nonempty LIVE page is not proof of the exact requested native contract."""
+    from parlay_bot.research import xmarket_history as module
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+
+    monkeypatch.setattr(module, "datetime", FrozenDateTime)
+    closes = datetime.fromtimestamp(int(NOW.timestamp()) // 900 * 900, UTC)
+    opens = closes - timedelta(minutes=15)
+    previous = opens - timedelta(minutes=15)
+    missing = {
+        "ticker": "KXBTC15M-" + previous.strftime("%y%m%d%H%M"),
+        "open_time": previous.isoformat(), "close_time": opens.isoformat(),
+    }
+    matching = {
+        "ticker": "KXBTC15M-" + opens.strftime("%y%m%d%H%M"),
+        "open_time": opens.isoformat(), "close_time": closes.isoformat(),
+    }
+    archived, collected = [], []
+
+    def archived_lookup(client, *, series):
+        archived.append(series)
+        return {(opens, closes): [matching] * historical_count}
+
+    def market_lookup(client, url, params, **kwargs):
+        assert url.endswith("/markets") and params["series_ticker"] == "KXBTC15M"
+        return {"markets": [missing]}
+
+    def pm_identity(event, *, asset, opens):
+        p = point("polymarket", opens + timedelta(minutes=5), asset=asset)
+        return {k: p[k] for k in (
+            "asset", "contract_id", "opens_at", "closes_at", "token_id", "slug"
+        )}
+
+    def collect(client, *, source, identity, root, now, fidelity=1):
+        collected.append(source)
+        return [point(source, opens + timedelta(minutes=5), origin="backfill")], SimpleNamespace()
+
+    monkeypatch.setattr(module, "kalshi_public_json", market_lookup)
+    monkeypatch.setattr(module, "_archived_kalshi_windows", archived_lookup)
+    monkeypatch.setattr(module, "_json_get", lambda *_args, **_kw: {})
+    monkeypatch.setattr(module, "_identity_pm", pm_identity)
+    monkeypatch.setattr(module, "collect_contract", collect)
+
+    pending = {"kalshi": set(), "polymarket": set()}
+    history, publications, before, errors = module.backfill(
+        None, asset="BTC", bundles=[], root=tmp_path, before=NOW,
+        max_windows=1, retry_gaps=0, pending=pending,
+    )
+    assert archived == ["KXBTC15M"], "historical lookup must run exactly once"
+    assert before == opens, "advance past absent contracts without forging prices"
+    if expected_code is None:
+        assert not errors and pending["kalshi"] == set()
+        assert collected == ["polymarket", "kalshi"]
+        assert len(history) == len(publications) == 2
+    else:
+        assert [e["failure_code"] for e in errors] == [expected_code]
+        assert errors[0]["retryable"] is False
+        assert pending["kalshi"] == {closes.isoformat()}
+        assert collected == ["polymarket"]
+        assert len(history) == len(publications) == 1
+
+
 def test_historical_kalshi_incomplete_pages_fail_closed(monkeypatch):
     from parlay_bot.research import xmarket_history as module
 

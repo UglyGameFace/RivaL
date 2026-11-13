@@ -182,10 +182,10 @@ def test_lab_scoring_gives_correlated_venue_forecasts_one_target_vote(store):
             # One genuine target is favorable; the other is copied across
             # ten venues/assets. A row-weighted average would be negative,
             # but there are only two distinct target clocks on each day.
-            for k, (target, gain, copies) in enumerate((
+            for target, gain, copies in (
                 (first, 0.02, 1),
                 (first + timedelta(minutes=5), -0.01, 10),
-            )):
+            ):
                 for n in range(copies):
                     asset = "ETH" if n == 9 else "BTC"
                     venue = f"test_venue_{n}"

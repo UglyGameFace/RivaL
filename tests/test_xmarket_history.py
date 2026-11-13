@@ -881,14 +881,21 @@ def test_backfill_never_requests_a_future_native_contract(tmp_path, monkeypatch)
 
     monkeypatch.setattr(module, "_json_get", provider)
     monkeypatch.setattr(module, "kalshi_public_json", provider)
+    pending = {"polymarket": set(), "kalshi": set()}
     _, _, cursor, errors = backfill(
         None, asset="BTC", bundles=[], root=tmp_path,
-        before=NOW + timedelta(hours=2), max_windows=1)
+        before=NOW + timedelta(hours=2), max_windows=1, pending=pending)
     expected = datetime.fromtimestamp(int(NOW.timestamp()) // 900 * 900, UTC)
-    assert cursor == expected
+    # The newly missing *closed* window becomes an explicit retryable gap,
+    # while the cursor can advance exactly one window, never into the future.
+    assert cursor == expected - timedelta(minutes=15)
     assert len(calls) == 3  # One PM lookup and the bounded live/archive Kalshi pair
     assert {e["source"] for e in errors} == {"polymarket", "kalshi"}
     assert all(e["window_close"] == expected.isoformat() for e in errors)
+    assert pending == {
+        "polymarket": {expected.isoformat()},
+        "kalshi": {expected.isoformat()},
+    }
 
 
 def test_one_failed_overlap_contract_does_not_hide_other_contracts(tmp_path, monkeypatch):

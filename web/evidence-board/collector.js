@@ -126,8 +126,8 @@ function cleanPerformance(p) {
   const at=isoOrNull(p.captured_at);
   if(!at)return out;
   out.status=p.status;out.captured_at=at;
-  out.sampling_policy=p.sampling_policy==='per-asset-horizon-v2'?'per-asset-horizon-v2':'per-asset-v1';
-  out.sample_limit_per_scope=out.sampling_policy==='per-asset-horizon-v2'?500:null;
+  out.sampling_policy=['per-asset-horizon-v2','per-asset-horizon-close-v3'].includes(p.sampling_policy)?p.sampling_policy:'per-asset-v1';
+  out.sample_limit_per_scope=out.sampling_policy!=='per-asset-v1'?500:null;
   out.scopes=(Array.isArray(p.scopes)?p.scopes:[]).slice(0,12).map(s=>{
     const n=numberOrNull(s.paired_outcomes,500),m=s.model_brier,b=s.baseline_brier;
     if(!['BTC','ETH','SOL','XRP'].includes(s.asset)||![5,15,60].includes(s.horizon)||
@@ -139,6 +139,9 @@ function cleanPerformance(p) {
       sampling_policy:out.sampling_policy,
       unique_target_windows:numberOrNull(s.unique_target_windows,n),
       venue_count:numberOrNull(s.venue_count,20),
+      within_target_candle_pairs:numberOrNull(s.within_target_candle_pairs,n),
+      minimum_lead_seconds:typeof s.minimum_lead_seconds==='number'&&Number.isFinite(s.minimum_lead_seconds)&&s.minimum_lead_seconds>0&&s.minimum_lead_seconds<=7200?+s.minimum_lead_seconds.toFixed(3):null,
+      outcome_clock:s.outcome_clock==='target_5m_candle_close'?s.outcome_clock:null,
       after_cost_qualified:false,sample_bounded:true};
   }).filter(Boolean);
   return out;

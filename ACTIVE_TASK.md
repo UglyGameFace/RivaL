@@ -1,3 +1,13 @@
+## 2026-11-13 — Correct the scoring reader's target outcome clock
+
+- **Production check after #556:** Its exact PR CI and merged-main CI passed (3,023 full tests). Both Workers were deployed, source/bindings verified, and signed run #43366429799 reached Cloudflare and the board's public service-binding API with the export breakdown. The source report still had 4 pending asset-days, 0 imported XMarket models/shadows, and no qualified edge. The merged branch was automatically retired.
+- **Additional root cause found:** The score reader inherited `issued_at < target_opened_at`. The actual engine forecasts a target candle's **closing** outcome and accepts issuance until `target_opened_at + 5m`; 5-minute calls normally arrive inside that candle. The strict opening filter therefore excludes valid prospective calls. This is a reporting bug, not evidence that the engine stopped learning.
+- **Branch:** `fix/rival-score-outcome-clock-20261113`, based on `main@5771e8e`. Align only the reader with the engine's existing outcome clock, reject at/after-close or prematurely settled rows, publish actual remaining lead time and inside-candle counts, and keep V3 history separate from V2. Model forecasts, labels, learned weights and promotion controls remain untouched.
+- **Validation:** 24 targeted tests passed locally (one PostgreSQL fixture skipped), Ruff and real signed-receiver/UI regressions passed. Require exact-head full PostgreSQL CI and actual signed V3 production evidence, including eligible 5m scopes. A local full-suite SQLite query-plan assertion also fails unchanged on baseline `a407d3f`; do not change unrelated indexes to hide this environment-specific baseline failure. CI is the authoritative full PostgreSQL run.
+- **Next:** Verify the new closing-time score receipt, then resolve completed-day export/independent restore and inspect the already scheduled Nov 13 15:17 UTC XMarket training. #554, full Model Lab inventory, scored Intelligence quality and a verified after-cost model remain unfinished. Do not claim all RivaL work complete.
+
+---
+
 ## 2026-11-13 — Continue bot evidence chain after #555
 
 - **Objective:** Preserve the approved XMarket → controlled ZIP-feature experiments → forward performance order. Prove actual source publication/restore/fit/import/shadow stages; never infer completion from UI, CI or changing weights.

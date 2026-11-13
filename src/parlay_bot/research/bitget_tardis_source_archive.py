@@ -179,7 +179,14 @@ def _validated_dataset_redirect(response: httpx.Response) -> str:
     if (parsed.scheme != "https" or parsed.username is not None
             or parsed.password is not None or port not in (None, 443)
             or not allowed or parsed.fragment):
-        raise HistoryImportError("Tardis dataset redirected to untrusted origin")
+        # Safe diagnostic only: provider redirect URLs may contain temporary
+        # bearer query parameters. Report *only* a bounded hostname and never
+        # the full Location header or any credentials.
+        safe_host = "".join(c if c.isascii() and (c.isalnum() or c in ".-")
+                            else "?" for c in host)[:96]
+        raise HistoryImportError(
+            f"Tardis dataset redirected to untrusted origin host={safe_host!r}"
+        )
     return target
 
 

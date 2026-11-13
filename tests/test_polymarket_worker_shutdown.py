@@ -19,7 +19,7 @@ async def test_shutdown_waits_for_study_thread_after_coordinator_cancellation():
         entered.set()
         try:
             assert release.wait(timeout=5), "test worker was not released"
-            return None
+            return
         finally:
             finished.set()
 

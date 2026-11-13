@@ -468,10 +468,14 @@ async def weekly_inputs(drive, *, asset: str, through, cache: Path, max_windows=
         else:
             raise ValueError("XMarket input listing exceeds bounded archive window")
     cache.mkdir(parents=True, exist_ok=True)
-    for path in cache.glob(f"{BUNDLE_PREFIX}{asset}-*.json"):
-        payload = path.read_bytes()
-        bundles.append({**validate_bundle(json.loads(payload)),
-                        "_bundle_sha256": hashlib.sha256(payload).hexdigest()})
+    # A local file is not a verified Drive readback. When publishing, never
+    # let a staged checkpoint/chunk from a prior failed upload advance the
+    # authoritative source cursor or enter the training input set.
+    if drive is None:
+        for path in cache.glob(f"{BUNDLE_PREFIX}{asset}-*.json"):
+            payload = path.read_bytes()
+            bundles.append({**validate_bundle(json.loads(payload)),
+                            "_bundle_sha256": hashlib.sha256(payload).hexdigest()})
     # Only a committed checkpoint can advance the cursor or retire gaps.
     # Source chunks may be published before a process interruption, but they
     # must never masquerade as an acknowledged progress checkpoint.

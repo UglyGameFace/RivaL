@@ -171,8 +171,9 @@ def test_three_embeds_carry_every_number_from_the_old_card():
     for heading in ("▲ Ahead of the main model", "= Level with the main model",
                     "⏳ Too early to judge", "▼ Behind the main model"):
         assert heading in trials
-    assert ("Closest to passing: **6-year** (ahead on 1 of 6 exchanges, ahead after fees). "
-            "Needs 13 more days before it can be trusted.") in embeds[1].description
+    assert ("Closest on current evidence: **6-year** (ahead on 1 of 6 exchanges, "
+            "positive aggregate after-fee comparison). Still needs 13 more days; "
+            "then all promotion checks must pass.") in embeds[1].description
     how = fields["How to read this table"]
     assert "Day = days of results" in how and "Res = graded results" in how
     assert "vol = volatility" in how and "learning speed, not accuracy" in how

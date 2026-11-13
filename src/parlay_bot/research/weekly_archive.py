@@ -153,6 +153,20 @@ async def train_weekly_archive(frames: dict, *, training: dict, census: dict,
                                    load_local_inputs(cache, asset=asset) if cache.is_dir() else {})
                     extra["market_data"] = market_data
                 report, model, status = _fit(module, common, training, **extra)
+                if module is volcal_training:
+                    # Compare a pre-scheduled group ablation with the full
+                    # model on identical source/label rows. This is *only*
+                    # an offline report: never alter the validated artifact,
+                    # serving weights, eligibility or promotion status.
+                    from parlay_bot.research.volcal_group_research import evaluate
+
+                    try:
+                        paired = evaluate(common, training, report)
+                    except Exception as research_error:  # optional diagnostics
+                        paired = {"status": "diagnostic_unavailable",
+                                  "error_class": type(research_error).__name__,
+                                  "promotable_from_this_result": False}
+                    report = {**report, "paired_feature_ablation_research": paired}
             except Exception as exc:  # noqa: BLE001 - record error, finish peers, fail the run
                 errors = True
                 status, model = "error", None

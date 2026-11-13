@@ -1,8 +1,8 @@
 """Evidence Board Worker source and DOM-free UI smoke tests."""
-from pathlib import Path
 import shutil
 import subprocess
 import unittest
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 

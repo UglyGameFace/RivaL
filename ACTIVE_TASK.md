@@ -1,3 +1,13 @@
+## 2026-11-12 — XMarket Kalshi native archive recovery
+
+- **Objective:** Keep the approved XMarket→ZIP-derived challengers→forward scoring→evidence publication order. Fix the confirmed Kalshi native backfill HTTP 429 obstacle before the Nov 13 15:17 UTC archive run. Branch `fix/xmarket-kalshi-rate-limit-recovery-20261112` based on `main@f6ca12c`, no overlapping PR at branch creation.
+- **Evidence:** Original complete Nov 12 archive outcomes: 12/12 XMarket scopes blocked with `no_prospective_export`; Kalshi backfill reported HTTP 429. The separate daily-export-before-backup repair is merged (PR #546), but independently restored completed-day data still needs proof. The shared Kalshi supplemental ingest starts with the historical endpoint, which adds unnecessary 404s for still-live contracts.
+- **Change:** Keep existing Kalshi native parser, raw provider SHA, contract identities and immutable history. Add optional Kalshi-specific bounded public-read pacing/429-only exponential backoff. XMarket uses live-first, archived-only-on-404; ordinary supplemental workflows retain archived-first behavior. Kalshi's historical listing **does not support min/max close-time filters**, so XMarket enumerates verified `series_ticker` pages to a hard cap, verifies exact window identities and caches the page index per run. No partial cursor walk can imply completeness. 403, unknown contracts and exhausted 429 remain failures; the backfill cursor never advances past a failed source window. Tests cover 429 recovery/exhaustion, 403 rejection, current/archive tier, full pagination, bounded failures and source hashes. No new collector, model promotion or invented data.
+- **Validation required:** Exact-head Ruff/PostgreSQL/full CI and PR reconciliation; then main CI, actual Discloud deployment and real next archive report. Nov 13 training must still prove prospective Drive export and source-exact pairing (>=30 matched bars, >=80% overlap and <=5% mismatch) and pass the unmodified training/validation/test/model gates. Eligible fitted model, import, 24-hour shadow rows and after-cost superiority remain unverified.
+- **Broader limitation:** XMarket has a bounded 96-window historical cursor per weekly pass. That is not proof of adequate 90-day training history or both 28-day holdouts. Do not call model training complete without date-split coverage.
+
+---
+
 ## 2026-11-12 — XMarket completed-day export reliability and receipt
 
 - **Objective / branch:** Remove the records-backup dependency from completed-day XMarket proof publication; expose missing export evidence without weakening fidelity or model gates. Branch `fix/xmarket-day-export-first-receipts-20261112` based on deployed-candidate `main@45e887f`. No overlapping open PR at inspection.

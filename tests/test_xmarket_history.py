@@ -79,8 +79,37 @@ def test_existing_supplement_ingest_binds_contract_and_preserves_provider_hash(t
     metadata = json.loads(publication.manifest.path.read_text())
     assert metadata["xmarket_contract"] == identity
     if source == "kalshi":
-        assert len(calls) == 2
-        assert "/series/KXBTC15M/" in calls[1]
+        assert len(calls) == 1
+        assert "/series/KXBTC15M/" in calls[0]
+
+
+def test_xmarket_kalshi_archived_contract_fallback_preserves_origin(tmp_path, monkeypatch):
+    from parlay_bot.research import supplemental_history as source
+
+    at = datetime(2026, 1, 1, 12, 5, tzinfo=UTC)
+    row = point("kalshi", at)
+    identity = {k: row[k] for k in ("asset", "contract_id", "opens_at", "closes_at")}
+    calls = []
+    monkeypatch.setattr(source.time, "sleep", lambda _: None)
+    def serve(request):
+        calls.append(request.url.path)
+        if "/series/" in request.url.path:
+            return httpx.Response(404)
+        return httpx.Response(200, json={"ticker": identity["contract_id"], "candlesticks": [{
+            "end_period_ts": int(at.timestamp()),
+            "yes_bid": {k + "_dollars": ".49" for k in ("open", "high", "low", "close")},
+            "yes_ask": {k + "_dollars": ".52" for k in ("open", "high", "low", "close")},
+            "price": None}]})
+    with httpx.Client(transport=httpx.MockTransport(serve)) as client:
+        rows, publication = collect_contract(
+            client, source="kalshi", identity=identity, root=tmp_path, now=NOW)
+    assert len(calls) == 2
+    assert "/series/KXBTC15M/" in calls[0]
+    assert "/historical/markets/" in calls[1]
+    assert len(rows) == 1
+    assert rows[0]["origin"] == "backfill"
+    assert rows[0]["price"] == .52
+    assert json.loads(publication.manifest.path.read_text())["xmarket_contract"] == identity
 
 
 @pytest.mark.asyncio
@@ -395,6 +424,84 @@ def test_source_failure_reports_actionable_non_secret_http_cause():
     assert invalid["retryable"] is False
 
 
+def test_historical_kalshi_discovery_uses_supported_pagination_once(tmp_path, monkeypatch):
+    from parlay_bot.research import xmarket_history as module
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+
+    monkeypatch.setattr(module, "datetime", FrozenDateTime)
+    last_closed = datetime.fromtimestamp(int(NOW.timestamp()) // 900 * 900, UTC)
+    windows = [(last_closed - timedelta(minutes=15 * (i + 1)),
+                last_closed - timedelta(minutes=15 * i)) for i in range(2)]
+    listed = [
+        {"ticker": "KXBTC15M-" + start.strftime("%y%m%d%H%M"),
+         "open_time": start.isoformat(), "close_time": end.isoformat()}
+        for start, end in windows
+    ]
+    paths, collected = [], []
+
+    def provider(client, url, params, **kwargs):
+        paths.append((url, dict(params)))
+        assert kwargs["timeout"] == 8
+        assert kwargs["rate_limit_retries"] == 2
+        if url.endswith("/markets") and "/historical/" not in url:
+            return {"markets": []}
+        assert url.endswith("/historical/markets")
+        assert "min_close_ts" not in params and "max_close_ts" not in params
+        assert params["series_ticker"] == "KXBTC15M"
+        if "cursor" not in params:
+            return {"markets": [listed[0]], "cursor": "second-page"}
+        assert params["cursor"] == "second-page"
+        return {"markets": [listed[1]], "cursor": ""}
+
+    def gamma(client, url, params, **kwargs):
+        assert "/events/slug/" in url
+        return {"found": True}
+
+    def identity(raw, *, asset, opens):
+        row = point("polymarket", opens + timedelta(minutes=5), asset=asset)
+        return {k: row[k] for k in (
+            "asset", "contract_id", "opens_at", "closes_at", "token_id", "slug")}
+
+    def collect(client, *, source, identity, root, now, fidelity=1):
+        collected.append((source, identity["opens_at"]))
+        return [point(source, timestamp(identity["opens_at"]) + timedelta(minutes=5),
+                      origin="backfill")], SimpleNamespace()
+
+    from parlay_bot.research.xmarket_features import timestamp
+    monkeypatch.setattr(module, "_json_get", gamma)
+    monkeypatch.setattr(module, "kalshi_public_json", provider)
+    monkeypatch.setattr(module, "_identity_pm", identity)
+    monkeypatch.setattr(module, "collect_contract", collect)
+
+    history, publications, cursor, errors = module.backfill(
+        None, asset="BTC", bundles=[], root=tmp_path, before=NOW,
+        max_windows=2)
+    assert cursor == last_closed - timedelta(minutes=30)
+    assert not errors and len(history) == len(publications) == 4
+    assert [s for s, _ in collected] == ["polymarket", "kalshi"] * 2
+    archive_calls = [p for url, p in paths if url.endswith("/historical/markets")]
+    assert len(archive_calls) == 2
+    assert "cursor" not in archive_calls[0]
+    assert archive_calls[1]["cursor"] == "second-page"
+
+
+def test_historical_kalshi_incomplete_pages_fail_closed(monkeypatch):
+    from parlay_bot.research import xmarket_history as module
+
+    seen = []
+    def never_finishes(client, url, params, **kwargs):
+        seen.append(params.get("cursor"))
+        return {"markets": [], "cursor": "next"}
+    monkeypatch.setattr(module, "kalshi_public_json", never_finishes)
+    with pytest.raises(ValueError, match="cursor repeated"):
+        module._archived_kalshi_windows(None, series="KXBTC15M")
+    assert seen == [None, "next"]
+
+
 def test_backfill_never_requests_a_future_native_contract(tmp_path, monkeypatch):
     from parlay_bot.research import xmarket_history as module
     from parlay_bot.research.free_history import HistoryImportError
@@ -414,6 +521,7 @@ def test_backfill_never_requests_a_future_native_contract(tmp_path, monkeypatch)
         return {"markets": []}
 
     monkeypatch.setattr(module, "_json_get", provider)
+    monkeypatch.setattr(module, "kalshi_public_json", provider)
     _, _, cursor, errors = backfill(
         None, asset="BTC", bundles=[], root=tmp_path,
         before=NOW + timedelta(hours=2), max_windows=1)

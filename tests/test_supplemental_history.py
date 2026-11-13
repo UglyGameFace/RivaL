@@ -221,6 +221,61 @@ def test_kalshi_quotes_have_ohlc_and_no_made_up_book_fills(tmp_path):
     assert prepare(item.manifest_path).source == "kalshi_contract_candles"
 
 
+def test_kalshi_public_read_paces_and_only_retries_429(monkeypatch):
+    from parlay_bot.research import supplemental_history as module
+
+    slept, seen = [], []
+    monkeypatch.setattr(module.time, "sleep", slept.append)
+
+    def transient(request):
+        seen.append(request.url.path)
+        if len(seen) == 1:
+            return httpx.Response(429, headers={"Retry-After": "3"})
+        if len(seen) == 2:
+            return httpx.Response(429, headers={"Retry-After": "999999"})
+        return httpx.Response(200, json={"candlesticks": []})
+
+    with httpx.Client(transport=httpx.MockTransport(transient)) as client:
+        result = module.kalshi_public_json(
+            client, module.KALSHI + "/historical/markets/KXBTC15M-EXAMPLE/candlesticks",
+            {}, rate_limit_retries=2, pace_seconds=.35)
+    assert result == {"candlesticks": []}
+    assert len(seen) == 3
+    # Respect a bounded server backoff, never trust an unbounded header.
+    assert slept == [.35, 3, .35, 2, .35]
+
+    forbidden = []
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda request: (forbidden.append(request.url.path), httpx.Response(403))[1],
+    )) as client, pytest.raises(HistoryImportError) as error:
+        module.kalshi_public_json(client, module.KALSHI + "/markets", {},
+                                  rate_limit_retries=2, pace_seconds=0)
+    assert len(forbidden) == 1
+    assert isinstance(error.value.__cause__, httpx.HTTPStatusError)
+    assert error.value.__cause__.response.status_code == 403
+
+
+def test_kalshi_public_retry_exhaustion_preserves_typed_429(monkeypatch):
+    from parlay_bot.research import supplemental_history as module
+
+    slept = []
+    monkeypatch.setattr(module.time, "sleep", slept.append)
+    calls = []
+    def reject(request):
+        calls.append(request.url.path)
+        return httpx.Response(429)
+    with (
+        httpx.Client(transport=httpx.MockTransport(reject)) as client,
+        pytest.raises(HistoryImportError) as error,
+    ):
+        module.kalshi_public_json(client, module.KALSHI + "/markets", {},
+                                  rate_limit_retries=2)
+    assert len(calls) == 3
+    assert slept == [1, 2]
+    assert isinstance(error.value.__cause__, httpx.HTTPStatusError)
+    assert error.value.__cause__.response.status_code == 429
+
+
 def test_bounded_batch_does_not_claim_incomplete_success(tmp_path):
     jobs = supplemental_jobs(["2026-09"], ["BTC", "ETH"])
     assert len(jobs) == 8

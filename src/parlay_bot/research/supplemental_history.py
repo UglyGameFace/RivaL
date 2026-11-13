@@ -12,6 +12,7 @@ import io
 import json
 import math
 import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -208,6 +209,43 @@ def _json_get(client: httpx.Client, url: str, params: dict, *, timeout=30) -> ob
         raise HistoryImportError("contract history source unavailable or malformed") from exc
 
 
+def kalshi_public_json(
+    client: httpx.Client, url: str, params: dict, *, timeout: float = 30,
+    rate_limit_retries: int = 0, pace_seconds: float = 0,
+) -> object:
+    """Bounded, non-authenticated Kalshi history reads.
+
+    XMarket performs many source-exact contract reads on four parallel Actions
+    workers. Pace this optional archive path and retry *only* HTTP 429, keeping
+    its original exception chain if Kalshi still rejects it. Never treat a
+    missing/forbidden/malformed response as a successful empty history.
+    """
+    if not url.startswith(KALSHI + "/") or rate_limit_retries not in (0, 1, 2) \
+            or not 0 <= pace_seconds <= 1:
+        raise ValueError("invalid Kalshi public-history read policy")
+    for attempt in range(rate_limit_retries + 1):
+        if pace_seconds:
+            time.sleep(pace_seconds)
+        try:
+            return _json_get(client, url, params, timeout=timeout)
+        except HistoryImportError as exc:
+            cause = exc.__cause__
+            if (not isinstance(cause, httpx.HTTPStatusError)
+                    or cause.response.status_code != 429
+                    or attempt == rate_limit_retries):
+                raise
+            # The response may omit Retry-After; never trust unbounded headers.
+            delay = 2 ** attempt
+            try:
+                requested = float(cause.response.headers.get("Retry-After", "0"))
+                if math.isfinite(requested) and 0 < requested <= 8:
+                    delay = max(delay, requested)
+            except ValueError:
+                pass
+            time.sleep(delay)
+    raise AssertionError("unreachable Kalshi retry state")
+
+
 def _time_bounds(*, start_ts: int, end_ts: int) -> None:
     if (type(start_ts) is not int or type(end_ts) is not int
         or not 1_700_000_000 <= start_ts < end_ts
@@ -300,26 +338,36 @@ def ingest_kalshi_contract(
     client: httpx.Client, *, ticker: str,
     start_ts: int, end_ts: int, period_minutes: int, out_dir: Path,
     series_ticker: str | None = None, contract_binding: dict | None = None,
-    timeout_seconds: float = 30,
+    timeout_seconds: float = 30, prefer_live: bool = False,
+    rate_limit_retries: int = 0, pace_seconds: float = 0,
 ):
     _time_bounds(start_ts=start_ts, end_ts=end_ts)
     if (not re.fullmatch(r"[A-Z0-9-]{2,110}", ticker)
         or period_minutes not in (1, 60, 1440)):
         raise HistoryImportError("invalid Kalshi ticker or period")
     _check_contract_binding(contract_binding, ticker, start_ts, end_ts)
-    url = f"{KALSHI}/historical/markets/{ticker}/candlesticks"
+    archived_url = f"{KALSHI}/historical/markets/{ticker}/candlesticks"
     params = {"start_ts": start_ts, "end_ts": end_ts, "period_interval": period_minutes}
+    eligible_series = (isinstance(series_ticker, str)
+                       and re.fullmatch(r"KX(?:BTC|ETH|SOL|XRP)15M", series_ticker)
+                       and ticker.startswith(series_ticker + "-"))
+    live_url = (f"{KALSHI}/series/{series_ticker}/markets/{ticker}/candlesticks"
+                if eligible_series else None)
+    # Live contracts greatly outnumber archived ones in the recent XMarket
+    # overlap window. Preserve the original archived-first default for other
+    # supplemental users; a 404 alone authorizes trying the other tier.
+    url = live_url if prefer_live and live_url else archived_url
     try:
-        raw = _json_get(client, url, params, timeout=timeout_seconds)
+        raw = kalshi_public_json(client, url, params, timeout=timeout_seconds,
+            rate_limit_retries=rate_limit_retries, pace_seconds=pace_seconds)
     except HistoryImportError as exc:
         cause = exc.__cause__
-        if (not isinstance(cause, httpx.HTTPStatusError) or cause.response.status_code != 404
-                or not isinstance(series_ticker, str)
-                or not re.fullmatch(r"KX(?:BTC|ETH|SOL|XRP)15M", series_ticker)
-                or not ticker.startswith(series_ticker + "-")):
+        if (not isinstance(cause, httpx.HTTPStatusError)
+                or cause.response.status_code != 404 or live_url is None):
             raise
-        url = f"{KALSHI}/series/{series_ticker}/markets/{ticker}/candlesticks"
-        raw = _json_get(client, url, params, timeout=timeout_seconds)
+        url = archived_url if url == live_url else live_url
+        raw = kalshi_public_json(client, url, params, timeout=timeout_seconds,
+            rate_limit_retries=rate_limit_retries, pace_seconds=pace_seconds)
     if not isinstance(raw, dict) or not isinstance(raw.get("candlesticks"), list):
         raise HistoryImportError("missing archived Kalshi candlesticks")
     rows = []

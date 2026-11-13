@@ -31,6 +31,7 @@ from parlay_bot.research.supplemental_history import (
     _json_get,
     ingest_kalshi_contract,
     ingest_polymarket_token,
+    kalshi_public_json,
 )
 from parlay_bot.research.xmarket_features import (
     PRICE_SEMANTICS,
@@ -231,7 +232,8 @@ def collect_contract(client, *, source, identity, root, now, fidelity=1):
     else:
         item = ingest_kalshi_contract(client, ticker=identity["contract_id"], start_ts=start,
             end_ts=end, period_minutes=1, out_dir=root, series_ticker="KX" + identity["asset"] + "15M",
-            contract_binding=identity, timeout_seconds=8)
+            contract_binding=identity, timeout_seconds=8, prefer_live=True,
+            rate_limit_retries=2, pace_seconds=0.35)
         payload = {"candlesticks": [{"end_period_ts": int(timestamp(r["at"]).timestamp()),
                     "yes_ask": r["yes_ask"], "yes_bid": r["yes_bid"]}
                    for r in (json.loads(l) for l in item.data_path.read_bytes().splitlines())]}
@@ -250,10 +252,55 @@ def collect_contract(client, *, source, identity, root, now, fidelity=1):
     return points, publication
 
 
+def _archived_kalshi_windows(client, *, series: str, max_pages: int = 24) -> dict:
+    """Index source-bound historical contracts using the *supported* cursor API.
+
+    Unlike live /markets, Kalshi's /historical/markets has no close-time
+    filters. Enumerate the series once per asset/pass, with a strict page
+    ceiling and cursor-cycle rejection, then match exact native windows.
+    Never treat an incomplete page traversal as a complete archive census.
+    """
+    if series not in ("KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M"):
+        raise ValueError("unknown historical Kalshi series")
+    indexed, cursor, visited = {}, "", set()
+    for _ in range(max_pages):
+        params = {"series_ticker": series, "limit": 1000}
+        if cursor:
+            params["cursor"] = cursor
+        response = kalshi_public_json(client, KALSHI + "/historical/markets", params,
+            timeout=8, rate_limit_retries=2, pace_seconds=0.35)
+        if not isinstance(response, dict) or not isinstance(response.get("markets"), list):
+            raise HistoryImportError("malformed Kalshi historical market page")
+        markets = response["markets"]
+        if len(markets) > 1000:
+            raise ValueError("unbounded Kalshi historical market page")
+        for row in markets:
+            if not isinstance(row, dict):
+                raise HistoryImportError("invalid Kalshi historical market")
+            ticker = row.get("ticker")
+            if not isinstance(ticker, str) or not ticker.startswith(series + "-"):
+                raise ValueError("historical Kalshi series identity mismatch")
+            opens, closes = timestamp(row["open_time"]), timestamp(row["close_time"])
+            if closes - opens != timedelta(minutes=15):
+                raise ValueError("historical Kalshi native window mismatch")
+            indexed.setdefault((opens, closes), []).append(row)
+        next_cursor = response.get("cursor", "")
+        if not isinstance(next_cursor, str) or len(next_cursor) > 1024:
+            raise ValueError("invalid Kalshi historical cursor")
+        if not next_cursor:
+            return indexed
+        if next_cursor in visited:
+            raise ValueError("Kalshi historical cursor repeated")
+        visited.add(next_cursor)
+        cursor = next_cursor
+    raise ValueError("Kalshi historical market listing exceeded bounded pages")
+
+
 def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90):
     """Bounded/resumable historical acquisition plus fresh fidelity overlap checks."""
     now = datetime.now(UTC)
     history, publications, errors = [], [], []
+    historical_kalshi = None
     identities = {}
     for bundle in bundles:
         for p in bundle["samples"]:
@@ -305,9 +352,15 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90):
             series = "KX" + asset + "15M"
             params = {"series_ticker": series, "min_close_ts": int(cursor.timestamp()) - 1,
                       "max_close_ts": int(cursor.timestamp()) + 1, "limit": 10}
-            markets = _json_get(client, KALSHI + "/markets", params, timeout=8).get("markets", [])
+            live = kalshi_public_json(client, KALSHI + "/markets", params,
+                timeout=8, rate_limit_retries=2, pace_seconds=0.35)
+            if not isinstance(live, dict) or not isinstance(live.get("markets"), list):
+                raise HistoryImportError("malformed Kalshi current market page")
+            markets = live["markets"]
             if not markets:
-                markets = _json_get(client, KALSHI + "/historical/markets", params, timeout=8).get("markets", [])
+                if historical_kalshi is None:
+                    historical_kalshi = _archived_kalshi_windows(client, series=series)
+                markets = historical_kalshi.get((opened, cursor), [])
             candidates = [m for m in markets if isinstance(m.get("ticker"), str)
                           and m["ticker"].startswith(series + "-")
                           and timestamp(m["open_time"]) == opened

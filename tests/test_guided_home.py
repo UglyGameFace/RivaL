@@ -655,3 +655,25 @@ async def test_polymarket_live_page_can_refresh_to_the_next_contract(tmp_path):
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
         bot.store.close()
+
+@pytest.mark.asyncio
+async def test_quote_menu_handles_both_quote_sources_unavailable(tmp_path):
+    from parlay_bot.perpetuals.live_quotes import QuoteUnavailable
+
+    bot = _client(tmp_path)
+    home = _home(bot)
+    home.page = "quote"
+    home.coin = "BTC"
+    home.quotes = SimpleNamespace(
+        get=AsyncMock(side_effect=QuoteUnavailable("Binance blocked")),
+        get_reference=AsyncMock(side_effect=QuoteUnavailable("Hyperliquid stale")),
+    )
+    try:
+        embed = await home.render()
+        assert "Quote unavailable" in embed.title
+        assert "Neither the Binance-USDT" in embed.description
+        assert "No current price or executable trade is confirmed" in embed.description
+        home.quotes.get.assert_awaited_once_with("BTC")
+        home.quotes.get_reference.assert_awaited_once_with("BTC")
+    finally:
+        await bot.close()

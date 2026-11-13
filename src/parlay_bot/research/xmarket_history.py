@@ -322,14 +322,42 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
                 ) if k in p}
                 identities[p["source"], p["contract_id"]] = identity
 
-    # Independently establish overlap with actual prospective observations.
-    # Acquiring old samples alone must never turn fidelity status green.
+    # Do not spend every archive pass re-downloading the newest 32
+    # contracts. Prior verified Drive bundles already contain the recovered
+    # bars: find the *exact* prospective feature bars that are still missing
+    # their own provider's historical observations, then query only the
+    # bound native contracts responsible for those bars.
+    live_points = [p for b in bundles for p in b["samples"]
+                   if p.get("origin") == "live"]
+    existing_history = [p for b in bundles for p in b["samples"]
+                        if p.get("origin") == "backfill"]
+    pm_fidelity = max(
+        (p["fidelity_minutes"] for p in existing_history
+         if p["source"] == "polymarket"), default=1,
+    )
+    live_bars = sampled_bars(
+        live_points, asset=asset, pm_fidelity=pm_fidelity,
+    )
+    archived_bars = sampled_bars(
+        existing_history, asset=asset, pm_fidelity=pm_fidelity,
+    )
+    overlap_slot = int(now.timestamp()) // (6 * 3600)
     for source in PRICE_SEMANTICS:
-        items = [(key, val) for key, val in identities.items() if key[0] == source]
+        missing_bars = set(live_bars[source]) - set(archived_bars[source])
+        missing_contracts = {
+            live_bars[source][at]["contract_id"] for at in missing_bars
+        }
+        # Every original identity comes from a verified prospective bundle.
+        # More than 32 missing contracts must rotate across later passes,
+        # rather than permanently depriving the older contracts of a retry.
+        items = [(key, val) for key, val in identities.items()
+                 if key[0] == source and key[1] in missing_contracts]
+        items.sort(key=lambda pair: pair[1]["opens_at"], reverse=True)
+        if items:
+            shift = (overlap_slot * 32) % len(items)
+            items = (items[shift:] + items[:shift])[:32]
         consecutive_failures = 0
-        for (src, _), identity in sorted(
-            items, key=lambda x: x[1]["opens_at"], reverse=True
-        )[:32]:
+        for (src, _), identity in items:
             try:
                 rows, publication = collect_contract(
                     client, source=src, identity=identity, root=root, now=now

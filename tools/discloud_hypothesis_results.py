@@ -25,7 +25,7 @@ from parlay_bot.storage.hot import PostgresHotStore
 from parlay_bot.perpetuals.research_hypotheses import record_trials
 
 def persisted_feedback(store, trials, report_sha):
-    """Read-only reconciliation by immutable proposal/venue/contract/horizon key."""
+    # Read-only proof by immutable proposal/venue/contract/horizon identity.
     keys, invalid = {}, 0
     for trial in trials[:200]:
         try:

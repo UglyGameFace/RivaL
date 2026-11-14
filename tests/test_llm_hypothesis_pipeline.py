@@ -690,7 +690,9 @@ async def test_discloud_feedback_receipt_proves_new_and_existing_postgres_trials
                   .replace("__SHA__", repr(report_sha))
                   .replace("__SOURCE__", "None")
                   .replace("__RUN_URL__", "''"))
-        exec(compile(script, "<fake-discloud-console>", "exec"), {})
+        host_file = tmp_path / "verified-host-feedback.py"
+        host_file.write_text(script)
+        runpy.run_path(str(host_file), run_name="__main__")
         output = capsys.readouterr().out
         line = next(x for x in output.splitlines()
                     if x.startswith(relay.MARKER))

@@ -646,6 +646,84 @@ async def test_experiment_results_feed_the_next_idea_request(tmp_path):
         store.close()
 
 
+@pytest.mark.asyncio
+async def test_discloud_feedback_receipt_proves_new_and_existing_postgres_trials(
+    monkeypatch, tmp_path, capsys,
+):
+    import base64
+    from types import SimpleNamespace
+
+    from parlay_bot import config
+    from parlay_bot.storage import hot
+    from tools import discloud_hypothesis_results as relay
+
+    store = SQLiteHotStore(tmp_path / "host-trial-feedback.sqlite")
+    class AI:
+        available = True
+
+        async def propose_feature_hypothesis(self, *, asset, venues):
+            return {**proposal(asset, mode="volume_only"), "venues": ["okx"]}
+
+    lab = FeatureHypothesisLab(store, AI(), venues=("okx",))
+    now = datetime(2026, 11, 2, 1, 10, tzinfo=UTC)
+    assert (await lab.run_once(now=now))["status"] == "proposed"
+    record = recent_hypotheses(store, venue="okx", now=now)[0]
+    trial = _trial(record)
+
+    class StoreProxy:
+        database = store.database
+        connect = store.connect
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(config, "Settings", lambda: SimpleNamespace(
+        rival_storage_backend="postgres",
+        rival_database_url=SimpleNamespace(get_secret_value=lambda: "private"),
+    ))
+    monkeypatch.setattr(hot, "PostgresHotStore", lambda url: StoreProxy())
+
+    def host(report_sha, trial_rows):
+        payload = base64.b64encode(json.dumps(trial_rows).encode()).decode()
+        script = (relay.HOST_SCRIPT
+                  .replace("__TRIALS__", repr(payload))
+                  .replace("__SHA__", repr(report_sha))
+                  .replace("__SOURCE__", "None")
+                  .replace("__RUN_URL__", "''"))
+        host_file = tmp_path / "verified-host-feedback.py"
+        host_file.write_text(script)
+        runpy.run_path(str(host_file), run_name="__main__")
+        output = capsys.readouterr().out
+        line = next(x for x in output.splitlines()
+                    if x.startswith(relay.MARKER))
+        return json.loads(line[len(relay.MARKER):])
+
+    try:
+        first = host("a" * 64, [trial])
+        assert first["status"] == "saved" and first["saved"] == 1
+        assert first["feedback"]["status"] == "fully_persisted"
+        assert first["feedback"]["persisted_same_report"] == 1
+        assert first["feedback"]["persisted_prior_report"] == 0
+
+        second = host("a" * 64, [trial])
+        assert second["status"] == "saved" and second["saved"] == 0
+        assert second["feedback"]["recorded"] == 1
+        assert second["feedback"]["persisted_same_report"] == 1
+
+        later = host("b" * 64, [trial])
+        assert later["status"] == "saved" and later["saved"] == 0
+        assert later["feedback"]["recorded"] == 1
+        assert later["feedback"]["persisted_prior_report"] == 1
+
+        forged = host("c" * 64, [{**trial, "proposal_sha256": "f" * 64}])
+        assert forged["status"] == "saved" and forged["saved"] == 0
+        assert forged["feedback"]["status"] == "incomplete"
+        assert forged["feedback"]["missing_proposal"] == 1
+        assert "private" not in json.dumps(forged)
+    finally:
+        store.close()
+
+
 def test_service_renders_only_well_formed_prior_results():
     service = runpy.run_path(str(ROOT / "services/rival-llm/service.py"))
     lines = service["prior_trial_lines"]({"prior_trials": [

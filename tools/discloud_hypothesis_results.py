@@ -23,6 +23,54 @@ sys.path.insert(0, 'src')
 from parlay_bot.config import Settings
 from parlay_bot.storage.hot import PostgresHotStore
 from parlay_bot.perpetuals.research_hypotheses import record_trials
+
+def persisted_feedback(store, trials, report_sha):
+    # Read-only proof by immutable proposal/venue/contract/horizon identity.
+    keys, invalid = {}, 0
+    for trial in trials[:200]:
+        try:
+            key = (str(trial['proposal_sha256']), str(trial['venue']),
+                   str(trial['contract']), int(trial['horizon_minutes']))
+            keys[key] = (str(trial['asset']), str(trial['hypothesis']))
+        except (KeyError, TypeError, ValueError):
+            invalid += 1
+    counts = {
+        'submitted': len(trials), 'unique_keys': len(keys),
+        'invalid_identity': invalid, 'persisted_same_report': 0,
+        'persisted_prior_report': 0, 'missing_proposal': 0,
+        'proposal_not_proposed': 0, 'proposal_identity_mismatch': 0,
+        'unmatched_valid_proposal': 0,
+    }
+    with store.connect() as conn:
+        for key, identity in keys.items():
+            existing = conn.execute(
+                'SELECT report_sha256 FROM rival_llm_hypothesis_trials '
+                'WHERE proposal_sha256=? AND venue=? AND contract=? '
+                'AND horizon_minutes=?', key,
+            ).fetchone()
+            if existing is not None:
+                field = ('persisted_same_report' if existing['report_sha256'] == report_sha
+                         else 'persisted_prior_report')
+                counts[field] += 1
+                continue
+            proposal = conn.execute(
+                'SELECT asset,hypothesis,status FROM rival_llm_feature_hypotheses '
+                'WHERE record_sha256=?', (key[0],),
+            ).fetchone()
+            if proposal is None:
+                counts['missing_proposal'] += 1
+            elif proposal['status'] != 'proposed':
+                counts['proposal_not_proposed'] += 1
+            elif (proposal['asset'], proposal['hypothesis']) != identity:
+                counts['proposal_identity_mismatch'] += 1
+            else:
+                counts['unmatched_valid_proposal'] += 1
+    counts['recorded'] = (counts['persisted_same_report']
+                          + counts['persisted_prior_report'])
+    counts['status'] = ('fully_persisted' if counts['recorded'] == len(keys)
+                        and invalid == 0 else 'incomplete')
+    return counts
+
 out = {'status': 'unavailable', 'saved': 0}
 try:
     settings = Settings()
@@ -31,6 +79,11 @@ try:
         try:
             trials = json.loads(base64.b64decode(__TRIALS__))
             out = {'status': 'saved', 'saved': record_trials(store, trials, report_sha256=__SHA__)}
+            try:
+                out['feedback'] = persisted_feedback(store, trials, __SHA__)
+            except Exception as proof_exc:
+                out['feedback'] = {'status': 'unavailable',
+                                   'error_class': type(proof_exc).__name__}
             source = __SOURCE__
             if source is not None:
                 from parlay_bot.research.source_runs import record_source_run
@@ -197,8 +250,16 @@ def main(argv=None) -> int:
                           source_run=source, run_url=run_url)
         except (error.URLError, ValueError, KeyError, TypeError, OSError, TimeoutError) as exc:
             result = {"status": "unavailable", "saved": 0, "error": type(exc).__name__}
+        receipt = result.get('feedback') or {}
         print(f"RivaL hypothesis results: {path.name} trials={len(trials)} "
-              f"status={result.get('status')} saved={result.get('saved')}")
+              f"status={result.get('status')} newly_saved={result.get('saved')} "
+              f"feedback_status={receipt.get('status', 'unverified')} "
+              f"existing_same_report={receipt.get('persisted_same_report', 0)} "
+              f"existing_prior_report={receipt.get('persisted_prior_report', 0)} "
+              f"not_recorded={max(0, receipt.get('unique_keys', 0) - receipt.get('recorded', 0))}")
+        if trials and receipt.get('status') != 'fully_persisted':
+            print("::warning::LFM3 feedback persistence not yet fully verified; "
+                  "source research and model gates remain independent.")
         failed |= result.get('status') != 'saved'
     return 1 if failed else 0
 

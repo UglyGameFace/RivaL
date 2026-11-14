@@ -36,6 +36,7 @@ on:
       - "src/parlay_bot/research/live_training.py"
       - "src/parlay_bot/research/llm_feature_ablation.py"
       - "tools/discloud_feature_hypotheses.py"
+      - "tools/discloud_hypothesis_results.py"
       - "src/parlay_bot/research/boosted_models.py"
       - "src/parlay_bot/research/boosted_portable.py"
       - "src/parlay_bot/research/candidate_registry.py"

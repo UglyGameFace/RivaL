@@ -131,6 +131,11 @@ def test_native_complete_month_preserves_unknown_trade_count_sentinel(native_mar
     assert rows[1]["trades"] == 4
     assert meta["unknown_trade_count"] == 1
     assert audit_partition(export.manifest_path)["full_calendar_month_verified"]
+    # The manifest cannot claim that the original unknown count was zero.
+    forged = {**meta, "unknown_trade_count": 0}
+    export.manifest_path.write_text(json.dumps(forged))
+    with pytest.raises(HistoryImportError, match="unknown trade-count evidence"):
+        _rows(export.manifest_path)
 
     # The sentinel is the only accepted negative count. Never publish a
     # genuinely malformed negative value as an original historical month.

@@ -11,8 +11,10 @@ name: RivaL archive model weekly training
 # The GBM trains as a step in this same workflow (no separate workflow
 # file): same restored bytes, same --train-end / --test-start /
 # --trained-through, same manifests dir, per-horizon + per-step failure
-# isolation. Never on ordinary pushes: weekly retrain + a tightly date-locked
-# one-off 2026-11-13 post-export/frame-repair recovery + manual dispatch only.
+# isolation. Never train on ordinary pushes: the old Nov 13 recovery is
+# expired. A single main-commit transition can train from the independently
+# verified Nov 14 source readbacks with the exact same chronological cutoffs.
+# The source workflow and this trainer share one Drive-writer lock.
 on:
   schedule:
     - cron: "30 7 * * 0"
@@ -36,15 +38,17 @@ on:
 
 permissions:
   contents: read
+  actions: read  # Read pinned, authenticated source-run proof artifacts only.
 
 concurrency:
   group: rival-archive-model-training
   cancel-in-progress: false
 
 jobs:
-  # The one-time source-ready fallback runs ONLY from main on 2026-11-13
-  # when this workflow or the broken trainer is repaired. No future push can
-  # train with this retired trigger. Manual dispatch and Sunday schedule remain unchanged.
+  # Only the first main transition out of #585 can execute this extra fit,
+  # provided all four independent, exact-source readbacks pass. Never let
+  # a later unrelated push silently retrain. Manual dispatch and the
+  # existing Sunday/Nov-15 schedule gates remain unchanged.
   schedule_guard:
     runs-on: ubuntu-latest
     outputs:
@@ -56,10 +60,11 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_CRON: ${{ github.event.schedule }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
           today="$(date -u +%F)"
-          if [[ "$EVENT_NAME" == "push" && "$today" != "2026-11-13" ]]; then
-            echo "One-time XMarket post-export fallback expired; skip without training."
+          if [[ "$EVENT_NAME" == "push" && ( "$PUSH_BEFORE" != "b76731e787fe1a7dad5f222b7a934bca82a20121" || "$today" > "2026-11-16" ) ]]; then
+            echo "One-time, exact-base XMarket source fit not authorized by this push."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
           elif [[ "$EVENT_NAME" == "schedule" && "$EVENT_CRON" == "30 7 * * 0" && "$today" == "2026-11-15" ]]; then
             echo "Skipping the 2026-11-15 scheduled archive training."
@@ -67,6 +72,27 @@ jobs:
           else
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           fi
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push' && steps.check.outputs.should_run == 'true'
+      - name: Require exact successful four-asset XMarket source admission
+        if: github.event_name == 'push' && steps.check.outputs.should_run == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: "43641543527"
+        run: |
+          set -euo pipefail
+          gh run view "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --json databaseId,headSha,status,conclusion,event > "$RUNNER_TEMP/xmarket-source-run.json"
+          for asset in BTC ETH SOL XRP; do
+            root="$RUNNER_TEMP/xmarket-proofs/$asset"
+            mkdir -p "$root"
+            gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+              --name "xmarket-chronological-proof-${asset}-${SOURCE_RUN}" --dir "$root"
+          done
+          python tools/verify_xmarket_training_gate.py \
+            --root "$RUNNER_TEMP/xmarket-proofs" \
+            --run-metadata "$RUNNER_TEMP/xmarket-source-run.json"
 
   train:
     needs: schedule_guard
@@ -131,11 +157,21 @@ jobs:
       # validation; both purged by one horizon.
       - name: Train (all horizons)
         run: |
-          last_month="$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)"
-          through_day="$(date -u -d yesterday +%Y-%m-%d)"
-          test_start="$(date -u -d "-28 days" +%Y-%m-%dT00:00:00+00:00)"
-          train_end="$(date -u -d "-56 days" +%Y-%m-%dT00:00:00+00:00)"
-          trained_through="$(date -u -d yesterday +%Y-%m-%dT23:55:00+00:00)"
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            # Exact clock used by the independently completed Nov 14 readback;
+            # time spent in the serialized source queue cannot drift the splits.
+            last_month="2026-10"
+            through_day="2026-11-13"
+            test_start="2026-10-17T00:00:00+00:00"
+            train_end="2026-09-19T00:00:00+00:00"
+            trained_through="2026-11-13T23:55:00+00:00"
+          else
+            last_month="$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)"
+            through_day="$(date -u -d yesterday +%Y-%m-%d)"
+            test_start="$(date -u -d "-28 days" +%Y-%m-%dT00:00:00+00:00)"
+            train_end="$(date -u -d "-56 days" +%Y-%m-%dT00:00:00+00:00)"
+            trained_through="$(date -u -d yesterday +%Y-%m-%dT23:55:00+00:00)"
+          fi
           publish_flag=""
           if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event_name }}" == "push" || "${{ inputs.publish }}" == "true" ]]; then
             publish_flag="--publish"

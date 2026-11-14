@@ -66,7 +66,7 @@ jobs:
           # GitHub runner even with thousands of tests already passed. Keep
           # a strict twelve-minute ceiling while retaining SIGINT's useful
           # traceback and per-test 75s faulthandler diagnostics.
+          # Print each test ID so an async hang cannot hide behind
+          # only a percent-progress counter. Preserve coverage/timeout.
           PYTHONUNBUFFERED=1 timeout -s SIGINT -k 20s 720s \
-            # Print the current test ID so an async hang cannot hide behind
-            # only a percent-progress counter. Preserve full coverage/timeout.
             pytest -v -x -o faulthandler_timeout=75

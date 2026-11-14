@@ -48,7 +48,9 @@ def test_twelve_scope_report_does_not_fabricate_a_model_from_native_inputs(learn
     report = _xmarket_progress(learning_store, now + timedelta(seconds=5))
     scopes = _scopes(report)
     assert len(scopes) == 12
-    assert report["status"] == "waiting_for_fit"
+    # The legacy global stage requires all four assets to have fresh inputs.
+    # It stays unchanged even though the BTC-only scope is ready for fitting.
+    assert report["status"] == "waiting_for_inputs"
     assert all(scopes[("BTC", horizon)]["status"] == "waiting_for_fit"
                for horizon in (5, 15, 60))
     assert all(scopes[("ETH", horizon)]["status"] == "waiting_for_inputs"

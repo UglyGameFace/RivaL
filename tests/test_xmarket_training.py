@@ -42,6 +42,35 @@ def test_fit_uses_own_labels_complete_overlap_and_held_out_calibration(monkeypat
     assert .02 <= training.probability(doc, [0.] * 18) <= .98
 
 
+def test_original_frame_admission_never_fits_calibrates_or_promotes(monkeypatch):
+    from parlay_bot.perpetuals import flow_challenger_v3
+
+    frames, inputs = frames_and_inputs(n=3600, venues=("binance", "bitget", "okx"))
+    candles = next(iter(frames.values()))[0]
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("read-only frame admission must not fit/evaluate weights")
+
+    monkeypatch.setattr(training, "_fit_logistic", forbidden)
+    monkeypatch.setattr(flow_challenger_v3, "fit_platt", forbidden)
+
+    result = training.train_run(
+        frames, asset="BTC", horizon=5, admission_only=True,
+        train_end=candles.index[int(len(candles) * .66)],
+        test_start=candles.index[int(len(candles) * .83)],
+        trained_through=candles.index[-1],
+        provenance={"provider_sha256_by_month": {"bitget:2026-11": "a" * 64},
+                    "months_without_provider_hash": []},
+        code_version="test-admission", market_data=inputs,
+    )
+    report = result["report"]
+    assert result["publish_kind"] == "report" and result["artifact"] is None
+    assert report["training_status"] == "admission_only"
+    assert report["effective_window"]["rows"] > 0
+    assert report["overlap_evidence"]["splits"]["test"]["rows"] > 0
+    assert "admission_only_never_fits_or_publishes" in report["gate_failures"]
+
+
 def test_noise_is_report_only():
     frames, inputs = frames_and_inputs(rho=0.)
     result = run(frames, inputs)

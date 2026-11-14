@@ -58,6 +58,17 @@ cx.state.evidence={
  intelligence:{status:'verified',prs:[],runs:[]}
 };
 assert.equal(cx.prs().length,2);
+// PR-triggered CI uses the head SHA, not the merge commit SHA.
+cx.state.prs[1].head_sha='abcdef';
+cx.state.runs.push({id:43350851274,name:'CI',conclusion:'success',status:'completed',
+  html_url:'https://github.com/UglyGameFace/RivaL/actions/runs/43350851274',
+  created_at:at,head_sha:'abcdef'});
+cx.state.filters.workflow='CI';
+cx.state.filters.run='43350851274';
+assert.equal(cx.prs().filter(cx.pass).length,1,'PR head SHA should correlate with workflow run filters');
+assert.equal(cx.prs().filter(cx.pass)[0].n,557);
+cx.state.filters.workflow='';
+cx.state.filters.run='';
 assert.match(cx.rows(),/Keep Evidence Board/);
 assert.match(cx.ciPage(),/RivaL Evidence Board source receipt/);
 assert.match(cx.auditPage(),/Synthetic recent change/);

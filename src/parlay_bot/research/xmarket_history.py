@@ -44,6 +44,9 @@ GAMMA = "https://gamma-api.polymarket.com"
 MIN_COMPARISON_POINTS = 30
 PRICE_TOLERANCE = 0.02
 MAX_MISMATCH_RATE = 0.05
+BASE_OVERLAP_CONTRACTS = 32
+MAX_OVERLAP_CONTRACTS = 96
+RESERVED_HISTORY_WINDOWS = 24
 
 
 class NativeContractAbsent(ValueError):
@@ -326,7 +329,7 @@ def _exact_kalshi_contracts(markets, *, series, opened, closes):
     return candidates
 
 
-def missing_overlap_identities(bundles, *, asset, source, now, limit=32):
+def missing_overlap_identities(bundles, *, asset, source, now, limit=BASE_OVERLAP_CONTRACTS):
     """Select native contracts with missing exact-feature-bar history twins.
 
     Re-fetching the same 32 newest contracts forever strands older observed
@@ -336,7 +339,7 @@ def missing_overlap_identities(bundles, *, asset, source, now, limit=32):
     """
     if source not in PRICE_SEMANTICS or asset not in ("BTC", "ETH", "SOL", "XRP"):
         raise ValueError("invalid native source or asset")
-    if not 0 <= limit <= 96:
+    if not 0 <= limit <= MAX_OVERLAP_CONTRACTS:
         raise ValueError("invalid bounded XMarket overlap source budget")
     if limit == 0:
         return []
@@ -374,7 +377,7 @@ def missing_overlap_identities(bundles, *, asset, source, now, limit=32):
 
 
 def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
-             pending=None, retry_gaps=12):
+             pending=None, retry_gaps=12, budget_report=None):
     """Advance over unavailable windows, and retain exact missing-source gaps.
 
     A single 404/absent native contract must not strand an entire older archive.
@@ -383,6 +386,8 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
     current traversal to avoid overwhelming a provider. Prior gaps get a
     rotating, bounded recheck on later archive passes.
     """
+    if type(max_windows) is not int or not 0 <= max_windows <= 8640:
+        raise ValueError("max-windows must be 0..8640")
     now = datetime.now(UTC)
     history, publications, errors = [], [], []
     gaps = pending if pending is not None else {source: set() for source in PRICE_SEMANTICS}
@@ -390,28 +395,58 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
         raise ValueError("invalid XMarket gap sources")
     historical_kalshi = None
     archived_kalshi_failure = None
+    # Reallocate the EXISTING per-source contract budget instead of adding
+    # requests. A bulk daily export can leave >32 contracts unpaired; that
+    # backlog previously survived a whole recovery pass with spare capacity
+    # spent exclusively on older windows. Reserve older-history progress.
+    per_source_budget = max_windows + BASE_OVERLAP_CONTRACTS
+    overlap_limit = min(
+        MAX_OVERLAP_CONTRACTS,
+        per_source_budget - min(max_windows, RESERVED_HISTORY_WINDOWS),
+    )
+    overlap_items = {
+        source: missing_overlap_identities(
+            bundles, asset=asset, source=source, now=now, limit=overlap_limit
+        ) for source in PRICE_SEMANTICS
+    }
+    history_limit = min(
+        max_windows, per_source_budget - max(map(len, overlap_items.values()), default=0)
+    )
+    attempts = {stage: {source: 0 for source in PRICE_SEMANTICS}
+                for stage in ("overlap", "gap_repair", "backfill")}
+    paused_sources, collected_windows = set(), set()
+    if budget_report is not None:
+        budget_report.update({
+            "contract_attempt_limit": len(PRICE_SEMANTICS) * per_source_budget + retry_gaps,
+            "overlap_contract_limit": overlap_limit,
+            "overlap_contracts_selected": {s: len(items) for s, items in overlap_items.items()},
+            "allocated_new_window_budget": history_limit,
+            "contract_attempts_by_stage": attempts,
+        })
     # Independently establish overlap with actual prospective observations.
     # Missing-first selection advances beyond already restored native bars.
     for source in PRICE_SEMANTICS:
-        items = missing_overlap_identities(
-            bundles, asset=asset, source=source, now=now, limit=32
-        )
-        for identity in items:
+        for identity in overlap_items[source]:
             try:
+                attempts["overlap"][source] += 1
                 rows, publication = collect_contract(
                     client, source=source, identity=identity, root=root, now=now
                 )
                 history.extend(rows)
                 publications.append(publication)
+                collected_windows.add((source, timestamp(identity["closes_at"])))
             except (httpx.HTTPError, ValueError, HistoryImportError) as exc:
                 failure = source_failure(
                     source, "overlap", exc, window_close=identity["closes_at"]
                 )
                 errors.append(failure)
                 # Missing exact contracts must not block all remaining
-                # prospective overlap repairs. Keep the 32-contract cap;
-                # stop immediately on provider timeout/rate-limit instead.
+                # prospective overlap repairs. A transport/rate-limit failure
+                # pauses this source for the REST of the pass, including
+                # older-history/gap requests, rather than immediately retrying
+                # the same provider in the next phase.
                 if failure["retryable"]:
+                    paused_sources.add(source)
                     break
 
     last_closed = datetime.fromtimestamp(int(now.timestamp()) // 900 * 900, UTC)
@@ -420,8 +455,15 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
 
     def one_source(source, closes, *, stage):
         nonlocal historical_kalshi, archived_kalshi_failure
+        if (source, closes) in collected_windows:
+            gaps[source].discard(closes.isoformat())
+            return False
+        if source in paused_sources:
+            gaps[source].add(closes.isoformat())
+            return True
         opened = closes - timedelta(minutes=15)
         try:
+            attempts[stage][source] += 1
             if source == "polymarket":
                 from parlay_bot.discord_app.polymarket_watch import market_slug
 
@@ -479,12 +521,15 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
             )
             history.extend(rows)
             publications.append(publication)
+            collected_windows.add((source, closes))
             gaps[source].discard(closes.isoformat())
             return False
         except (httpx.HTTPError, ValueError, KeyError, HistoryImportError) as exc:
             failure = source_failure(source, stage, exc, window_close=closes)
             errors.append(failure)
             gaps[source].add(closes.isoformat())
+            if failure["retryable"]:
+                paused_sources.add(source)
             return bool(failure["retryable"])
 
     # A rolling, deterministic offset stops a permanently unavailable first
@@ -507,7 +552,7 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
                 # Stop a whole batch immediately on provider throttling.
                 break
 
-    for _ in range(max_windows):
+    for _ in range(history_limit):
         opened = cursor - timedelta(minutes=15)
         if opened < floor:
             break
@@ -521,6 +566,11 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
         # This window has either verified original bytes or an explicit
         # pending gap for each unavailable source. Never silently skip it.
         cursor = opened
+    if budget_report is not None:
+        budget_report["contract_attempts"] = sum(
+            count for stage in attempts.values() for count in stage.values()
+        )
+        budget_report["paused_sources"] = sorted(paused_sources)
     return history, publications, cursor, errors
 
 
@@ -577,11 +627,13 @@ async def weekly_inputs(drive, *, asset: str, through, cache: Path, max_windows=
         )
     )
     before = datetime.fromtimestamp(int(before.timestamp()) // 900 * 900, UTC)
+    budget = {}
     def collect():
         with httpx.Client(timeout=8, follow_redirects=False) as client:
             return backfill(
                 client, asset=asset, bundles=bundles, root=cache / "supplements",
                 before=before, max_windows=max_windows, pending=pending,
+                budget_report=budget,
             )
     history, publications, next_before, failures = await asyncio.to_thread(collect)
     errors.extend(failures)
@@ -632,6 +684,7 @@ async def weekly_inputs(drive, *, asset: str, through, cache: Path, max_windows=
         )
     combined = combine([*bundles, bundle], errors=errors)
     combined["backfill_progress"] = {
+        **budget,
         "previous_cursor": before.isoformat(),
         "next_cursor": next_before.isoformat(),
         "windows_advanced": max(

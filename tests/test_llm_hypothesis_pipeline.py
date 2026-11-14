@@ -108,6 +108,63 @@ async def test_four_asset_slots_dedupe_and_only_verified_proposals(tmp_path):
         store.close()
 
 
+
+@pytest.mark.asyncio
+async def test_recent_retry_cannot_relabel_expired_original_slot_as_fresh(tmp_path):
+    from parlay_bot.perpetuals.research_hypotheses import PROPOSAL_FRESHNESS_DAYS
+
+    store = SQLiteHotStore(tmp_path / "stale-llm-proposals.sqlite")
+    class AI:
+        available = True
+
+        async def propose_feature_hypothesis(self, *, asset, venues):
+            return {**proposal(asset), "venues": ["okx"]}
+
+    started = datetime(2026, 11, 2, 1, 10, tzinfo=UTC)
+    lab = FeatureHypothesisLab(store, AI(), venues=("okx",))
+    try:
+        assert (await lab.run_once(now=started))["status"] == "proposed"
+        now = started + timedelta(days=PROPOSAL_FRESHNESS_DAYS, seconds=1)
+        # A retry can refresh attempted_at, not the original immutable slot.
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE rival_llm_feature_hypotheses SET attempted_at=?",
+                (now.isoformat(),),
+            )
+        assert recent_hypotheses(store, venue="okx", now=now) == []
+    finally:
+        store.close()
+
+
+def test_relay_quarantines_unverified_optional_ai_ideas_without_baseline_failure():
+    clock = datetime(2026, 11, 3, tzinfo=UTC)
+    record = {
+        "asset": "BTC", "slot_utc": "2026-11-02T00:00:00+00:00",
+        "model": MODEL, "hypothesis": "trend_only",
+        "venues": ["okx"], "evidence_sha256": "f" * 64,
+    }
+    record["record_sha256"] = hashlib.sha256(json.dumps(
+        record, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    receipt = {
+        "status": "verified", "source": "live_postgresql_llm_hypotheses",
+        "proposals": [record],
+    }
+    vet = RELAY["vet_optional_proposals"]
+    assert vet(receipt, venue="okx", now=clock)["proposals"] == [record]
+
+    for bad in (
+        {**record, "hypothesis": "momentum_only"},  # SHA mismatch
+        {**record, "slot_utc": "2026-10-01T00:00:00+00:00"},  # stale original
+        {**record, "venues": ["other"]},  # wrong source venue
+    ):
+        result = vet({**receipt, "proposals": [bad]}, venue="okx", now=clock)
+        assert result["status"] == "unverified"
+        assert result["proposals"] == []
+        assert result["reason_code"] == "optional_proposal_contract_rejected"
+        # The ordinary offline model still receives no optional LLM features.
+        assert ablation.verify_proposals(result, venue="okx", now=clock) == []
+
 @pytest.mark.asyncio
 async def test_failed_llm_request_does_not_duplicate_spend_or_invent_model(tmp_path):
     store = SQLiteHotStore(tmp_path / "fail.sqlite")

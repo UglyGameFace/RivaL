@@ -119,6 +119,8 @@ assert.match(cx.sourceBanner(),/PERIODIC EVIDENCE BOARD v2.2/);
 assert.match(cx.evidencePage(),/Why is the Brier trend not an accuracy or profit graph/);
 assert.match(source,/liveness_only:true/);
 assert.match(source,/evidence_health:'not_checked'/);
+assert.match(source,/age>=0&&age<1500/,'Future-dated receipts cannot pass freshness');
+assert.match(cx.sourcePanel(),/SIGNED RECEIPT/);
 assert.match(source,/if\(url.pathname==='\/api\/status'\)/);
 assert.doesNotMatch(source,/signed auto-updates/);
 console.log('Evidence Board source-backed UI smoke passed');

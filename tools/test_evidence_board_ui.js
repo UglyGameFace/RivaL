@@ -128,6 +128,25 @@ assert.match(cx.proofGrid(),/Eligible historical training overlap/);
 assert.match(cx.proofGrid(),/No eligible rows in this dated report set/);
 assert.doesNotMatch(cx.proofGrid(),/Matching historical bars/);
 assert.doesNotMatch(cx.proofGrid(),/VERIFIED/,'Provider comparison pairs cannot prove a training join');
+cx.state.evidence.host.xmarket_imported_scopes=5;
+cx.state.evidence.drive.reports=cx.state.evidence.drive.reports.map((r,i)=>({
+  ...r,status:i<7?'rejected':'blocked',eligible_rows:i<7?17000:0,
+  gate_passed:false,reason:i<7?'offline_gates_failed':'insufficient_labelled_rows'
+}));
+assert.match(cx.overview(),/0\/12 passing fits/);
+assert.match(cx.overview(),/7 rejected by offline gates/);
+assert.match(cx.experimentsSourcePanel(),/Fit gates not passed/);
+assert.match(cx.experimentsSourcePanel(),/7 rejected in dated reports/);
+assert.match(cx.evidencePage(),/Why the dated reports have not qualified/);
+assert.match(cx.evidencePage(),/7 rejected by offline gates/);
+assert.match(cx.evidencePage(),/5 blocked/);
+assert.match(cx.evidencePage(),/eligible-row counts/);
+assert.doesNotMatch(cx.evidencePage(),/The 12 Nov 12 reports do contain historical price candidates/);
+cx.v2scope('BTC',5);
+assert.match(document.drawer,/OFFLINE GATES REJECTED IN THIS REPORT/);
+assert.match(cx.v2matrix(),/Blocked or rejected in that report/);
+assert.match(cx.v2pipeline(),/artifact-to-report lineage unverified/);
+
 assert.match(cx.v2pipeline(),/not eligible training overlap/);
 assert.doesNotMatch(cx.v2pipeline(),/Matched historical scopes/);
 assert.match(cx.sourceBanner(),/PERIODIC EVIDENCE BOARD v2.2/);

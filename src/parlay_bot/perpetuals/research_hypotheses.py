@@ -304,7 +304,17 @@ def recent_hypotheses(store, *, venue: str, now: datetime | None = None) -> list
             if row["model"] != MODEL:
                 continue
             venues = json.loads(row["source_venues_json"])
-            if not isinstance(venues, list) or venue not in venues:
+            if (not isinstance(venues, list) or venue not in venues
+                    or not all(isinstance(v, str) and re.fullmatch(r"[a-z0-9_-]{2,24}", v)
+                               for v in venues)):
+                continue
+            # The DB query bounds attempted_at for operational retries, but
+            # the offline verifier binds freshness to the original UTC slot.
+            # A recently retried OLD proposal must never be relayed as fresh.
+            slot = datetime.fromisoformat(str(row["slot_utc"]))
+            if (slot.utcoffset() is None
+                    or not timedelta(0) <= current - slot.astimezone(UTC)
+                    <= timedelta(days=PROPOSAL_FRESHNESS_DAYS)):
                 continue
             record = {
                 "asset": asset, "slot_utc": row["slot_utc"], "model": MODEL,

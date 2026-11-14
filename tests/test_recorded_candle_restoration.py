@@ -122,7 +122,10 @@ async def test_unverified_or_conflicting_originals_fail_before_partition_creatio
     assert not list(tmp_path.rglob("*.manifest.json"))
 
 
-@pytest.mark.parametrize("defect", ["off_grid", "early_observed", "wrong_day", "bad_price", "conflict"])
+@pytest.mark.parametrize("defect", [
+    "off_grid", "early_observed", "wrong_day", "bad_price", "bad_volume",
+    "invalid_trade_count", "fractional_trade_count", "conflict",
+])
 @pytest.mark.asyncio
 async def test_invalid_ledger_rows_cannot_become_verified_partials(tmp_path, defect):
     row = candle(datetime(2026, 11, 8, tzinfo=UTC))
@@ -134,12 +137,64 @@ async def test_invalid_ledger_rows_cannot_become_verified_partials(tmp_path, def
         row["closed_at"] = "2026-11-09T00:04:59.999000+00:00"
     elif defect == "bad_price":
         row["high_price"] = 1
+    elif defect == "bad_volume":
+        row["volume_base"] = -1
+    elif defect == "invalid_trade_count":
+        row["trades"] = -2
+    elif defect == "fractional_trade_count":
+        row["trades"] = 3.5
     rows = [row]
     if defect == "conflict":
         rows.append({**row, "close_price": 100.5})
     with pytest.raises(HistoryImportError):
         await restore(Drive(rows), tmp_path)
     assert not list(tmp_path.rglob("*.manifest.json"))
+
+
+
+@pytest.mark.asyncio
+async def test_original_unknown_trade_sentinel_restores_without_imputation_and_audits(tmp_path):
+    """-1 is a stored UNKNOWN count, not zero trading or a damaged candle."""
+    at = datetime(2026, 11, 8, tzinfo=UTC)
+    first = {**candle(at), "trades": -1}
+    second = candle(at + timedelta(minutes=5))
+    drive = Drive([first, second])
+
+    result = await restore(drive, tmp_path)
+    assert result["status"] == "restored_partial_partitions"
+    assert result["partitions"][0]["unknown_trade_count"] == 1
+    manifest = next(tmp_path.rglob("*.manifest.json"))
+    metadata, rows = learning._rows(manifest)
+    assert metadata["unknown_trade_count"] == 1
+    assert [row["trades"] for row in rows] == [-1, 10]
+    assert rows[0]["volume_base"] == first["volume_base"]
+    # Both the originals and the normalized partition remain independently
+    # hash/readback-verified; the sentinel is not synthesized from a blank.
+    assert audit_partition(manifest)["full_calendar_month_verified"] is False
+    frames, provenance = archive_training.load_frames_manifests(
+        tmp_path, target_asset="BTC"
+    )
+    assert len(frames["bitget|BTCUSDT|USDT"][0]) == 2
+    assert provenance["recorded_partitions"]["bitget:2026-11"]["source_files"]
+
+    # A forged unknown-trades count is rejected even if the normalized
+    # source candle file remains byte-identical.
+    metadata["unknown_trade_count"] = 0
+    manifest.write_text(json.dumps(metadata))
+    with pytest.raises(HistoryImportError, match="unknown trade-count evidence"):
+        learning._rows(manifest)
+
+
+@pytest.mark.asyncio
+async def test_zero_trade_count_and_unknown_trade_count_are_distinct(tmp_path):
+    at = datetime(2026, 11, 8, tzinfo=UTC)
+    rows = [{**candle(at), "trades": 0},
+            {**candle(at + timedelta(minutes=5)), "trades": -1}]
+    await restore(Drive(rows), tmp_path)
+    manifest = next(tmp_path.rglob("*.manifest.json"))
+    meta, normalized = learning._rows(manifest)
+    assert meta["unknown_trade_count"] == 1
+    assert [r["trades"] for r in normalized] == [0, -1]
 
 
 @pytest.mark.parametrize("defect", ["original_bytes", "source_row", "coverage", "future_clock", "wrong_quote"])

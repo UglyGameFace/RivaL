@@ -76,7 +76,7 @@ def test_stale_dispersion_sources_do_not_hide_real_market_overlap():
     report = run(frames, inputs)["report"]
     assert report["input_count"] == 15
     assert report["dispersion_venues"] == []
-    assert report["dispersion_selection"]["selection"] == "insufficient_joint_split_coverage"
+    assert report["dispersion_selection"]["selection"] == "insufficient_joint_market_coverage"
     assert report["overlap_evidence"]["by_stream"]["binance|BTC"]["all_sources_rows"] > 0
     assert report["row_admission"]["binance|BTC"]["complete_rows"] > 0
     assert report["effective_window"]["rows"] > 0
@@ -93,7 +93,7 @@ def test_available_dispersion_pair_survives_a_third_stale_venue():
     report = run(frames, inputs)["report"]
     assert report["input_count"] == 18
     assert report["dispersion_venues"] == ["bitget", "okx"]
-    assert report["dispersion_selection"]["selection"] == "verified_complete_split_coverage"
+    assert report["dispersion_selection"]["selection"] == "sufficient_observed_market_coverage"
     assert report["dispersion_selection"]["joint_split_rows"]["train"] >= 300
     assert report["row_admission"]["binance|BTC"]["complete_rows"] > 0
 

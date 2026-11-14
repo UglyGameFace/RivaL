@@ -434,7 +434,9 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
                 )
                 history.extend(rows)
                 publications.append(publication)
-                collected_windows.add((source, timestamp(identity["closes_at"])))
+                closes = timestamp(identity["closes_at"])
+                collected_windows.add((source, closes))
+                gaps[source].discard(closes.isoformat())
             except (httpx.HTTPError, ValueError, HistoryImportError) as exc:
                 failure = source_failure(
                     source, "overlap", exc, window_close=identity["closes_at"]

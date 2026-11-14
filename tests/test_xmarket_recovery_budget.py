@@ -174,6 +174,19 @@ def test_gap_rechecks_still_fit_the_original_total_attempt_ceiling(native_provid
     assert not errors
 
 
+def test_overlap_success_clears_its_own_gap_without_a_second_retry(native_provider):
+    bundle = live_bundle(1)
+    close = recovery.timestamp(bundle["samples"][0]["closes_at"])
+    pending = {source: {close.isoformat()} for source in ("polymarket", "kalshi")}
+    _, publications, cursor, errors = recovery.backfill(
+        None, asset="BTC", bundles=[bundle], root=native_provider.root,
+        before=native_provider.before, max_windows=0, pending=pending, retry_gaps=0,
+    )
+    assert pending == {"polymarket": set(), "kalshi": set()}
+    assert len(native_provider.collected) == len(publications) == 2
+    assert cursor == native_provider.before and not errors
+
+
 @pytest.mark.asyncio
 async def test_actual_weekly_source_entry_preserves_budget_receipt_and_cursor(native_provider):
     result = await recovery.weekly_inputs(

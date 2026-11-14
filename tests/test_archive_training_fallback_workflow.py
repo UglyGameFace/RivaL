@@ -18,7 +18,7 @@ WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "arch
 def _guard_script(day: str) -> str:
     contents = WORKFLOW.read_text()
     section = contents.split("      - name: Check scheduled date gates\n", 1)[1]
-    section = section.split("  train:\n", 1)[0]
+    section = section.split("      - uses: actions/checkout@v4\n", 1)[0]
     script = section.split("        run: |\n", 1)[1]
     script = "\n".join(line.removeprefix("          ")
                        for line in script.splitlines())
@@ -76,7 +76,7 @@ def test_pinned_source_proof_cannot_be_bypassed_or_drift() -> None:
     assert 'gh run download "$SOURCE_RUN"' in workflow
     assert 'python tools/verify_xmarket_training_gate.py' in workflow
     assert 'actions: read' in workflow
-    assert '    group: rival-archive-model-training' in workflow
+    assert '  group: rival-archive-model-training' in workflow
     assert 'train_end="2026-09-19T00:00:00+00:00"' in workflow
     assert 'test_start="2026-10-17T00:00:00+00:00"' in workflow
     assert 'trained_through="2026-11-13T23:55:00+00:00"' in workflow

@@ -896,7 +896,7 @@ async def test_backfill_checkpoint_persists_zero_row_progress_and_gap_recovery(
             return SimpleNamespace(file_id=str(len(checkpoints)))
 
     def acquire(client, *, asset, bundles, root, before, max_windows, pending,
-                retry_gaps=12, days=90):
+                retry_gaps=12, days=90, budget_report=None):
         calls.append(before)
         observed.append({s: sorted(pending[s]) for s in pending})
         if len(calls) == 1:

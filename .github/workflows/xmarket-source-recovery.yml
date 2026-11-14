@@ -137,8 +137,23 @@ jobs:
               "source_points": len(doc.get("samples", [])),
               "cursor_advanced": progress.get("windows_advanced"),
               "pending_by_source": progress.get("pending_by_source"),
+              "contract_budget": {
+                  key: progress.get(key) for key in (
+                      "contract_attempt_limit", "contract_attempts",
+                      "overlap_contract_limit", "overlap_contracts_selected",
+                      "allocated_new_window_budget", "contract_attempts_by_stage",
+                      "paused_sources",
+                  )
+              },
               "fidelity": {
                   source: value.get("status")
+                  for source, value in doc.get("verification", {}).items()
+              },
+              "source_comparison": {
+                  source: {key: value.get(key) for key in (
+                      "blocked_reason", "paired_points", "live_feature_bars",
+                      "missing_points", "mismatches", "mismatch_rate", "overlap_coverage",
+                  )}
                   for source, value in doc.get("verification", {}).items()
               },
               "error_types": dict(Counter(

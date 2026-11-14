@@ -101,4 +101,13 @@ cx.state.history={points:[
 assert.doesNotMatch(cx.scoreBox(),/<polyline/,'Changed sampling policies cannot become a trend');
 assert.match(cx.scoreBox(),/500 rows per asset and timeframe/);
 assert.match(cx.scoreBox(),/Minimum remaining time: 180s/);
+assert.match(cx.v2pipeline(),/Provider comparison scopes/);
+assert.match(cx.v2pipeline(),/not eligible training overlap/);
+assert.doesNotMatch(cx.v2pipeline(),/Matched historical scopes/);
+assert.match(cx.sourceBanner(),/PERIODIC EVIDENCE BOARD v2.2/);
+assert.match(cx.evidencePage(),/Why is the Brier trend not an accuracy or profit graph/);
+assert.match(source,/liveness_only:true/);
+assert.match(source,/evidence_health:'not_checked'/);
+assert.match(source,/if\(url.pathname==='\/api\/status'\)/);
+assert.doesNotMatch(source,/signed auto-updates/);
 console.log('Evidence Board source-backed UI smoke passed');

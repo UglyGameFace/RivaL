@@ -363,7 +363,8 @@ def _xmarket_progress(store, now: datetime) -> dict:
             inputs = conn.execute("SELECT asset,source,COUNT(*) AS points,MAX(at) AS latest_source_at "
                 "FROM rival_xmarket_observations WHERE asset IN ('BTC','ETH','SOL','XRP') "
                 "AND source IN ('polymarket','kalshi') AND at>=? GROUP BY asset,source", (since,)).fetchall()
-            fits = conn.execute("SELECT asset,horizon_minutes,COUNT(*) AS imported_artifacts "
+            fits = conn.execute("SELECT asset,horizon_minutes,COUNT(*) AS imported_artifacts, "
+                "MAX(imported_at) AS latest_imported_at "
                 "FROM rival_xmarket_models WHERE gates_passed=1 GROUP BY asset,horizon_minutes").fetchall()
             rows = conn.execute("SELECT asset,horizon_minutes,COUNT(*) AS issued,MAX(issued_at) AS latest_at "
                 "FROM rival_model_shadow_forecasts WHERE asset IN ('BTC','ETH','SOL','XRP') "
@@ -397,6 +398,45 @@ def _xmarket_progress(store, now: datetime) -> dict:
         def scopes(values):
             return [{"asset": asset, "source": source} for asset, source in sorted(values)]
         pending_days = sum(int(r["days"]) for r in pending)
+        # One global "shadow_issuing" can conceal eleven inactive horizons.
+        # Reuse the already bounded, read-only aggregate queries to expose
+        # each of the 12 asset/horizon handoffs without model documents,
+        # private Drive IDs, inferred predictions, or further DB requests.
+        fit_by_scope = {(r["asset"], int(r["horizon_minutes"])): r for r in fits}
+        shadow_by_scope = {(r["asset"], int(r["horizon_minutes"])): r for r in rows}
+        pending_by_asset = {r["asset"]: int(r["days"]) for r in pending}
+        scope_progress = []
+        for asset in ("BTC", "ETH", "SOL", "XRP"):
+            fresh_sources = {source for a, source in fresh if a == asset}
+            present_sources = {source for a, source in present if a == asset}
+            for horizon in (5, 15, 60):
+                fit = fit_by_scope.get((asset, horizon))
+                shadow = shadow_by_scope.get((asset, horizon))
+                stored = int(fit["imported_artifacts"]) if fit else 0
+                issued = int(shadow["issued"]) if shadow else 0
+                status = (
+                    "shadow_issuing" if issued else
+                    "imported_no_shadow_rows" if stored else
+                    "waiting_for_completed_day_export"
+                    if len(fresh_sources) == 2 and pending_by_asset.get(asset, 0) else
+                    "waiting_for_fit" if len(fresh_sources) == 2 else
+                    "waiting_for_inputs"
+                )
+                scope_progress.append({
+                    "asset": asset, "horizon_minutes": horizon, "status": status,
+                    # Presence of a validated historical import is not proof
+                    # that the currently pinned model is usable or profitable.
+                    "stored_gate_passing_artifacts": stored,
+                    "shadow_rows_24h": issued,
+                    "latest_imported_at": fit["latest_imported_at"] if fit else None,
+                    "latest_shadow_at": shadow["latest_at"] if shadow else None,
+                    "fresh_native_sources": len(fresh_sources),
+                    "expected_native_sources": 2,
+                    "missing_native_sources": sorted(
+                        {"polymarket", "kalshi"} - present_sources),
+                    "stale_native_sources": sorted(present_sources - fresh_sources),
+                    "proves_live_edge": False,
+                })
         return {"status": ("shadow_issuing" if count else "imported_no_shadow_rows" if fits
                            else "waiting_for_completed_day_export" if fresh == expected and pending_days
                            else "waiting_for_fit" if fresh == expected else "waiting_for_inputs"),
@@ -405,6 +445,7 @@ def _xmarket_progress(store, now: datetime) -> dict:
                                     "fresh_scopes": len(fresh), "freshness_seconds": 1200,
                                     "missing": scopes(expected - present), "stale": scopes(present - fresh)},
                 "shadow_rows_24h": count, "shadow_scopes": [dict(r) for r in rows],
+                "scope_progress": scope_progress,
                 "export_coverage": {"published": [dict(r) for r in exports],
                                     "recent_completed_days_pending": pending_days,
                                     "pending_by_asset": [dict(r) for r in pending],

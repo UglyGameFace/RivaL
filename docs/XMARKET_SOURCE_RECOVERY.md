@@ -136,3 +136,33 @@ incomplete evidence must block the fit. Ordinary pushes do not train.
 Neither source admission, a passing CI workflow nor a passing offline model
 gate proves prospective after-cost performance. Weekly/manual schedules and
 promotion policies remain unchanged.
+
+
+## Per-scope live-model handoff receipt
+
+Historical source admission is not the same as model publication, private-Drive
+import, or a prospective shadow forecast. The existing read-only
+\`RIVAL_LEARNING_CYCLE_RECEIPT\` includes the aggregate XMarket stage, and
+now additionally reports \`xmarket.scope_progress\` for exactly the twelve
+BTC/ETH/SOL/XRP × 5m/15m/60m scopes. Each scope separately records:
+
+- \`waiting_for_inputs\`: both native 15-minute market sources have not
+  supplied fresh observations for that asset
+- \`waiting_for_completed_day_export\`: native sources are fresh but a
+  completed source day is still pending the verified private export
+- \`waiting_for_fit\`: fresh native sources, but no gate-passing model
+  artifact has been imported for this exact asset/horizon
+- \`imported_no_shadow_rows\`: at least one *stored* offline-gate-passing
+  artifact, but no real issued \`xmarket_v1\` shadow row in 24 hours
+- \`shadow_issuing\`: at least one persisted, issued \`xmarket_v1\` forecast
+  for the scope in 24 hours
+
+The scope receipt includes only counts, latest import/shadow times and
+whether Polymarket/Kalshi are fresh, stale or absent. It does **not**
+expose model weights, Drive file IDs, exchange secrets or private raw
+market rows. It requires no additional database queries beyond the
+pre-existing bounded aggregate reads, and never creates tables or
+issues predictions. An imported scope is not necessarily the currently
+selected/pinned model; a shadow row does not prove settlement, skill or
+a cost-adjusted edge. A single emitting model must **not** make eleven
+silent scopes look live.

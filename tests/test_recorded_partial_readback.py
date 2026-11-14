@@ -101,18 +101,30 @@ def test_cli_failure_writes_safe_receipt_without_exposing_provider_payload(
     assert "private-secret" not in out.read_text() + capsys.readouterr().out
 
 
-def test_workflow_probes_main_even_when_retired_training_guard_skips():
-    yaml = (Path(__file__).resolve().parents[1] /
-            ".github/workflows/archive-model-training.yml").read_text()
+def test_independent_readback_never_changes_training_trigger_or_uploads_originals():
+    root = Path(__file__).resolve().parents[1] / ".github/workflows"
+    yaml = (root / "recorded-partial-readback.yml").read_text()
+    assert 'branches: [main]' in yaml
+    assert '"src/parlay_bot/research/recorded_candles.py"' in yaml
     assert '"tools/verify_recorded_partial_restore.py"' in yaml
-    probe = yaml.split("  recorded_original_readback:", 1)[1]
-    assert "if: github.event_name == 'push'" in probe
-    assert "asset: [BTC, ETH, SOL, XRP]" in probe
-    assert "verify_recorded_partial_restore.py" in probe
-    assert "name: recorded-partial-proof-" in probe
-    assert "path: data/native-reports/recorded-partial-proof-" in probe
-    assert "if: always()" in probe
-    assert "data/recorded-private-originals" not in probe.split(
+    assert "asset: [BTC, ETH, SOL, XRP]" in yaml
+    assert "max-parallel: 2" in yaml
+    assert "group: rival-recorded-original-readback" in yaml
+    assert "verify_recorded_partial_restore.py" in yaml
+    assert "name: recorded-partial-proof-" in yaml
+    assert "path: data/native-reports/recorded-partial-proof-" in yaml
+    assert "if: always()" in yaml
+    assert "data/recorded-private-originals" not in yaml.split(
         "- name: Upload concise restoration verdict only", 1
     )[1]
-    assert "should_run=false" in yaml  # expired full-training trigger remains intact
+    assert "--publish" not in yaml
+
+    trainer = (root / "archive-model-training.yml").read_text()
+    push = trainer.split("  push:\n", 1)[1].split("  workflow_dispatch:\n", 1)[0]
+    paths = [line.strip().removeprefix('- "').removesuffix('"')
+             for line in push.splitlines() if line.strip().startswith('- "')]
+    assert paths == [
+        ".github/workflows/archive-model-training.yml",
+        "src/parlay_bot/research/xmarket_training.py",
+    ]
+    assert "should_run=false" in trainer

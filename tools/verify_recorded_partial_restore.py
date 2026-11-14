@@ -48,7 +48,9 @@ async def verify_xmarket_admission(drive, *, asset: str, root: Path,
 
     from parlay_bot.research.archive_training import load_frames_manifests
     from parlay_bot.research.xmarket_history import (
-        BUNDLE_PREFIX, combine, validate_bundle,
+        BUNDLE_PREFIX,
+        combine,
+        validate_bundle,
     )
     from parlay_bot.research.xmarket_training import train_run
 

@@ -58,8 +58,22 @@ cx.state.evidence={
  intelligence:{status:'verified',prs:[],runs:[]}
 };
 assert.equal(cx.prs().length,2);
+// PR-triggered CI uses the head SHA, not the merge commit SHA.
+cx.state.prs[1].head_sha='def987';
+cx.state.runs.push({id:43350851274,name:'CI',conclusion:'success',status:'completed',
+  html_url:'https://github.com/UglyGameFace/RivaL/actions/runs/43350851274',
+  created_at:at,head_sha:'def987'});
+cx.state.filters.workflow='CI';
+cx.state.filters.run='43350851274';
+assert.equal(cx.prs().filter(cx.pass).length,1,'PR head SHA should correlate with workflow run filters');
+assert.equal(cx.prs().filter(cx.pass)[0].n,557);
+cx.state.filters.workflow='';
+cx.state.filters.run='';
 assert.match(cx.rows(),/Keep Evidence Board/);
 assert.match(cx.ciPage(),/RivaL Evidence Board source receipt/);
+assert.match(cx.ciPage(),/were pending/);
+assert.match(cx.ciPage(),/current states may differ/);
+assert.match(cx.runItem(cx.state.runs[0]),/at capture/);
 assert.match(cx.auditPage(),/Synthetic recent change/);
 assert.equal(cx.v2rows().length,1);
 const panel=cx.experimentsSourcePanel();
@@ -101,4 +115,35 @@ cx.state.history={points:[
 assert.doesNotMatch(cx.scoreBox(),/<polyline/,'Changed sampling policies cannot become a trend');
 assert.match(cx.scoreBox(),/500 rows per asset and timeframe/);
 assert.match(cx.scoreBox(),/Minimum remaining time: 180s/);
+assert.match(cx.v2pipeline(),/Provider comparison scopes/);
+cx.state.evidence.drive.reports=Array.from({length:12},(_,i)=>({
+ asset:['BTC','ETH','SOL','XRP'][Math.floor(i/3)],horizon:[5,15,60][i%3],
+ status:'blocked',gate_passed:false,pm_pairs:91,kalshi_pairs:145,eligible_rows:0,
+ report_modified_at:at
+}));
+cx.state.evidence.drive.status='verified_reports';
+cx.state.evidence.drive.latest_report_at=at;
+cx.state.training={reports:[],verified_at:'2026-11-12T01:00:00Z'};
+assert.match(cx.proofGrid(),/Eligible historical training overlap/);
+assert.match(cx.proofGrid(),/No eligible rows in this dated report set/);
+assert.doesNotMatch(cx.proofGrid(),/Matching historical bars/);
+assert.doesNotMatch(cx.proofGrid(),/VERIFIED/,'Provider comparison pairs cannot prove a training join');
+assert.match(cx.v2pipeline(),/not eligible training overlap/);
+assert.doesNotMatch(cx.v2pipeline(),/Matched historical scopes/);
+assert.match(cx.sourceBanner(),/PERIODIC EVIDENCE BOARD v2.2/);
+assert.match(cx.evidencePage(),/Why is the Brier trend not an accuracy or profit graph/);
+cx.state.page='CI queue';
+assert.match(cx.filters(),/Workflow name/);
+assert.doesNotMatch(cx.filters(),/Search code PR/,'CI filters must not pretend to filter by PR title');
+assert.doesNotMatch(cx.filters(),/Polymarket/,'CI view must not display dead market/asset selectors');
+assert.match(cx.filters(),/in_progress/);
+cx.state.page='Experiments';
+assert.doesNotMatch(cx.filters(),/in_progress/,'PR status options must not be workflow statuses');
+assert.match(cx.filters(),/Search code PR or SHA/);
+assert.match(source,/liveness_only:true/);
+assert.match(source,/evidence_health:'not_checked'/);
+assert.match(source,/age>=0&&age<1500/,'Future-dated receipts cannot pass freshness');
+assert.match(cx.sourcePanel(),/SIGNED RECEIPT/);
+assert.match(source,/if\(url.pathname==='\/api\/status'\)/);
+assert.doesNotMatch(source,/signed auto-updates/);
 console.log('Evidence Board source-backed UI smoke passed');

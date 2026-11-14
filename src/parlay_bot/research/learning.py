@@ -117,6 +117,15 @@ def _rows(manifest_path: Path) -> tuple[dict, list[dict]]:
                     or _as_datetime(row["first_observed_at"]) <
                        _as_datetime(row["closed_at"])):
                     raise HistoryImportError("unverified source-native historical record")
+        # New original-source exports retain the database's -1 sentinel for
+        # unobserved trade counts. Cross-check the explicit unknown count
+        # against immutable, SHA-verified normalized rows. Older manifests
+        # without this field remain loadable for backward compatibility.
+        if "unknown_trade_count" in manifest:
+            unknown = manifest["unknown_trade_count"]
+            if (type(unknown) is not int or unknown < 0
+                    or unknown != sum(row.get("trades") == -1 for row in rows)):
+                raise HistoryImportError("historical unknown trade-count evidence mismatch")
         if manifest.get("source_integrity") == "drive-daily-records-first-observed-at-v1":
             from parlay_bot.research.recorded_candles import validate_partition
 

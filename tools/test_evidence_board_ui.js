@@ -116,6 +116,18 @@ assert.doesNotMatch(cx.scoreBox(),/<polyline/,'Changed sampling policies cannot 
 assert.match(cx.scoreBox(),/500 rows per asset and timeframe/);
 assert.match(cx.scoreBox(),/Minimum remaining time: 180s/);
 assert.match(cx.v2pipeline(),/Provider comparison scopes/);
+cx.state.evidence.drive.reports=Array.from({length:12},(_,i)=>({
+ asset:['BTC','ETH','SOL','XRP'][Math.floor(i/3)],horizon:[5,15,60][i%3],
+ status:'blocked',gate_passed:false,pm_pairs:91,kalshi_pairs:145,eligible_rows:0,
+ report_modified_at:at
+}));
+cx.state.evidence.drive.status='verified_reports';
+cx.state.evidence.drive.latest_report_at=at;
+cx.state.training={reports:[],verified_at:'2026-11-12T01:00:00Z'};
+assert.match(cx.proofGrid(),/Eligible historical training overlap/);
+assert.match(cx.proofGrid(),/No eligible rows in this dated report set/);
+assert.doesNotMatch(cx.proofGrid(),/Matching historical bars/);
+assert.doesNotMatch(cx.proofGrid(),/VERIFIED/,'Provider comparison pairs cannot prove a training join');
 assert.match(cx.v2pipeline(),/not eligible training overlap/);
 assert.doesNotMatch(cx.v2pipeline(),/Matched historical scopes/);
 assert.match(cx.sourceBanner(),/PERIODIC EVIDENCE BOARD v2.2/);

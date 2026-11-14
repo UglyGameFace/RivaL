@@ -121,9 +121,12 @@ async def test_exact_xmarket_admission_uses_only_sha_verified_native_and_origina
             return [("private-drive-id", raw)], None
 
     def frames(root, *, target_asset):
+        import pandas as pd
+
         calls.append(("load_frames", target_asset))
         assert root == tmp_path
-        return {"bitget|BTCUSDT|USDT": ("original", "causal-features")}, {
+        table = pd.DataFrame(index=pd.date_range("2026-11-08", periods=2, tz="UTC"))
+        return {"bitget|BTCUSDT|USDT": (table, "causal-features")}, {
             "recorded_partitions": {"bitget:2026-11": "secret-source-hash"},
         }
 
@@ -136,7 +139,8 @@ async def test_exact_xmarket_admission_uses_only_sha_verified_native_and_origina
         assert len(bundles) == 1
         assert bundles[0]["_drive_file_id"] == "private-drive-id"
         assert bundles[0]["_bundle_sha256"] == hashlib.sha256(raw).hexdigest()
-        return {"samples": ["verified-pm", "verified-kalshi"],
+        return {"samples": [{"source": source, "at": "2026-11-08T00:05:00+00:00"}
+                            for source in ("polymarket", "kalshi")],
                 "verification": {"polymarket": {"status": "verified"},
                                  "kalshi": {"status": "verified"}}}
 
@@ -187,6 +191,8 @@ async def test_exact_xmarket_admission_uses_only_sha_verified_native_and_origina
     assert receipt["horizons"]["5"]["split_rows"]["train"]["shortfall"] == 300
     assert receipt["horizons"]["15"]["split_rows"]["validation"]["rows"] == 0
     assert receipt["horizons"]["60"]["effective_joined_rows"] == 55
+    assert receipt["native_source_windows"]["polymarket"]["points"] == 1
+    assert receipt["candle_frame_windows"]["bitget|BTCUSDT|USDT"]["rows"] == 2
     assert [e for e in calls if e[0] == "admit"] == [
         ("admit", 5), ("admit", 15), ("admit", 60),
     ]
@@ -247,6 +253,209 @@ def test_optional_xmarket_runner_dependency_errors_are_safe_and_precise():
     )
 
 
+@pytest.mark.asyncio
+async def test_xmarket_rejects_a_lookback_that_cannot_reach_training_before_drive(monkeypatch, tmp_path):
+    def forbidden(*_args):
+        raise AssertionError("private Drive must not be contacted for a truncated check")
+
+    monkeypatch.setattr(proof, "_drive", forbidden)
+    with pytest.raises(ValueError, match="all three chronological windows"):
+        await proof.verify(asset="BTC", root=tmp_path, now=NOW, lookback_days=28,
+                           xmarket_admission=True)
+
+
+@pytest.mark.asyncio
+async def test_xmarket_uses_production_months_and_keeps_private_restore_details_local(
+    monkeypatch, tmp_path,
+):
+    from parlay_bot.research import archive_training
+
+    events = []
+
+    class Drive:
+        async def aclose(self):
+            events.append("closed")
+
+    drive = Drive()
+    monkeypatch.setattr(proof, "Settings", lambda: object())
+    monkeypatch.setattr(proof, "_drive", lambda _: drive)
+
+    async def production_restore(**kwargs):
+        assert kwargs["drive"] is drive
+        assert kwargs["months"] == [f"2026-{month:02}" for month in range(5, 11)]
+        assert str(kwargs["records_since"]) == "2026-08-16"
+        assert str(kwargs["records_through"]) == "2026-11-13"
+        events.append("production_restore")
+        (tmp_path / "complete.manifest.json").write_text("{}")
+        return {
+            "months_requested": kwargs["months"],
+            "restored": {"okx": ["private-id/original-path"]},
+            "excluded": {"recorded-partial-partitions": {
+                "reason": "HistoryImportError", "detail": "private-token-and-file-id",
+            }},
+        }
+
+    monkeypatch.setattr(archive_training, "restore_verified_months", production_restore)
+    monkeypatch.setattr(proof, "audit_partition", lambda _: {
+        "venue": "okx", "contract": "BTC-USDT-SWAP", "month": "2026-09",
+        "rows": 8640, "full_calendar_month_verified": True,
+    })
+
+    async def admission(*_args, **_kwargs):
+        events.append("admission")
+        return {"status": "exact_features_joined", "verified_native_fidelity": {
+            "polymarket": True, "kalshi": True,
+        }, "horizons": {str(h): {"split_eligible": True} for h in (5, 15, 60)}}
+
+    monkeypatch.setattr(proof, "verify_xmarket_admission", admission)
+    result = await proof.verify(asset="BTC", root=tmp_path, now=NOW, lookback_days=90,
+                                xmarket_admission=True)
+    assert events == ["production_restore", "admission", "closed"]
+    assert result["status"] == "verified_original_readback"
+    assert result["partitions"][0]["full_calendar_month_verified"] is True
+    assert result["recorded_backup_inventory_available"] is False
+    assert result["input_restoration"]["excluded_reason_classes"] == {
+        "recorded-partial-partitions": "HistoryImportError",
+    }
+    assert result["eligible_historical_splits_proven"] is True, result["xmarket_admission"]
+    assert result["trained_model"] is False
+    assert "private-" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_real_originals_reach_all_splits_through_production_restore_without_a_fit(
+    monkeypatch, tmp_path,
+):
+    from datetime import timedelta
+
+    from parlay_bot.perpetuals import flow_challenger_v3
+    from parlay_bot.research import (
+        bitget_source_bridge,
+        source_native,
+        xmarket_history,
+        xmarket_training,
+    )
+    from tests.test_recorded_candle_restoration import Drive as OriginalDrive
+    from tests.test_recorded_candle_restoration import candle
+    from tests.xmarket_fixtures import point
+
+    rows, samples = [], []
+    for day in ("2026-09-01", "2026-09-25", "2026-11-08"):
+        start = datetime.fromisoformat(day).replace(tzinfo=UTC)
+        # Preserve the production 420-bar warm-up after every history gap.
+        for i in range(720):
+            at = start + timedelta(minutes=5 * i)
+            rows.extend(candle(at, venue=venue, close=100 + i % 20)
+                        for venue in ("bitget", "okx", "gate"))
+            samples.extend(point(source, at + timedelta(minutes=5), .51 + i % 3 * .01,
+                                 origin=origin)
+                           for source in ("polymarket", "kalshi")
+                           for origin in ("live", "backfill"))
+
+    raw = json.dumps({"schema": xmarket_history.BUNDLE_SCHEMA, "asset": "BTC",
+                      "samples": samples, "live_venues": ["bitget", "okx", "gate"]}).encode()
+
+    class Drive(OriginalDrive):
+        async def read_verified_research_reports(self, **kwargs):
+            assert kwargs["name_prefix"] == xmarket_history.BUNDLE_PREFIX + "BTC-"
+            return [("private-native-source-id", raw)], None
+
+        async def aclose(self):
+            self.calls.append("closed")
+
+    drive = Drive(rows)
+    monkeypatch.setattr(proof, "Settings", lambda: object())
+    monkeypatch.setattr(proof, "_drive", lambda _: drive)
+    monthly_calls = []
+
+    async def absent_complete_months(client, **kwargs):
+        assert client is drive
+        monthly_calls.append(kwargs)
+        return []  # Actual SHA-verified daily originals remain available.
+
+    monkeypatch.setattr(bitget_source_bridge, "restore_verified_bitget_market_months",
+                        absent_complete_months)
+    monkeypatch.setattr(source_native, "restore_verified_source_months", absent_complete_months)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("input acceptance must never fit or calibrate")
+
+    monkeypatch.setattr(xmarket_training, "_fit_logistic", forbidden)
+    monkeypatch.setattr(flow_challenger_v3, "fit_platt", forbidden)
+
+    # Reproduce the old blind spot with the very same original source bytes.
+    short_root = tmp_path / "short"
+    await proof.verify(asset="BTC", root=short_root, now=NOW, lookback_days=28)
+    short = await proof.verify_xmarket_admission(drive, asset="BTC", root=short_root, now=NOW)
+    assert short["horizons"]["5"]["split_rows"]["train"]["rows"] == 0
+    assert short["horizons"]["5"]["split_rows"]["validation"]["rows"] == 0
+
+    result = await proof.verify(asset="BTC", root=tmp_path / "production", now=NOW,
+                                lookback_days=90, xmarket_admission=True)
+    assert len(monthly_calls) == 3
+    assert all(len(call["months"]) == 6 for call in monthly_calls)
+    assert drive.calls[-1] == "closed"
+    assert result["eligible_historical_splits_proven"] is True, result["xmarket_admission"]
+    assert result["trained_model"] is False
+    assert result["private_drive_modified"] is False
+    assert result["production_database_modified"] is False
+    admission = result["xmarket_admission"]
+    assert admission["verified_native_fidelity"] == {"polymarket": True, "kalshi": True}
+    assert admission["native_source_windows"]["polymarket"]["first_utc"].startswith("2026-09")
+    for horizon in (5, 15, 60):
+        verdict = admission["horizons"][str(horizon)]
+        assert verdict["input_features"] == 18
+        assert verdict["split_eligible"] is True
+        assert all(part["shortfall"] == 0 for part in verdict["split_rows"].values())
+        assert not verdict["model_fitted"] and not verdict["model_published"]
+    assert "private-native-source-id" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("injected", [False, True])
+@pytest.mark.asyncio
+async def test_production_restorer_closes_only_owned_clients_after_source_failure(
+    monkeypatch, tmp_path, injected,
+):
+    from parlay_bot.research import (
+        archive_training,
+        bitget_source_bridge,
+        publish,
+        recorded_candles,
+        source_native,
+    )
+
+    class Drive:
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    drive = Drive()
+    created = []
+
+    def create(_settings):
+        created.append(True)
+        return drive
+
+    async def absent(*_args, **_kwargs):
+        return []
+
+    async def failed(*_args, **_kwargs):
+        raise ValueError("invalid original bytes")
+
+    monkeypatch.setattr(publish, "_drive", create)
+    monkeypatch.setattr(bitget_source_bridge, "restore_verified_bitget_market_months", absent)
+    monkeypatch.setattr(source_native, "restore_verified_source_months", absent)
+    monkeypatch.setattr(recorded_candles, "restore_recorded_partitions", failed)
+    result = await archive_training.restore_verified_months(
+        asset="BTC", months=["2026-09"], root=tmp_path, now=NOW,
+        **({"drive": drive} if injected else {}),
+    )
+    assert created == ([] if injected else [True])
+    assert drive.closed is (not injected)
+    assert result["excluded"]["recorded-partial-partitions"]["reason"] == "ValueError"
+
+
 def test_independent_readback_never_changes_training_trigger_or_uploads_originals():
     root = Path(__file__).resolve().parents[1] / ".github/workflows"
     yaml = (root / "recorded-partial-readback.yml").read_text()
@@ -258,6 +467,8 @@ def test_independent_readback_never_changes_training_trigger_or_uploads_original
     assert "group: rival-recorded-original-readback" in yaml
     assert "verify_recorded_partial_restore.py" in yaml
     assert "--xmarket-admission" in yaml
+    assert "--lookback-days 90" in yaml
+    assert '"src/parlay_bot/research/archive_training.py"' in yaml
     assert '"pandas>=2.2,<4"' in yaml
     assert '"numpy>=1.26,<3"' in yaml
     assert "import pandas, numpy" in yaml

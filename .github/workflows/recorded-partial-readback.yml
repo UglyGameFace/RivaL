@@ -11,6 +11,7 @@ on:
       - "src/parlay_bot/research/recorded_candles.py"
       - "src/parlay_bot/research/source_native.py"
       - "src/parlay_bot/research/learning.py"
+      - "src/parlay_bot/research/archive_training.py"
       - "tools/verify_recorded_partial_restore.py"
   workflow_dispatch:
 
@@ -55,7 +56,7 @@ jobs:
           ASSET: ${{ matrix.asset }}
         run: |
           python tools/verify_recorded_partial_restore.py \
-            --asset "$ASSET" --lookback-days 28 --xmarket-admission \
+            --asset "$ASSET" --lookback-days 90 --xmarket-admission \
             --root "data/recorded-private-originals/$ASSET" \
             --out "data/native-reports/recorded-partial-proof-$ASSET.json"
       - name: Upload concise restoration verdict only (never private originals)

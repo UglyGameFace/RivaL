@@ -679,7 +679,8 @@ def load_frames_manifests(root: Path, *, target_asset: str | None = None) -> tup
 async def restore_verified_months(*, asset: str, months: list[str], root: Path,
                                   records_since: date | None = None,
                                   records_through: date | None = None,
-                                  now: datetime | None = None) -> dict:
+                                  now: datetime | None = None,
+                                  drive=None) -> dict:
     """Restore verified months for one asset via the existing bridges.
 
     Bitget market months via restore_verified_bitget_market_months;
@@ -690,6 +691,8 @@ async def restore_verified_months(*, asset: str, months: list[str], root: Path,
     here: it loads from official Vision ZIPs via load_binance_frame
     (the pooled training path), whose per-month ZIP SHA is verified
     against the provider .CHECKSUM at fetch time.
+    An injected Drive client belongs to its caller; default training callers
+    still create and close their own client as before.
     """
     from parlay_bot.config import Settings
     from parlay_bot.research.bitget_source_bridge import (
@@ -698,7 +701,9 @@ async def restore_verified_months(*, asset: str, months: list[str], root: Path,
     from parlay_bot.research.publish import _drive
     from parlay_bot.research.source_native import restore_verified_source_months
 
-    drive = _drive(Settings())
+    owns_drive = drive is None
+    if owns_drive:
+        drive = _drive(Settings())
     clock = now or datetime.now(UTC)
     report: dict = {
         "asset": asset,
@@ -744,7 +749,8 @@ async def restore_verified_months(*, asset: str, months: list[str], root: Path,
                 "reason": type(exc).__name__, "detail": str(exc)[:300],
             }
     finally:
-        await drive.aclose()
+        if owns_drive:
+            await drive.aclose()
     _write_json(Path(root) / "restore-report.json", report)
     return report
 

@@ -11,6 +11,16 @@ on:
       - ".github/workflows/evidence-board-receipt.yml"
       - "tools/evidence_board_receipt.py"
       - "tools/evidence_board_github.py"
+      - "web/evidence-board/**"
+      - "src/**"
+      - ".github/workflows/discloud-deploy.yml"
+      - ".github/workflows/live-learning-cycle-receipt.yml"
+  # A successful production release is an independent fallback event when
+  # GitHub's best-effort cron silently drops scheduled publications.
+  # workflow_run executes the default-branch publisher, never release artifacts.
+  workflow_run:
+    workflows: ["RivaL Production Release"]
+    types: [completed]
   # A 10-minute read-only evidence cadence bounds dashboard lag without
   # turning a website refresh into a host console/Drive API request.
   # GitHub scheduled jobs can be delayed or skipped, so UI displays age.
@@ -30,12 +40,18 @@ concurrency:
 
 jobs:
   publish-verified-read-only-receipt:
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: main
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:

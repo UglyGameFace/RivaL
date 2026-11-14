@@ -101,6 +101,143 @@ def test_cli_failure_writes_safe_receipt_without_exposing_provider_payload(
     assert "private-secret" not in out.read_text() + capsys.readouterr().out
 
 
+
+@pytest.mark.asyncio
+async def test_exact_xmarket_admission_uses_only_sha_verified_native_and_original_frames(
+    monkeypatch, tmp_path,
+):
+    import hashlib
+
+    from parlay_bot.research import archive_training, xmarket_history, xmarket_training
+
+    raw = json.dumps({"original_source": "token-never-print"}).encode()
+    calls = []
+
+    class Drive:
+        async def read_verified_research_reports(self, **kwargs):
+            calls.append(("read", kwargs))
+            assert kwargs["return_next_page"] and kwargs["limit"] == 20
+            assert kwargs["name_prefix"].startswith("xmarket-inputs-BTC-")
+            return [("private-drive-id", raw)], None
+
+    def frames(root, *, target_asset):
+        calls.append(("load_frames", target_asset))
+        assert root == tmp_path
+        return {"bitget|BTCUSDT|USDT": ("original", "causal-features")}, {
+            "recorded_partitions": {"bitget:2026-11": "secret-source-hash"},
+        }
+
+    monkeypatch.setattr(archive_training, "load_frames_manifests", frames)
+    monkeypatch.setattr(xmarket_history, "validate_bundle", lambda doc: {
+        "asset": "BTC", "samples": [], **doc,
+    })
+
+    def combine(bundles):
+        assert len(bundles) == 1
+        assert bundles[0]["_drive_file_id"] == "private-drive-id"
+        assert bundles[0]["_bundle_sha256"] == hashlib.sha256(raw).hexdigest()
+        return {"samples": ["verified-pm", "verified-kalshi"],
+                "verification": {"polymarket": {"status": "verified"},
+                                 "kalshi": {"status": "verified"}}}
+
+    monkeypatch.setattr(xmarket_history, "combine", combine)
+
+    def run(frames, *, asset, horizon, market_data, provenance,
+            train_end, test_start, trained_through, code_version,
+            admission_only):
+        assert admission_only and asset == "BTC"
+        assert len(frames) == 1 and len(market_data["samples"]) == 2
+        assert market_data["asset"] == "BTC"
+        assert (train_end.isoformat(), test_start.isoformat()) == (
+            "2026-09-19T00:00:00+00:00", "2026-10-17T00:00:00+00:00",
+        )
+        assert trained_through.isoformat() == "2026-11-13T23:55:00+00:00"
+        assert code_version == "read-only-original-admission"
+        assert provenance["recorded_partitions"]
+        calls.append(("admit", horizon))
+        return {
+            "artifact": None, "report": {
+                "training_status": "admission_only", "input_count": 18,
+                "dispersion_venues": ["bitget", "okx"],
+                "row_admission": {
+                    "bitget|BTCUSDT|USDT": {"complete_rows": 50 + horizon},
+                },
+                "overlap_evidence": {
+                    "eligible": False,
+                    "by_stream": {"bitget|BTCUSDT|USDT": {"all_sources_rows": 1780}},
+                    "splits": {
+                        "train": {"rows": 0, "shortfall": 300, "unique_bars": 0},
+                        "validation": {"rows": 0, "shortfall": 100, "unique_bars": 0},
+                        "test": {"rows": 55, "shortfall": 45, "unique_bars": 55},
+                    },
+                },
+                "effective_window": {"rows": 55},
+            },
+        }
+
+    monkeypatch.setattr(xmarket_training, "train_run", run)
+    receipt = await proof.verify_xmarket_admission(
+        Drive(), asset="BTC", root=tmp_path, now=NOW,
+    )
+    assert receipt["status"] == "exact_features_joined"
+    assert receipt["verified_native_fidelity"] == {
+        "polymarket": True, "kalshi": True,
+    }
+    assert receipt["verified_source_bundles"] == 1
+    assert receipt["horizons"]["5"]["split_rows"]["train"]["shortfall"] == 300
+    assert receipt["horizons"]["15"]["split_rows"]["validation"]["rows"] == 0
+    assert receipt["horizons"]["60"]["effective_joined_rows"] == 55
+    assert [e for e in calls if e[0] == "admit"] == [
+        ("admit", 5), ("admit", 15), ("admit", 60),
+    ]
+    assert "private-drive-id" not in json.dumps(receipt)
+    assert "secret-source-hash" not in json.dumps(receipt)
+    assert receipt["training_or_model_published"] is False
+
+
+@pytest.mark.asyncio
+async def test_xmarket_no_source_bundles_is_not_reported_as_admitted(monkeypatch, tmp_path):
+    from parlay_bot.research import archive_training
+
+    # Restore loader returns both frames and provenance.
+    monkeypatch.setattr(
+        archive_training, "load_frames_manifests",
+        lambda root, *, target_asset: (
+            {"bitget|BTCUSDT|USDT": ("candles", "features")}, {},
+        ),
+    )
+
+    class Drive:
+        async def read_verified_research_reports(self, **kwargs):
+            return [], None
+
+    receipt = await proof.verify_xmarket_admission(
+        Drive(), asset="BTC", root=tmp_path, now=NOW,
+    )
+    assert receipt["status"] == "no_verified_native_source_bundles"
+    assert receipt["training_or_model_published"] is False
+
+
+def test_cli_fails_closed_when_originals_pass_but_xmarket_has_no_complete_frames(
+    monkeypatch, tmp_path,
+):
+    async def proof_without_usable_join(**kwargs):
+        assert kwargs["xmarket_admission"]
+        return {"status": "verified_original_readback", "xmarket_admission": {
+            "status": "no_complete_source_and_label_rows",
+        }}
+
+    monkeypatch.setattr(proof, "verify", proof_without_usable_join)
+    out = tmp_path / "report.json"
+    assert proof.main([
+        "--asset", "BTC", "--root", str(tmp_path / "original"),
+        "--out", str(out), "--xmarket-admission",
+    ]) == 3
+    assert json.loads(out.read_text())["xmarket_admission"]["status"] == (
+        "no_complete_source_and_label_rows"
+    )
+
+
 def test_independent_readback_never_changes_training_trigger_or_uploads_originals():
     root = Path(__file__).resolve().parents[1] / ".github/workflows"
     yaml = (root / "recorded-partial-readback.yml").read_text()
@@ -111,6 +248,7 @@ def test_independent_readback_never_changes_training_trigger_or_uploads_original
     assert "max-parallel: 2" in yaml
     assert "group: rival-recorded-original-readback" in yaml
     assert "verify_recorded_partial_restore.py" in yaml
+    assert "--xmarket-admission" in yaml
     assert "name: recorded-partial-proof-" in yaml
     assert "path: data/native-reports/recorded-partial-proof-" in yaml
     assert "if: always()" in yaml

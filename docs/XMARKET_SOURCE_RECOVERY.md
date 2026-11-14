@@ -109,3 +109,30 @@ price tolerance, mismatch limit, original-source provenance and chronological
 not establish training eligibility, a fitted/imported artifact, prospective
 shadow forecasts or a profitable edge. Missing older native timestamps remain
 an explicit blocker even after comparison coverage passes.
+
+## November 14, 2026: independently proven first historical folds
+
+The post-merge source run [43641543527](https://github.com/UglyGameFace/RivaL/actions/runs/43641543527)
+verified original archived source windows, both native fidelity checks and
+the existing 300/100/100 row floors on BTC and ETH at 5m, 15m and 60m.
+Both assets selected Bitget and OKX; neither fitted a model in this
+admission-only run. The reports are scoped to the fixed original clock
+`trained_through=2026-11-13T23:55Z`, train cutoff September 19 and
+test start October 17. All four assets must prove the same conditions
+before the one-time training push is authorized.
+
+XRP's first pass failed during Google Drive resumable **session initiation**
+(HTTP 502), before the final checkpoint, source summary or readback.
+The Drive client previously recovered interrupted PUT chunks but did not
+retry a transient initiation error. Its initiation retry is now separately
+bounded, never sends source bytes before a session exists, and does not
+retry 400/401/403. Existing immutable batch reuse and checkpoint ordering
+remain authoritative.
+
+The one-off fit guard is pinned to the exact completed successful source
+run, four matching asset receipts and original split clock. Only a single
+`main` push transitioning from #585's commit may attempt it; failed or
+incomplete evidence must block the fit. Ordinary pushes do not train.
+Neither source admission, a passing CI workflow nor a passing offline model
+gate proves prospective after-cost performance. Weekly/manual schedules and
+promotion policies remain unchanged.

@@ -56,6 +56,7 @@ jobs:
             tests/test_spike_challenger.py \
             tests/test_verified_history_import_schedule.py \
             tests/test_recorded_candle_restoration.py \
+            tests/test_recorded_partial_readback.py \
             tests/test_source_native_research.py \
             tests/test_drive_archive.py
       - name: Test

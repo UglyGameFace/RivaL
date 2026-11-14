@@ -143,14 +143,15 @@ def _select_dispersion_venues(dispersion_frames, *, asset, live_venues, bars,
         "selection": "none",
     }
     # A venue subset must retain a material fraction of independently
-    # observed native bars. Do not decide the *feature contract* by demanding
-    # fit floors first: young but genuine archives still need an 18-input
-    # blocked report, with the unchanged split gate explaining why they
-    # cannot train yet. Short, accidental intersections must not eliminate
-    # otherwise valid no-dispersion training rows.
+    # observed native bars. Prefer the largest subset with observed capacity
+    # in ALL chronological folds. A recent-only third venue must not erase
+    # older rows shared by a genuinely complete pair. If every subset is
+    # young, retain the largest material contract and report the split block.
     required_overlap = max(30, math.ceil(len(market_clock) / 4))
     evidence["minimum_joint_bars_for_dispersion"] = required_overlap
-    # Selection uses only observed timestamps, never labels or returns.
+    # Selection uses timestamps/availability, never labels or model scores.
+    fallback = None
+    skipped = []
     for size in range(len(offered), 1, -1):
         for venues in itertools.combinations(offered, size):
             joint = set.intersection(*(venue_clocks[v] for v in venues))
@@ -161,11 +162,25 @@ def _select_dispersion_venues(dispersion_frames, *, asset, live_venues, bars,
                 index, train_end=train_end, test_start=test_start, horizon=horizon
             )
             counts = tuple(int(mask.sum()) for mask in masks)
-            return venues, {
+            capacity = dict(zip(("train", "validation", "test"),
+                                (count * len(venues) for count in counts)))
+            ready = all(capacity[name] >= minimum
+                        for name, minimum in evidence["required_split_rows"].items())
+            candidate = (venues, {
                 **evidence, "selection": "sufficient_observed_market_coverage",
                 "joint_split_rows": dict(zip(("train", "validation", "test"), counts)),
                 "joint_bars": len(joint),
-            }
+                "observed_pooled_split_capacity": capacity,
+                "all_split_capacity_present": ready,
+            })
+            if fallback is None:
+                fallback = candidate
+            if ready:
+                candidate[1]["larger_material_subsets_missing_splits"] = skipped
+                return candidate
+            skipped.append({"venues": list(venues), "observed_pooled_split_capacity": capacity})
+    if fallback is not None:
+        return fallback
     return (), {**evidence, "selection": "insufficient_joint_market_coverage"}
 
 

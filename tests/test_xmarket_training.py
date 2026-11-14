@@ -127,6 +127,48 @@ def test_available_dispersion_pair_survives_a_third_stale_venue():
     assert report["row_admission"]["binance|BTC"]["complete_rows"] > 0
 
 
+def test_recent_third_venue_cannot_erase_a_pair_with_all_chronological_splits(monkeypatch):
+    frames, inputs = frames_and_inputs(n=18000, venues=("bitget", "okx", "gate"))
+    index = frames["bitget|BTC"][0].index
+    train_end, test_start = index[5000], index[13064]  # 28-day validation window
+    k, f = frames["gate|BTC"]
+    frames["gate|BTC"] = k.loc[train_end:], f.loc[train_end:]
+    def forbidden(*args, **kwargs):
+        raise AssertionError("admission must not fit or change a quality gate")
+    monkeypatch.setattr(training, "_fit_logistic", forbidden)
+    result = training.train_run(
+        frames, asset="BTC", horizon=60, train_end=train_end, test_start=test_start,
+        trained_through=index[-1], code_version="test", provenance={},
+        market_data=inputs, admission_only=True,
+    )
+    report = result["report"]
+    assert report["dispersion_venues"] == ["bitget", "okx"]
+    assert report["input_count"] == 18
+    assert report["dispersion_selection"]["all_split_capacity_present"] is True
+    skipped = report["dispersion_selection"]["larger_material_subsets_missing_splits"]
+    assert skipped[0]["venues"] == ["bitget", "okx", "gate"]
+    assert skipped[0]["observed_pooled_split_capacity"]["train"] == 0
+    assert report["overlap_evidence"]["eligible"] is True
+    assert all(v["shortfall"] == 0 for v in report["overlap_evidence"]["splits"].values())
+    assert result["artifact"] is None and report["gates"] == training.GATES
+
+
+def test_young_material_archives_keep_the_largest_contract_and_original_split_block():
+    frames, inputs = frames_and_inputs(n=600, venues=("bitget", "okx", "gate"))
+    index = frames["bitget|BTC"][0].index
+    result = training.train_run(
+        frames, asset="BTC", horizon=5, train_end=index[0], test_start=index[100],
+        trained_through=index[-1], code_version="test", provenance={}, market_data=inputs,
+    )
+    report = result["report"]
+    assert report["dispersion_venues"] == ["bitget", "okx", "gate"]
+    assert report["input_count"] == 18
+    assert report["dispersion_selection"]["all_split_capacity_present"] is False
+    assert report["overlap_evidence"]["minimum_rows"] == {"train": 300, "validation": 100, "test": 100}
+    assert report["gate_failures"][0].startswith("split too small: train=0")
+    assert result["artifact"] is None
+
+
 @pytest.mark.parametrize("key,value", [
     ("schema", "wrong"), ("feature_digest", "0" * 64), ("weights", [0.]),
     ("weights", [float("nan")] * 19), ("weights_sha256", "0" * 64),

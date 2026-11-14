@@ -142,8 +142,18 @@ jobs:
                       "contract_attempt_limit", "contract_attempts",
                       "overlap_contract_limit", "overlap_contracts_selected",
                       "allocated_new_window_budget", "contract_attempts_by_stage",
-                      "paused_sources",
+                      "paused_sources", "sequential_window_budget",
+                      "chronological_window_budgets", "reused_archived_windows",
+                      "deferred_verified_comparison_sources",
                   )
+              },
+              "chronological_recovery": {
+                  window: {key: value.get(key) for key in (
+                      "previous_cursor", "next_cursor", "floor", "window_budget",
+                      "windows_advanced",
+                  )}
+                  for window, value in progress.get("chronological_recovery", {}).items()
+                  if window in ("train", "validation")
               },
               "fidelity": {
                   source: value.get("status")
@@ -169,3 +179,26 @@ jobs:
               out.write("```json\n" + json.dumps(result, indent=2) + "\n```\n")
               out.write("No source-gap checkpoint proves a fitted or profitable model.\n")
           PY
+      - name: Verify recovered chronological admission against private original archives
+        # On substantive collector merges, prove the next stage AFTER the
+        # new originals/checkpoint publish. Regular six-hour passes keep
+        # their existing source-only workload. This reader never fits models.
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          python -m pip install "pandas>=2.2,<4" "numpy>=1.26,<3"
+          python tools/verify_recorded_partial_restore.py \
+            --asset "$ASSET" --lookback-days 90 --xmarket-admission \
+            --root "data/recorded-private-originals/$ASSET" \
+            --out "data/native-reports/recorded-partial-proof-$ASSET.json"
+      - name: Upload concise chronological admission verdict only
+        if: always() && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: xmarket-chronological-proof-${{ matrix.asset }}-${{ github.run_id }}
+          path: data/native-reports/recorded-partial-proof-${{ matrix.asset }}.json
+          if-no-files-found: error
+          retention-days: 7

@@ -12,7 +12,7 @@ import asyncio
 import hashlib
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -47,6 +47,72 @@ MAX_MISMATCH_RATE = 0.05
 BASE_OVERLAP_CONTRACTS = 32
 MAX_OVERLAP_CONTRACTS = 96
 RESERVED_HISTORY_WINDOWS = 24
+CHRONOLOGICAL_SCHEMA = "rival-native-chronological-recovery-v1"
+
+
+def chronological_windows(checkpoint, *, now):
+    """Resume the original source targets for the production chronological splits.
+
+    These are acquisition cursors, never a completeness/eligibility claim.
+    Freeze the initial calendar instead of resetting to the same newest
+    training/validation contracts on each day. Legacy checkpoints retain
+    their existing continuous archive cursor and acquire these targets once.
+    """
+    from parlay_bot.research.archive_training import HOLDOUT_DAYS
+
+    today = timestamp(now).replace(hour=0, minute=0, second=0, microsecond=0)
+    raw = (checkpoint or {}).get("chronological_recovery")
+    if checkpoint is not None and "chronological_recovery" in checkpoint:
+        if (not isinstance(raw, dict) or set(raw) != {
+                "schema", "as_of_day", "train_before", "validation_before"
+            } or raw.get("schema") != CHRONOLOGICAL_SCHEMA):
+            raise ValueError("invalid XMarket chronological recovery journal")
+        try:
+            anchor_date = date.fromisoformat(raw["as_of_day"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid XMarket chronological recovery day") from exc
+        if anchor_date.isoformat() != raw["as_of_day"] or anchor_date > today.date():
+            raise ValueError("invalid XMarket chronological recovery day")
+        anchor = datetime.combine(anchor_date, datetime.min.time(), UTC)
+    else:
+        anchor = today
+        raw = None
+    train_end = anchor - timedelta(days=2 * HOLDOUT_DAYS)
+    test_start = anchor - timedelta(days=HOLDOUT_DAYS)
+    bounds = {
+        "train": (anchor - timedelta(days=90), train_end),
+        "validation": (train_end, test_start),
+    }
+    windows = {}
+    for name, (floor, upper) in bounds.items():
+        before = timestamp(raw[name + "_before"]) if raw else upper
+        if (before.second or before.microsecond or int(before.timestamp()) % 900
+                or not floor <= before <= upper):
+            raise ValueError("invalid XMarket chronological source cursor")
+        windows[name] = {"before": before, "floor": max(floor, today - timedelta(days=90))}
+    return {"schema": CHRONOLOGICAL_SCHEMA, "as_of_day": anchor.date().isoformat()}, windows
+
+
+def _complete_history_windows(bundles, *, asset):
+    """Re-use verified archived feature grids; do not carry sparse bars forward."""
+    history = [row for bundle in bundles for row in bundle["samples"]
+               if row.get("origin") == "backfill"]
+    fidelity = max((r["fidelity_minutes"] for r in history
+                    if r["source"] == "polymarket"), default=1)
+    bars = sampled_bars(history, asset=asset, pm_fidelity=fidelity)
+    complete = set()
+    for source, points in bars.items():
+        for at, row in points.items():
+            closes = timestamp(row["closes_at"])
+            required = (closes,) if source == "polymarket" and fidelity == 15 else (
+                closes - timedelta(minutes=10), closes - timedelta(minutes=5), closes,
+            )
+            if at == closes and all(
+                t in points and points[t]["contract_id"] == row["contract_id"]
+                and timestamp(points[t]["closes_at"]) == closes for t in required
+            ):
+                complete.add((source, closes))
+    return complete
 
 
 class NativeContractAbsent(ValueError):
@@ -377,7 +443,7 @@ def missing_overlap_identities(bundles, *, asset, source, now, limit=BASE_OVERLA
 
 
 def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
-             pending=None, retry_gaps=12, budget_report=None):
+             pending=None, retry_gaps=12, budget_report=None, chronological=None):
     """Advance over unavailable windows, and retain exact missing-source gaps.
 
     A single 404/absent native contract must not strand an entire older archive.
@@ -412,15 +478,54 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
     history_limit = min(
         max_windows, per_source_budget - max(map(len, overlap_items.values()), default=0)
     )
+    active_windows = {
+        name: value for name, value in (chronological or {}).items()
+        if value["before"] > value["floor"]
+    }
+    prioritize = False
+    deferred = []
+    if active_windows and max_windows >= RESERVED_HISTORY_WINDOWS:
+        live = [row for bundle in bundles for row in bundle["samples"]
+                if row.get("origin") == "live"]
+        old = [row for bundle in bundles for row in bundle["samples"]
+               if row.get("origin") == "backfill"]
+        checks = compare_history(live, old)
+        prioritize = all(checks[s]["status"] == "verified" for s in PRICE_SEMANTICS)
+        if prioritize:
+            # Do not chase optional extra pairs while both actual fidelity
+            # gates pass and the required historical folds are still empty.
+            # Reuse their unused capacity, without raising the total ceiling.
+            deferred = [s for s, rows in overlap_items.items() if rows]
+            overlap_items = {s: [] for s in PRICE_SEMANTICS}
+            history_limit = per_source_budget
+    sequential_limit = history_limit
+    split_limits = {"train": 0, "validation": 0}
+    if prioritize:
+        sequential_limit = min(max_windows, RESERVED_HISTORY_WINDOWS)
+        remaining = history_limit - sequential_limit
+        if len(active_windows) == 2:
+            split_limits["train"] = (2 * remaining + 2) // 3
+            split_limits["validation"] = remaining - split_limits["train"]
+        else:
+            split_limits[next(iter(active_windows))] = remaining
     attempts = {stage: {source: 0 for source in PRICE_SEMANTICS}
                 for stage in ("overlap", "gap_repair", "backfill")}
-    paused_sources, collected_windows = set(), set()
+    if chronological is not None:
+        attempts.update({"priority_" + name: {s: 0 for s in PRICE_SEMANTICS}
+                         for name in split_limits})
+    paused_sources = set()
+    archived_windows = _complete_history_windows(bundles, asset=asset)
+    collected_windows = set(archived_windows)
+    reused = {source: 0 for source in PRICE_SEMANTICS}
     if budget_report is not None:
         budget_report.update({
             "contract_attempt_limit": len(PRICE_SEMANTICS) * per_source_budget + retry_gaps,
             "overlap_contract_limit": overlap_limit,
             "overlap_contracts_selected": {s: len(items) for s, items in overlap_items.items()},
             "allocated_new_window_budget": history_limit,
+            "sequential_window_budget": sequential_limit,
+            "chronological_window_budgets": split_limits,
+            "deferred_verified_comparison_sources": deferred,
             "contract_attempts_by_stage": attempts,
         })
     # Independently establish overlap with actual prospective observations.
@@ -459,6 +564,8 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
         nonlocal historical_kalshi, archived_kalshi_failure
         if (source, closes) in collected_windows:
             gaps[source].discard(closes.isoformat())
+            if (source, closes) in archived_windows:
+                reused[source] += 1
             return False
         if source in paused_sources:
             gaps[source].add(closes.isoformat())
@@ -554,25 +661,42 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
                 # Stop a whole batch immediately on provider throttling.
                 break
 
-    for _ in range(history_limit):
-        opened = cursor - timedelta(minutes=15)
-        if opened < floor:
+    def walk(position, *, limit, lower, stage):
+        for _ in range(limit):
+            opened = position - timedelta(minutes=15)
+            if opened < lower:
+                break
+            transient = False
+            for source in PRICE_SEMANTICS:
+                transient |= one_source(source, position, stage=stage)
+            if transient:
+                # Each cursor stays before its own uncompleted window.
+                break
+            # Retain explicit per-source gaps; never invent missing prices.
+            position = opened
+        return position
+
+    chronological_progress = {}
+    for name, limit in split_limits.items():
+        if chronological is None:
             break
-        transient = False
-        for source in PRICE_SEMANTICS:
-            transient |= one_source(source, cursor, stage="backfill")
-        if transient:
-            # Keep cursor before this uncompleted window; a subsequent
-            # archived pass will retry after rate limits/outages clear.
-            break
-        # This window has either verified original bytes or an explicit
-        # pending gap for each unavailable source. Never silently skip it.
-        cursor = opened
+        window = chronological[name]
+        previous = window["before"]
+        window["before"] = walk(previous, limit=limit, lower=max(floor, window["floor"]),
+                                stage="priority_" + name)
+        chronological_progress[name] = {
+            "previous_cursor": previous.isoformat(), "next_cursor": window["before"].isoformat(),
+            "floor": window["floor"].isoformat(), "window_budget": limit,
+            "windows_advanced": int((previous - window["before"]).total_seconds() // 900),
+        }
+    cursor = walk(cursor, limit=sequential_limit, lower=floor, stage="backfill")
     if budget_report is not None:
         budget_report["contract_attempts"] = sum(
             count for stage in attempts.values() for count in stage.values()
         )
         budget_report["paused_sources"] = sorted(paused_sources)
+        budget_report["reused_archived_windows"] = reused
+        budget_report["chronological_recovery"] = chronological_progress
     return history, publications, cursor, errors
 
 
@@ -629,6 +753,7 @@ async def weekly_inputs(drive, *, asset: str, through, cache: Path, max_windows=
         )
     )
     before = datetime.fromtimestamp(int(before.timestamp()) // 900 * 900, UTC)
+    chronological_state, windows = chronological_windows(latest_checkpoint, now=datetime.now(UTC))
     budget = {}
     def collect():
         with httpx.Client(timeout=8, follow_redirects=False) as client:
@@ -636,6 +761,7 @@ async def weekly_inputs(drive, *, asset: str, through, cache: Path, max_windows=
                 client, asset=asset, bundles=bundles, root=cache / "supplements",
                 before=before, max_windows=max_windows, pending=pending,
                 budget_report=budget,
+                chronological=windows,
             )
     history, publications, next_before, failures = await asyncio.to_thread(collect)
     errors.extend(failures)
@@ -666,6 +792,10 @@ async def weekly_inputs(drive, *, asset: str, through, cache: Path, max_windows=
     # backfills. Never record missing source bars as accepted model inputs.
     journal = {
         **bundle, "samples": [], "backfill_checkpoint": True,
+        "chronological_recovery": {
+            **chronological_state,
+            **{name + "_before": window["before"].isoformat() for name, window in windows.items()},
+        },
         "backfill_pending": {
             source: sorted(pending[source]) for source in PRICE_SEMANTICS
         },

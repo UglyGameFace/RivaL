@@ -412,28 +412,47 @@ class GoogleDriveArchiveClient:
                 "X-Upload-Content-Length": str(artifact.size_bytes),
             }
         )
-        response = await self._client.post(
-            f"{self.UPLOAD_URL}/files",
-            params={
-                "uploadType": "resumable",
-                "fields": "id,name,size,md5Checksum,parents",
-            },
-            json={
-                "name": artifact.file_name,
-                "parents": [parent_id],
-                "appProperties": {
-                    "rival_batch_id": batch_id,
-                    "rival_kind": kind,
-                    "rival_schema_version": str(artifact.schema_version),
-                    "rival_sha256": artifact.sha256,
-                },
-            },
-            headers=headers,
-        )
-        if response.status_code not in {200, 201}:
-            raise DriveArchiveError(
-                f"Drive resumable upload initiation failed with {response.status_code}"
-            )
+        # A 502 during initiation is NOT a failed source file. No content
+        # bytes have been sent yet. Retry only this new-session request within
+        # the existing transient budget; the immutable batch lookup above
+        # still prevents duplicate committed artifacts. Never retry 4xx auth,
+        # permissions or schema errors.
+        initiation_retries = 0
+        while True:
+            try:
+                response = await self._client.post(
+                    f"{self.UPLOAD_URL}/files",
+                    params={
+                        "uploadType": "resumable",
+                        "fields": "id,name,size,md5Checksum,parents",
+                    },
+                    json={
+                        "name": artifact.file_name,
+                        "parents": [parent_id],
+                        "appProperties": {
+                            "rival_batch_id": batch_id,
+                            "rival_kind": kind,
+                            "rival_schema_version": str(artifact.schema_version),
+                            "rival_sha256": artifact.sha256,
+                        },
+                    },
+                    headers=headers,
+                )
+            except httpx.TransportError:
+                response = None
+            if response is not None and response.status_code in {200, 201}:
+                break
+            code = response.status_code if response is not None else "transport"
+            if response is not None and code not in (*TRANSIENT_UPLOAD_STATUSES, 429):
+                raise DriveArchiveError(
+                    f"Drive resumable upload initiation failed with {code}"
+                )
+            initiation_retries += 1
+            if initiation_retries > MAX_TRANSIENT_UPLOAD_RETRIES:
+                raise DriveArchiveError(
+                    f"Drive resumable upload initiation recovery budget exhausted ({code})"
+                )
+            await asyncio.sleep(min(2 ** initiation_retries, 16))
 
         session_url = response.headers.get("Location")
         if not session_url:

@@ -16,3 +16,11 @@ def test_evidence_board_cadence_preserves_signed_read_only_collection():
     assert "DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}" in content
     assert "RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}" in content
     assert "workflow_dispatch:" in content
+    assert 'workflow_run:' in content
+    assert 'workflows: ["RivaL Production Release"]' in content
+    assert "github.event.workflow_run.conclusion == 'success'" in content
+    assert "github.event.workflow_run.head_branch == 'main'" in content
+    assert "github.event.workflow_run.head_repository.full_name == github.repository" in content
+    assert "ref: main" in content
+    assert '"web/evidence-board/**"' in content
+    assert '"src/**"' in content

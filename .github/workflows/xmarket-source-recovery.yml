@@ -142,8 +142,18 @@ jobs:
                       "contract_attempt_limit", "contract_attempts",
                       "overlap_contract_limit", "overlap_contracts_selected",
                       "allocated_new_window_budget", "contract_attempts_by_stage",
-                      "paused_sources",
+                      "paused_sources", "sequential_window_budget",
+                      "chronological_window_budgets", "reused_archived_windows",
+                      "deferred_verified_comparison_sources",
                   )
+              },
+              "chronological_recovery": {
+                  window: {key: value.get(key) for key in (
+                      "previous_cursor", "next_cursor", "floor", "window_budget",
+                      "windows_advanced",
+                  )}
+                  for window, value in progress.get("chronological_recovery", {}).items()
+                  if window in ("train", "validation")
               },
               "fidelity": {
                   source: value.get("status")

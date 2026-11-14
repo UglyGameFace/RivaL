@@ -258,6 +258,10 @@ def test_actual_workflow_summary_reports_budget_and_fidelity_without_private_row
         "samples": [{"private": "private-price-and-token"}],
         "backfill_progress": {"contract_attempt_limit": 268, "contract_attempts": 200,
                               "allocated_new_window_budget": 64,
+                              "chronological_recovery": {
+                                  "train": {"windows_advanced": 70, "private_raw": "private-history"},
+                                  "private-window": {"private_raw": "private-other"},
+                              },
                               "private_file_id": "private-drive-id"},
         "verification": {"polymarket": {"status": "unverified", "paired_points": 157,
                          "live_feature_bars": 278, "overlap_coverage": 157 / 278,
@@ -275,6 +279,7 @@ def test_actual_workflow_summary_reports_budget_and_fidelity_without_private_row
     ).stdout
     result = json.loads(stdout.split("XMARKET_RECOVERY_SUMMARY=", 1)[1])
     assert result["contract_budget"]["contract_attempt_limit"] == 268
+    assert result["chronological_recovery"]["train"]["windows_advanced"] == 70
     assert result["source_comparison"]["polymarket"]["paired_points"] == 157
     assert result["source_comparison"]["polymarket"]["overlap_coverage"] == 157 / 278
     assert result["model_approved"] is False

@@ -105,7 +105,7 @@ def test_workflow_probes_main_even_when_retired_training_guard_skips():
     yaml = (Path(__file__).resolve().parents[1] /
             ".github/workflows/archive-model-training.yml").read_text()
     assert '"tools/verify_recorded_partial_restore.py"' in yaml
-    probe = yaml.split("  recorded_original_readback:", 1)[1].split("\n  train:", 1)[0]
+    probe = yaml.split("  recorded_original_readback:", 1)[1]
     assert "if: github.event_name == 'push'" in probe
     assert "asset: [BTC, ETH, SOL, XRP]" in probe
     assert "verify_recorded_partial_restore.py" in probe

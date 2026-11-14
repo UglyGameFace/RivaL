@@ -45,8 +45,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install verified archive reader
-        run: python -m pip install -e ".[archive]"
+      - name: Install verified archive reader and XMarket feature dependencies
+        run: python -m pip install -e ".[archive]" "pandas>=2.2,<4" "numpy>=1.26,<3"
+      - name: Check source-frame dependencies before any private Drive downloads
+        run: python -c "import pandas, numpy; print('XMarket frame imports verified')"
       - name: Recheck private original source bytes without model training
         shell: bash
         env:

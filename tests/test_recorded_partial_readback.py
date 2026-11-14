@@ -238,6 +238,15 @@ def test_cli_fails_closed_when_originals_pass_but_xmarket_has_no_complete_frames
     )
 
 
+def test_optional_xmarket_runner_dependency_errors_are_safe_and_precise():
+    assert proof._category(ModuleNotFoundError("No module named pandas", name="pandas")) == (
+        "missing_xmarket_runner_dependency"
+    )
+    assert proof._category(ModuleNotFoundError("private source", name="private_name")) == (
+        "missing_runner_module"
+    )
+
+
 def test_independent_readback_never_changes_training_trigger_or_uploads_originals():
     root = Path(__file__).resolve().parents[1] / ".github/workflows"
     yaml = (root / "recorded-partial-readback.yml").read_text()
@@ -249,6 +258,10 @@ def test_independent_readback_never_changes_training_trigger_or_uploads_original
     assert "group: rival-recorded-original-readback" in yaml
     assert "verify_recorded_partial_restore.py" in yaml
     assert "--xmarket-admission" in yaml
+    assert '"pandas>=2.2,<4"' in yaml
+    assert '"numpy>=1.26,<3"' in yaml
+    assert "import pandas, numpy" in yaml
+    assert yaml.index("import pandas, numpy") < yaml.index("--xmarket-admission")
     assert "name: recorded-partial-proof-" in yaml
     assert "path: data/native-reports/recorded-partial-proof-" in yaml
     assert "if: always()" in yaml

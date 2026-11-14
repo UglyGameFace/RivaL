@@ -110,6 +110,50 @@ def test_native_exact_month_audit_never_mislabels_backfill(native_market, tmp_pa
         )
 
 
+
+def test_native_complete_month_preserves_unknown_trade_count_sentinel(native_market, tmp_path):
+    """An accepted live -1 trade count cannot block original-month restoration."""
+    total = _seed_month(native_market, venue="bitget", contract="BTCUSDT", quote="USDT")
+    first = datetime(2026, 9, 1, tzinfo=UTC).isoformat()
+    with native_market.store.connect() as conn:
+        conn.execute(
+            """UPDATE perp_market_candles SET trades=-1
+               WHERE venue=? AND contract=? AND quote=? AND opened_at=?""",
+            ("bitget", "BTCUSDT", "USDT", first),
+        )
+    export = export_source_month(
+        native_market, venue="bitget", contract="BTCUSDT", quote="USDT",
+        month="2026-09", root=tmp_path, now=datetime(2026, 10, 31, tzinfo=UTC),
+    )
+    meta, rows = _rows(export.manifest_path)
+    assert len(rows) == total
+    assert rows[0]["trades"] == -1
+    assert rows[1]["trades"] == 4
+    assert meta["unknown_trade_count"] == 1
+    assert audit_partition(export.manifest_path)["full_calendar_month_verified"]
+    # The manifest cannot claim that the original unknown count was zero.
+    forged = {**meta, "unknown_trade_count": 0}
+    export.manifest_path.write_text(json.dumps(forged))
+    with pytest.raises(HistoryImportError, match="unknown trade-count evidence"):
+        _rows(export.manifest_path)
+
+    # The sentinel is the only accepted negative count. Never publish a
+    # genuinely malformed negative value as an original historical month.
+    with native_market.store.connect() as conn:
+        conn.execute(
+            """UPDATE perp_market_candles SET trades=-2
+               WHERE venue=? AND contract=? AND quote=? AND opened_at=?""",
+            ("bitget", "BTCUSDT", "USDT", first),
+        )
+    with pytest.raises(HistoryImportError, match="invalid saved source-native OHLCV"):
+        export_source_month(
+            native_market, venue="bitget", contract="BTCUSDT", quote="USDT",
+            month="2026-09", root=tmp_path / "rejected",
+            now=datetime(2026, 10, 31, tzinfo=UTC),
+        )
+    assert not list((tmp_path / "rejected").rglob("*.manifest.json"))
+
+
 def test_native_missing_bar_fails_before_archive_promotion(native_market, tmp_path, monkeypatch):
     import parlay_bot.research.source_native as native_module
 

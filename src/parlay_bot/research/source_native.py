@@ -329,11 +329,14 @@ def export_source_month(market, *, venue: str, contract: str, quote: str,
                   ("open_price", "high_price", "low_price", "close_price")]
         volume = float(row["volume_base"])
         trades = int(row["trades"])
+        # Live ingestion permits -1 for an unavailable source trade count.
+        # Retain it as unknown; rejecting it would make complete months
+        # unexportable, while inventing zero trades would falsify provenance.
         if (not all(math.isfinite(p) and p > 0 for p in prices)
             or prices[2] > min(prices[0], prices[3])
             or prices[1] < max(prices[0], prices[3])
             or not math.isfinite(volume) or volume < 0
-            or type(row["trades"]) is not int or trades < 0):
+            or type(row["trades"]) is not int or trades < -1):
             raise HistoryImportError("invalid saved source-native OHLCV")
         normalized.append({
             "venue": venue, "contract": contract, "quote": quote,
@@ -359,6 +362,7 @@ def export_source_month(market, *, venue: str, contract: str, quote: str,
             "time_reference": "exchange_candle_open_not_first_observed_at",
             "source_integrity": "postgres-first-observed-at-v1",
             "provider_signed_checksum": False, "actual_fills_verified": False,
+            "unknown_trade_count": sum(row["trades"] == -1 for row in normalized),
         },
     )
 

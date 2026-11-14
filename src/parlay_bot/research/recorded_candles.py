@@ -76,9 +76,16 @@ def _normalize(row: dict, *, day: date, now: datetime) -> dict:
     prices = [float(row[k]) for k in ("open_price", "high_price", "low_price", "close_price")]
     volume, trades = float(row["volume_base"]), row["trades"]
     if (not all(math.isfinite(p) and p > 0 for p in prices)
-            or prices[2] > min(prices[0], prices[3]) or prices[1] < max(prices[0], prices[3])
-            or not math.isfinite(volume) or volume < 0 or type(trades) is not int or trades < 0):
-        raise HistoryImportError("invalid recorded candle OHLCV")
+            or prices[2] > min(prices[0], prices[3])
+            or prices[1] < max(prices[0], prices[3])):
+        raise HistoryImportError("invalid recorded candle price geometry")
+    if not math.isfinite(volume) or volume < 0:
+        raise HistoryImportError("invalid recorded candle volume")
+    # PerpetualMarketStore.ingest accepts -1 as the ORIGINAL source's
+    # unknown trade-count sentinel. Preserve it verbatim; replacing it with
+    # zero would turn missing data into a fabricated observation.
+    if type(trades) is not int or trades < -1:
+        raise HistoryImportError("invalid recorded candle trade count")
     return {"venue": row["venue"], "contract": row["contract"], "quote": row["quote"],
             "interval_minutes": 5, "opened_at": opened.isoformat(), "closed_at": closed.isoformat(),
             "first_observed_at": observed.isoformat(), "open": prices[0], "high": prices[1],
@@ -125,6 +132,12 @@ def validate_partition(meta: dict, rows: list[dict], folder: Path) -> None:
                 derived[normalized["opened_at"]] = normalized
         if rows != [derived[t] for t in sorted(derived)]:
             raise HistoryImportError("partial candle rows differ from verified original bytes")
+        # Legacy partials without this field predate the unknown-trade
+        # sentinel admission and therefore must contain zero such rows.
+        unknown = meta.get("unknown_trade_count", 0)
+        if (type(unknown) is not int or unknown < 0
+                or unknown != sum(row["trades"] == -1 for row in rows)):
+            raise HistoryImportError("recorded unknown trade-count evidence mismatch")
         through = _clock(meta["partition_coverage"]["through_exclusive"])
         observed_through = max(days) + timedelta(days=1)
         for row in rows:
@@ -219,6 +232,7 @@ async def restore_recorded_partitions(drive, *, asset: str, root: Path,
     restored, partitions = [], []
     for (venue, contract, quote, month), records in sorted(groups.items()):
         rows = [records[t] for t in sorted(records)]
+        unknown_trades = sum(row["trades"] == -1 for row in rows)
         coverage = partition_coverage(rows, month=month, through=stop)
         digest = hashlib.sha256(json.dumps(rows, sort_keys=True, separators=(",", ":"),
                                            allow_nan=False).encode()).hexdigest()
@@ -235,9 +249,11 @@ async def restore_recorded_partitions(drive, *, asset: str, root: Path,
                               "source_original_drive_readback_checked": True,
                               "time_reference": "exchange_candle_open_not_first_observed_at",
                               "partition_coverage": coverage,
+                              "unknown_trade_count": unknown_trades,
                               "recorded_source_files": list(lineage[(venue, contract, quote, month)].values())})
         restored.append(str(result.manifest_path))
-        partitions.append({"venue": venue, "contract": contract, "quote": quote, **coverage})
+        partitions.append({"venue": venue, "contract": contract, "quote": quote,
+                           "unknown_trade_count": unknown_trades, **coverage})
     available = {r["day"] for r in receipts}
     missing_days = [(first_day + timedelta(days=i)).isoformat()
                     for i in range((last_day - first_day).days + 1)

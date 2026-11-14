@@ -83,6 +83,19 @@ async def verify_xmarket_admission(drive, *, asset: str, root: Path,
         }
 
     market = combine(bundles)
+    # Timestamps and counts distinguish absent native observations from
+    # missing candle archives without exposing source contracts or prices.
+    from parlay_bot.research.xmarket_features import timestamp
+
+    native_windows = {}
+    for source in ("polymarket", "kalshi"):
+        clocks = [timestamp(row["at"]) for row in market["samples"]
+                  if row["source"] == source]
+        native_windows[source] = {
+            "points": len(clocks),
+            "first_utc": min(clocks).isoformat() if clocks else None,
+            "last_utc": max(clocks).isoformat() if clocks else None,
+        }
     window_start = now.astimezone(UTC).date()
     train_end = datetime.combine(
         window_start - timedelta(days=56), datetime.min.time(), tzinfo=UTC
@@ -147,6 +160,14 @@ async def verify_xmarket_admission(drive, *, asset: str, root: Path,
         "test_start_utc": test_start.isoformat(),
         "trained_through_utc": trained_through.isoformat(),
         "frame_stream_count": len(frames),
+        "candle_frame_windows": {
+            stream: {
+                "rows": len(candles),
+                "first_utc": candles.index.min().isoformat() if len(candles) else None,
+                "last_utc": candles.index.max().isoformat() if len(candles) else None,
+            } for stream, (candles, _features) in frames.items()
+        },
+        "native_source_windows": native_windows,
         "horizons": reports,
         "training_or_model_published": False,
     }
@@ -159,27 +180,57 @@ async def verify(*, asset: str, root: Path, now: datetime, lookback_days: int,
         raise ValueError("invalid source verification scope")
     if not 1 <= lookback_days <= 90:
         raise ValueError("lookback_days must be 1..90")
+    if xmarket_admission and lookback_days <= 56:
+        raise ValueError("XMarket admission must inspect all three chronological windows")
     last = now.astimezone(UTC).date() - timedelta(days=1)
     first = last - timedelta(days=lookback_days - 1)
     drive = _drive(Settings())
     try:
-        result = await restore_recorded_partitions(
-            drive, asset=asset, root=root, first_day=first, last_day=last,
-            now=now.astimezone(UTC),
-        )
+        restoration = None
+        if xmarket_admission:
+            from parlay_bot.research.archive_training import restore_verified_months
+            from parlay_bot.research.batch import complete_months
+
+            # Match the production trainer: six verified complete months,
+            # then the original daily ledgers for missing/partial months.
+            # The former 28-day ledger-only check could never inspect its
+            # own training (< now-56d) or validation (< now-28d) windows.
+            restoration = await restore_verified_months(
+                asset=asset, months=complete_months(now=now, count=6), root=root,
+                records_since=first, records_through=last,
+                now=now.astimezone(UTC), drive=drive,
+            )
+            result = restoration.get("recorded_candles") or {
+                "restored": [], "source_files": [], "partitions": [],
+                "missing_backup_days": [],
+            }
+            paths = sorted(root.rglob("*.manifest.json"))
+        else:
+            result = await restore_recorded_partitions(
+                drive, asset=asset, root=root, first_day=first, last_day=last,
+                now=now.astimezone(UTC),
+            )
+            paths = [Path(p) for p in result["restored"]]
         checks = []
-        for manifest_path in result["restored"]:
-            audit = audit_partition(Path(manifest_path))
-            if audit["full_calendar_month_verified"]:
+        for manifest_path in paths:
+            audit = audit_partition(manifest_path)
+            if audit["full_calendar_month_verified"] and not xmarket_admission:
                 raise ValueError("partial ledger cannot claim complete original source")
             checks.append({
                 "venue": audit["venue"], "contract": audit["contract"],
                 "month": audit["month"], "rows": audit["rows"],
-                "full_calendar_month_verified": False,
+                "full_calendar_month_verified": audit["full_calendar_month_verified"],
             })
         admission = (await verify_xmarket_admission(
             drive, asset=asset, root=root, now=now,
         )) if checks and xmarket_admission else None
+        split_proven = bool(
+            admission and admission.get("status") == "exact_features_joined"
+            and all(admission.get("verified_native_fidelity", {}).get(source) is True
+                    for source in ("polymarket", "kalshi"))
+            and all(admission.get("horizons", {}).get(str(horizon), {}).get("split_eligible")
+                    is True for horizon in (5, 15, 60))
+        )
         return {
             "schema_version": "rival-partial-candle-readback-v1",
             "asset": asset, "as_of_utc": now.astimezone(UTC).isoformat(),
@@ -187,13 +238,29 @@ async def verify(*, asset: str, root: Path, now: datetime, lookback_days: int,
             "status": "verified_original_readback" if checks else "no_eligible_originals",
             "source_backup_days": len(result["source_files"]),
             "missing_backup_days": len(result["missing_backup_days"]),
+            "recorded_backup_inventory_available": restoration is None or (
+                "recorded_candles" in restoration
+            ),
             "partitions": checks,
             "unknown_trade_count": sum(
                 p["unknown_trade_count"] for p in result["partitions"]
             ),
             "original_sha_readback_checked": bool(checks),
             **({"xmarket_admission": admission} if admission is not None else {}),
-            "trained_model": False, "eligible_historical_splits_proven": False,
+            **({"input_restoration": {
+                "mode": "production_verified_months_and_recorded_partitions",
+                "months_requested": restoration["months_requested"],
+                "restored_manifest_counts": {
+                    source: len(items) for source, items in restoration["restored"].items()
+                },
+                # Upstream details include private IDs/paths. Publish only
+                # source names and exception class; keep the raw report local.
+                "excluded_reason_classes": {
+                    source: item["reason"] for source, item in restoration["excluded"].items()
+                },
+                "historical_split_status": "eligible" if split_proven else "blocked",
+            }} if restoration is not None else {}),
+            "trained_model": False, "eligible_historical_splits_proven": split_proven,
             "private_drive_modified": False, "production_database_modified": False,
         }
     finally:
@@ -205,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--asset", choices=("BTC", "ETH", "SOL", "XRP"), required=True)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--lookback-days", type=int, default=28)
+    parser.add_argument("--lookback-days", type=int, default=90)
     parser.add_argument("--xmarket-admission", action="store_true",
                         help="Read only verified native bundles and report actual feature/split admission")
     args = parser.parse_args(argv)

@@ -59,10 +59,10 @@ cx.state.evidence={
 };
 assert.equal(cx.prs().length,2);
 // PR-triggered CI uses the head SHA, not the merge commit SHA.
-cx.state.prs[1].head_sha='abcdef';
+cx.state.prs[1].head_sha='def987';
 cx.state.runs.push({id:43350851274,name:'CI',conclusion:'success',status:'completed',
   html_url:'https://github.com/UglyGameFace/RivaL/actions/runs/43350851274',
-  created_at:at,head_sha:'abcdef'});
+  created_at:at,head_sha:'def987'});
 cx.state.filters.workflow='CI';
 cx.state.filters.run='43350851274';
 assert.equal(cx.prs().filter(cx.pass).length,1,'PR head SHA should correlate with workflow run filters');

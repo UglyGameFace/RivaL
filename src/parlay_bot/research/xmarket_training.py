@@ -181,6 +181,7 @@ def train_run(
     code_version: str,
     months_requested=None,
     market_data: dict | None = None,
+    admission_only: bool = False,
 ) -> dict:
     """Train one (asset, horizon) artifact and gate it.
 
@@ -330,6 +331,13 @@ def train_run(
         }
     report_base["overlap_evidence"]["eligible"] = all(
         s["shortfall"] == 0 for s in report_base["overlap_evidence"]["splits"].values())
+    if admission_only:
+        # Exact same original-source feature construction/labels/splits as
+        # production training, but never fit weights, score a sealed holdout,
+        # publish a model, or interpret sparse provenance as future skill.
+        return {"publish_kind": "report", "artifact": None,
+                "report": {**report_base, "training_status": "admission_only",
+                           "gate_failures": ["admission_only_never_fits_or_publishes"]}}
     if len(data) < 300:
         return blocked(f"not enough labelled overlap rows: {len(data)}")
     if len(train) < 300 or len(val) < 100 or len(test) < 100:

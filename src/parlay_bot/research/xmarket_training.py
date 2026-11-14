@@ -142,26 +142,31 @@ def _select_dispersion_venues(dispersion_frames, *, asset, live_venues, bars,
         "required_split_rows": {"train": 300, "validation": 100, "test": 100},
         "selection": "none",
     }
-    # Selecting from source clock/availability alone is causal with respect
-    # to labels: no outcome, probability, or trade result enters this choice.
-    # Prefer the largest usable subset in canonical venue order.
+    # A venue subset must retain a material fraction of independently
+    # observed native bars. Do not decide the *feature contract* by demanding
+    # fit floors first: young but genuine archives still need an 18-input
+    # blocked report, with the unchanged split gate explaining why they
+    # cannot train yet. Short, accidental intersections must not eliminate
+    # otherwise valid no-dispersion training rows.
+    required_overlap = max(30, math.ceil(len(market_clock) / 4))
+    evidence["minimum_joint_bars_for_dispersion"] = required_overlap
+    # Selection uses only observed timestamps, never labels or returns.
     for size in range(len(offered), 1, -1):
         for venues in itertools.combinations(offered, size):
             joint = set.intersection(*(venue_clocks[v] for v in venues))
-            if not joint:
+            if len(joint) < required_overlap:
                 continue
             index = pd.DatetimeIndex(sorted(joint), tz="UTC")
             masks = chronological_splits(
                 index, train_end=train_end, test_start=test_start, horizon=horizon
             )
             counts = tuple(int(mask.sum()) for mask in masks)
-            if all(have >= need for have, need in zip(counts, (300, 100, 100))):
-                return venues, {
-                    **evidence, "selection": "verified_complete_split_coverage",
-                    "joint_split_rows": dict(zip(("train", "validation", "test"), counts)),
-                    "joint_bars": len(joint),
-                }
-    return (), {**evidence, "selection": "insufficient_joint_split_coverage"}
+            return venues, {
+                **evidence, "selection": "sufficient_observed_market_coverage",
+                "joint_split_rows": dict(zip(("train", "validation", "test"), counts)),
+                "joint_bars": len(joint),
+            }
+    return (), {**evidence, "selection": "insufficient_joint_market_coverage"}
 
 
 def train_run(

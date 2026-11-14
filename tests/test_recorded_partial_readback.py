@@ -260,6 +260,8 @@ def test_independent_readback_never_changes_training_trigger_or_uploads_original
     assert "--xmarket-admission" in yaml
     assert '"pandas>=2.2,<4"' in yaml
     assert '"numpy>=1.26,<3"' in yaml
+    assert "import pandas, numpy" in yaml
+    assert yaml.index("import pandas, numpy") < yaml.index("--xmarket-admission")
     assert "name: recorded-partial-proof-" in yaml
     assert "path: data/native-reports/recorded-partial-proof-" in yaml
     assert "if: always()" in yaml

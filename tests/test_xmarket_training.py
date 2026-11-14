@@ -62,6 +62,42 @@ def test_short_and_missing_histories_keep_measured_blocked_reports():
     assert result["report"]["gate_failures"] == ["missing verified prediction-market history"]
 
 
+def test_stale_dispersion_sources_do_not_hide_real_market_overlap():
+    frames, inputs = frames_and_inputs(
+        n=3600, venues=("binance", "bitget", "okx"),
+    )
+    # Exact native sources and Binance extend through the test interval,
+    # but the two supposed dispersion venues only have obsolete candles.
+    for venue in ("bitget", "okx"):
+        k, f = frames[f"{venue}|BTC"]
+        frames[f"{venue}|BTC"] = (k.iloc[:200], f.iloc[:200])
+    inputs["live_venues"] = ["bitget", "okx"]
+
+    report = run(frames, inputs)["report"]
+    assert report["input_count"] == 15
+    assert report["dispersion_venues"] == []
+    assert report["dispersion_selection"]["selection"] == "insufficient_joint_market_coverage"
+    assert report["overlap_evidence"]["by_stream"]["binance|BTC"]["all_sources_rows"] > 0
+    assert report["row_admission"]["binance|BTC"]["complete_rows"] > 0
+    assert report["effective_window"]["rows"] > 0
+
+
+def test_available_dispersion_pair_survives_a_third_stale_venue():
+    frames, inputs = frames_and_inputs(
+        n=3600, venues=("binance", "bitget", "okx", "gate"),
+    )
+    k, f = frames["gate|BTC"]
+    frames["gate|BTC"] = (k.iloc[:100], f.iloc[:100])
+    inputs["live_venues"] = ["bitget", "okx", "gate"]
+
+    report = run(frames, inputs)["report"]
+    assert report["input_count"] == 18
+    assert report["dispersion_venues"] == ["bitget", "okx"]
+    assert report["dispersion_selection"]["selection"] == "sufficient_observed_market_coverage"
+    assert report["dispersion_selection"]["joint_split_rows"]["train"] >= 300
+    assert report["row_admission"]["binance|BTC"]["complete_rows"] > 0
+
+
 @pytest.mark.parametrize("key,value", [
     ("schema", "wrong"), ("feature_digest", "0" * 64), ("weights", [0.]),
     ("weights", [float("nan")] * 19), ("weights_sha256", "0" * 64),

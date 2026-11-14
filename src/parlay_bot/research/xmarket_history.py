@@ -46,6 +46,14 @@ PRICE_TOLERANCE = 0.02
 MAX_MISMATCH_RATE = 0.05
 
 
+class NativeContractAbsent(ValueError):
+    """The provider has no contract uniquely identified by the requested UTC window."""
+
+
+class NativeContractAmbiguous(ValueError):
+    """More than one provider contract claims the same native UTC window."""
+
+
 def source_failure(source: str, stage: str, exc: Exception, *, window_close=None) -> dict:
     """Keep actionable, non-secret failure evidence in offline training reports.
 
@@ -66,6 +74,10 @@ def source_failure(source: str, stage: str, exc: Exception, *, window_close=None
         category, retryable = "timeout", True
     elif isinstance(reason, httpx.TransportError):
         category, retryable = "transport", True
+    elif isinstance(exc, NativeContractAbsent):
+        category, retryable = "native_contract_absent", False
+    elif isinstance(exc, NativeContractAmbiguous):
+        category, retryable = "native_contract_ambiguous", False
     elif isinstance(exc, HistoryImportError):
         category, retryable = "history_integrity", False
     elif isinstance(exc, (ValueError, KeyError)):
@@ -296,6 +308,24 @@ def _archived_kalshi_windows(client, *, series: str, max_pages: int = 24) -> dic
     raise ValueError("Kalshi historical market listing exceeded bounded pages")
 
 
+def _exact_kalshi_contracts(markets, *, series, opened, closes):
+    """Select only exact source contracts; ignore nearby returned windows.
+
+    The live /markets timestamp query can return nonmatching contracts.
+    Those are not evidence the requested historical contract is absent.
+    """
+    candidates = []
+    for row in markets:
+        if not isinstance(row, dict):
+            raise HistoryImportError("malformed Kalshi market entry")
+        ticker = row.get("ticker")
+        if (isinstance(ticker, str) and ticker.startswith(series + "-")
+                and timestamp(row["open_time"]) == opened
+                and timestamp(row["close_time"]) == closes):
+            candidates.append(row)
+    return candidates
+
+
 def missing_overlap_identities(bundles, *, asset, source, now, limit=32):
     """Select native contracts with missing exact-feature-bar history twins.
 
@@ -414,8 +444,13 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
                 )
                 if not isinstance(live, dict) or not isinstance(live.get("markets"), list):
                     raise HistoryImportError("malformed Kalshi current market page")
-                markets = live["markets"]
-                if not markets:
+                candidates = _exact_kalshi_contracts(
+                    live["markets"], series=series, opened=opened, closes=closes
+                )
+                if not candidates:
+                    # The current tier can return other contracts in the queried
+                    # close range. Check the archival tier whenever the EXACT
+                    # requested contract was absent, not only on an empty page.
                     if archived_kalshi_failure is not None:
                         raise archived_kalshi_failure
                     if historical_kalshi is None:
@@ -424,19 +459,17 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
                                 client, series=series
                             )
                         except (httpx.HTTPError, ValueError, HistoryImportError) as exc:
-                            # Avoid repeating up to 24 archive-listing pages for
-                            # every missing 15-minute window this same pass.
+                            # Avoid walking up to 24 pages again for each gap.
                             archived_kalshi_failure = exc
                             raise
-                    markets = historical_kalshi.get((opened, closes), [])
-                candidates = [
-                    m for m in markets if isinstance(m.get("ticker"), str)
-                    and m["ticker"].startswith(series + "-")
-                    and timestamp(m["open_time"]) == opened
-                    and timestamp(m["close_time"]) == closes
-                ]
+                    candidates = _exact_kalshi_contracts(
+                        historical_kalshi.get((opened, closes), []),
+                        series=series, opened=opened, closes=closes
+                    )
+                if not candidates:
+                    raise NativeContractAbsent("exact native Kalshi contract unavailable")
                 if len(candidates) != 1:
-                    raise ValueError("native Kalshi contract not uniquely bound")
+                    raise NativeContractAmbiguous("native Kalshi contract not uniquely bound")
                 identity = {
                     "asset": asset, "contract_id": candidates[0]["ticker"],
                     "opens_at": opened.isoformat(), "closes_at": closes.isoformat(),

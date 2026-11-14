@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import itertools
 import json
 import math
 import re
@@ -40,6 +41,7 @@ from parlay_bot.research.xmarket_features import (
     feature_digest,
     feature_names,
     frame_features,
+    market_values,
     sampled_bars,
 )
 
@@ -109,6 +111,64 @@ def _training_frames(frames: dict, *, asset: str) -> tuple[dict, dict]:
     return selected, dispersion
 
 
+def _select_dispersion_venues(dispersion_frames, *, asset, live_venues, bars,
+                              train_end, test_start, trained_through, horizon):
+    """Pin only contemporaneous, complete cross-venue inputs.
+
+    A venue with months of *verified* historical candles but none during the
+    exact native-market observations cannot provide dispersion for those rows.
+    The 15-input no-dispersion contract is already supported by live serving.
+    Never fill missing venue returns or alter train/validation/test floors.
+    """
+    import pandas as pd
+
+    offered = tuple(v for v in VENUES
+                    if v in live_venues and f"{v}|{asset}" in dispersion_frames)
+    common = set(bars["polymarket"]) & set(bars["kalshi"])
+    through = pd.to_datetime(trained_through, utc=True)
+    market_clock = {
+        at for at in common
+        if at <= through and market_values(bars, at) is not None
+    }
+    venue_clocks = {}
+    for venue in offered:
+        f = dispersion_frames[f"{venue}|{asset}"][1]
+        valid = f["ret_1"].notna() & f["ret_5"].notna()
+        venue_clocks[venue] = market_clock.intersection(f.index[valid])
+    evidence = {
+        "offered_venues": list(offered),
+        "native_complete_market_bars": len(market_clock),
+        "per_venue_complete_bars": {v: len(venue_clocks[v]) for v in offered},
+        "required_split_rows": {"train": 300, "validation": 100, "test": 100},
+        "selection": "none",
+    }
+    # A venue subset must retain a material fraction of independently
+    # observed native bars. Do not decide the *feature contract* by demanding
+    # fit floors first: young but genuine archives still need an 18-input
+    # blocked report, with the unchanged split gate explaining why they
+    # cannot train yet. Short, accidental intersections must not eliminate
+    # otherwise valid no-dispersion training rows.
+    required_overlap = max(30, math.ceil(len(market_clock) / 4))
+    evidence["minimum_joint_bars_for_dispersion"] = required_overlap
+    # Selection uses only observed timestamps, never labels or returns.
+    for size in range(len(offered), 1, -1):
+        for venues in itertools.combinations(offered, size):
+            joint = set.intersection(*(venue_clocks[v] for v in venues))
+            if len(joint) < required_overlap:
+                continue
+            index = pd.DatetimeIndex(sorted(joint), tz="UTC")
+            masks = chronological_splits(
+                index, train_end=train_end, test_start=test_start, horizon=horizon
+            )
+            counts = tuple(int(mask.sum()) for mask in masks)
+            return venues, {
+                **evidence, "selection": "sufficient_observed_market_coverage",
+                "joint_split_rows": dict(zip(("train", "validation", "test"), counts)),
+                "joint_bars": len(joint),
+            }
+    return (), {**evidence, "selection": "insufficient_joint_market_coverage"}
+
+
 def train_run(
     frames: dict,
     *,
@@ -147,8 +207,18 @@ def train_run(
     samples = market_data.get("samples", [])
     fidelity = max((r["fidelity_minutes"] for r in samples if r["source"] == "polymarket"), default=1)
     live_venues = market_data.get("live_venues", [])
-    venues = tuple(v for v in VENUES if v in live_venues and f"{v}|{asset}" in dispersion_frames)
-    venues = venues if len(venues) >= 2 else ()
+    sources_verified = bool(samples) and all(
+        market_data.get("verification", {}).get(source, {}).get("status") == "verified"
+        for source in PRICE_SEMANTICS
+    )
+    bars = sampled_bars(samples, asset=asset, pm_fidelity=fidelity) if sources_verified else {
+        source: {} for source in PRICE_SEMANTICS
+    }
+    venues, dispersion_selection = _select_dispersion_venues(
+        dispersion_frames, asset=asset, live_venues=live_venues, bars=bars,
+        train_end=train_end, test_start=test_start, trained_through=trained_through,
+        horizon=horizon,
+    )
     names = feature_names(venues)
     report_base = {
         "schema": SCHEMA, "family": FAMILY, "asset": asset, "horizon_minutes": horizon,
@@ -156,6 +226,7 @@ def train_run(
         "feature_digest": feature_digest(venues, fidelity),
         "model_training_from_supplements_enabled": True,
         "features": list(names), "dispersion_venues": list(venues),
+        "dispersion_selection": dispersion_selection,
         "price_semantics": PRICE_SEMANTICS, "native_horizon_minutes": 15,
         "cross_horizon_input": horizon != 15, "pm_fidelity_minutes": fidelity,
         "data_checks": market_data.get("verification", {}),
@@ -181,10 +252,8 @@ def train_run(
                 "report": {**report_base, "gate_failures": [reason], "training_status": "blocked"}}
     if not samples:
         return blocked("missing verified prediction-market history")
-    if not all(market_data.get("verification", {}).get(source, {}).get("status") == "verified"
-               for source in PRICE_SEMANTICS):
+    if not sources_verified:
         return blocked("prediction-market fidelity/aggregation overlap not verified")
-    bars = sampled_bars(samples, asset=asset, pm_fidelity=fidelity)
     bar_clocks = {source: pd.DatetimeIndex(list(rows), tz="UTC") for source, rows in bars.items()}
     report_base["source_feature_coverage"] = {
         source: {"rows": len(rows), "first": str(min(rows)) if rows else None,

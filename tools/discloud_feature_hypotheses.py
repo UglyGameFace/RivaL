@@ -46,6 +46,32 @@ print('RIVAL_LLM_FEATURE_PROPOSALS=' + json.dumps(out, separators=(',', ':')))
 """
 
 
+def vet_optional_proposals(receipt: dict, *, venue: str, now=None) -> dict:
+    """Quarantine invalid optional AI proposals before baseline model research.
+
+    Status=verified from the host proves an authenticated database read, not
+    that each stored idea remains in the permitted feature/freshness contract.
+    Never let an invalid optional idea block the independent source fit.
+    The offline CLI still fails closed on a manually supplied forged file.
+    """
+    if receipt.get("status") != "verified":
+        return receipt
+    from parlay_bot.research.llm_feature_ablation import verify_proposals
+
+    try:
+        if receipt.get("source") != "live_postgresql_llm_hypotheses":
+            raise ValueError("unverified provenance")
+        accepted = verify_proposals(receipt, venue=venue, now=now)
+        if len(accepted) != len(receipt["proposals"]):
+            raise ValueError("incomplete verified proposal batch")
+    except (ValueError, KeyError, TypeError):
+        return {
+            "status": "unverified", "proposals": [],
+            "reason_code": "optional_proposal_contract_rejected",
+        }
+    return {**receipt, "proposals": accepted}
+
+
 def fetch_receipt(*, venue: str, token: str, app_id: str) -> dict:
     script = HOST_SCRIPT.replace("__VENUE__", repr(venue))
     encoded = base64.b64encode(script.encode()).decode("ascii")
@@ -72,7 +98,7 @@ def fetch_receipt(*, venue: str, token: str, app_id: str) -> dict:
                 or not isinstance(result.get("proposals"), list)
                 or len(result["proposals"]) > 4):
                 raise ValueError("invalid LFM3 proposal receipt")
-            return result
+            return vet_optional_proposals(result, venue=venue)
     raise ValueError("no on-host proposal receipt")
 
 

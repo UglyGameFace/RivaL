@@ -107,6 +107,7 @@ async def test_exact_xmarket_admission_uses_only_sha_verified_native_and_origina
     monkeypatch, tmp_path,
 ):
     import hashlib
+
     from parlay_bot.research import archive_training, xmarket_history, xmarket_training
 
     raw = json.dumps({"original_source": "token-never-print"}).encode()

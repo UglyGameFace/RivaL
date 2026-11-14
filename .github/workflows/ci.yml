@@ -55,6 +55,8 @@ jobs:
             tests/test_private_llm_service.py \
             tests/test_spike_challenger.py \
             tests/test_verified_history_import_schedule.py \
+            tests/test_recorded_candle_restoration.py \
+            tests/test_source_native_research.py \
             tests/test_drive_archive.py
       - name: Test
         run: |
@@ -65,4 +67,6 @@ jobs:
           # a strict twelve-minute ceiling while retaining SIGINT's useful
           # traceback and per-test 75s faulthandler diagnostics.
           PYTHONUNBUFFERED=1 timeout -s SIGINT -k 20s 720s \
-            pytest -q -x -o faulthandler_timeout=75
+            # Print the current test ID so an async hang cannot hide behind
+            # only a percent-progress counter. Preserve full coverage/timeout.
+            pytest -v -x -o faulthandler_timeout=75

@@ -436,3 +436,116 @@ async def test_a_rejected_sign_in_names_googles_reason_never_the_token(body, exp
             await client._access_token()
     assert str(raised.value) == expected
     assert "secret-refresh" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_failure", ("502", "429", "transport"))
+async def test_drive_resumable_initiation_transient_fails_once_then_uploads_exactly_once(
+    tmp_path, monkeypatch, first_failure,
+):
+    """No source bytes are uploaded until a successful session is returned."""
+    from parlay_bot.archive import drive as drive_module
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(drive_module.asyncio, "sleep", no_sleep)
+    payload = b"source-originals-immutable"
+    path = tmp_path / "original.json"
+    path.write_bytes(payload)
+    artifact = ArchiveArtifact(
+        path=path, file_name=path.name, size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        md5=hashlib.md5(payload, usedforsecurity=False).hexdigest(), row_count=1,
+    )
+    created = {"sessions": 0, "uploaded": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "x", "expires_in": 3600})
+        if request.method == "GET" and request.url.path == "/drive/v3/files":
+            return httpx.Response(200, json={"files": []})
+        if request.method == "POST":
+            created["sessions"] += 1
+            if created["sessions"] == 1:
+                if first_failure == "transport":
+                    raise httpx.ReadTimeout("initiating session", request=request)
+                return httpx.Response(int(first_failure))
+            return httpx.Response(200, headers={"Location": "https://upload.example/s"})
+        assert request.method == "PUT" and request.url.host == "upload.example"
+        assert request.content == payload
+        created["uploaded"] += 1
+        return httpx.Response(200, json={
+            "id": "original1", "name": artifact.file_name,
+            "size": str(artifact.size_bytes), "md5Checksum": artifact.md5,
+            "parents": ["staging-id"],
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        drive = GoogleDriveArchiveClient(
+            client_id="c", client_secret="s", refresh_token="r",
+            folders=DriveArchiveFolders(root="root-id", history="history-id",
+                                        manifests="manifests-id", staging="staging-id"),
+            client=http, chunk_size_bytes=256 * 1024,
+        )
+        obj = await drive._upload_resumable(
+            artifact=artifact, parent_id="staging-id", batch_id="immutable-batch",
+            kind="history", mime_type="application/x-ndjson",
+        )
+    assert obj.file_id == "original1"
+    assert created == {"sessions": 2, "uploaded": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [400, 401, 403, 502])
+async def test_drive_resumable_initiation_fails_closed_on_denial_or_retry_exhaustion(
+    tmp_path, monkeypatch, failure,
+):
+    from parlay_bot.archive import drive as drive_module
+    from parlay_bot.archive.drive import (
+        DriveArchiveError,
+        MAX_TRANSIENT_UPLOAD_RETRIES,
+    )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(drive_module.asyncio, "sleep", no_sleep)
+    payload = b"native-original-bytes"
+    path = tmp_path / "original.json"
+    path.write_bytes(payload)
+    artifact = ArchiveArtifact(
+        path=path, file_name=path.name, size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        md5=hashlib.md5(payload, usedforsecurity=False).hexdigest(), row_count=1,
+    )
+    requests = {"post": 0, "put": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "x", "expires_in": 3600})
+        if request.method == "GET" and request.url.path == "/drive/v3/files":
+            return httpx.Response(200, json={"files": []})
+        if request.method == "POST":
+            requests["post"] += 1
+            return httpx.Response(failure)
+        requests["put"] += 1
+        raise AssertionError("never send source bytes without a session")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        drive = GoogleDriveArchiveClient(
+            client_id="c", client_secret="s", refresh_token="r",
+            folders=DriveArchiveFolders(root="root-id", history="history-id",
+                                        manifests="manifests-id", staging="staging-id"),
+            client=http, chunk_size_bytes=256 * 1024,
+        )
+        with pytest.raises(DriveArchiveError, match="initiation") as err:
+            await drive._upload_resumable(
+                artifact=artifact, parent_id="staging-id", batch_id="immutable-batch",
+                kind="history", mime_type="application/x-ndjson",
+            )
+    assert str(failure) in str(err.value)
+    assert requests["put"] == 0
+    assert requests["post"] == (
+        MAX_TRANSIENT_UPLOAD_RETRIES + 1 if failure == 502 else 1
+    )

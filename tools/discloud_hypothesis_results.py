@@ -44,9 +44,9 @@ def persisted_feedback(store, trials, report_sha):
     with store.connect() as conn:
         for key, identity in keys.items():
             existing = conn.execute(
-                """SELECT report_sha256 FROM rival_llm_hypothesis_trials
-                   WHERE proposal_sha256=? AND venue=? AND contract=?
-                   AND horizon_minutes=?""", key,
+                'SELECT report_sha256 FROM rival_llm_hypothesis_trials '
+                'WHERE proposal_sha256=? AND venue=? AND contract=? '
+                'AND horizon_minutes=?', key,
             ).fetchone()
             if existing is not None:
                 field = ('persisted_same_report' if existing['report_sha256'] == report_sha
@@ -54,8 +54,8 @@ def persisted_feedback(store, trials, report_sha):
                 counts[field] += 1
                 continue
             proposal = conn.execute(
-                """SELECT asset,hypothesis,status FROM rival_llm_feature_hypotheses
-                   WHERE record_sha256=?""", (key[0],),
+                'SELECT asset,hypothesis,status FROM rival_llm_feature_hypotheses '
+                'WHERE record_sha256=?', (key[0],),
             ).fetchone()
             if proposal is None:
                 counts['missing_proposal'] += 1

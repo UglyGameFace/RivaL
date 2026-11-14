@@ -438,12 +438,13 @@ def test_workflow_yaml_is_weekly_manual_and_date_locked_fallback_only():
     ).read_text()
     assert 'schedule:\n    - cron: "30 7 * * 0"' in text
     assert "workflow_dispatch:" in text
-    # A single workflow-file-only main push on 2026-11-13 replaces the
-    # missed one-time scheduled run. No arbitrary source change trains models.
+    # Only the first main transition out of #585 can train from the four
+    # exact restored-source receipts; arbitrary pushes must remain inert.
     assert ('  push:\n    branches: [main]\n    paths:\n'
             '      - ".github/workflows/archive-model-training.yml"') in text
     assert '17 15 13 11 *' not in text
-    assert '"$EVENT_NAME" == "push" && "$today" != "2026-11-13"' in text
+    assert '"$EVENT_NAME" == "push" && ( "$PUSH_BEFORE" != "b76731e787fe1a7dad5f222b7a934bca82a20121"' in text
+    assert 'python tools/verify_xmarket_training_gate.py' in text
     assert "runs-on: ubuntu-latest" in text
     assert "timeout-minutes: 240" in text
     assert "cancel-in-progress: false" in text

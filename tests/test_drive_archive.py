@@ -503,8 +503,8 @@ async def test_drive_resumable_initiation_fails_closed_on_denial_or_retry_exhaus
 ):
     from parlay_bot.archive import drive as drive_module
     from parlay_bot.archive.drive import (
-        DriveArchiveError,
         MAX_TRANSIENT_UPLOAD_RETRIES,
+        DriveArchiveError,
     )
 
     async def no_sleep(_seconds):

@@ -20,6 +20,10 @@ from parlay_bot.research.recorded_candles import restore_recorded_partitions
 
 def _category(exc: Exception) -> str:
     """Non-secret failure categories; never copy raw upstream text to Actions."""
+    if isinstance(exc, ModuleNotFoundError):
+        return ("missing_xmarket_runner_dependency"
+                if exc.name in {"pandas", "numpy", "duckdb"}
+                else "missing_runner_module")
     detail = str(exc)
     for phrase, code in (
         ("invalid recorded candle price geometry", "invalid_price_geometry"),

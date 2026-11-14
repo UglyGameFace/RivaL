@@ -29,7 +29,8 @@ When both providers have a large comparison backlog:
 | 96 | 96 | 32 | 268 |
 
 With little or no overlap backlog, the original requested older-window budget
-is retained until both source-fidelity checks pass. The CLI still supports its existing 0–8640 window range; zero
+is retained until both source-fidelity checks pass. The CLI still supports its
+existing 0–8640 window range; zero
 retains the bounded overlap-only mode. Budget counts are **contract attempts**,
 not individual HTTP requests: one contract may need a market lookup or the
 provider's historical tier. Provider pacing, timeout and internal retry limits
@@ -79,6 +80,14 @@ using timestamps and feature availability, never labels or model scores. If
 every subset lacks sufficient history, it retains the largest material subset
 and reports the original split shortfall. The actual 300/100/100 admission
 floors and model quality gates remain authoritative.
+
+After a substantive collector merge, the existing source workflow runs the
+read-only original-archive admission diagnostic after that asset's new
+checkpoint publishes. It independently restores verified monthly archives and
+daily candle originals, reads the published native bundles and measures all
+three horizons with the actual trainer's admission-only path. Only the concise
+verdict is uploaded to Actions; no original source rows or fitted model are
+uploaded. Regular six-hour recovery passes retain their existing workload.
 
 ## Failure and evidence rules
 

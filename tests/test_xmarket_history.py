@@ -155,14 +155,13 @@ async def test_live_lag_recovery_fills_real_60m_native_point_without_backdating(
     def serve(request):
         token = request.url.params["market"]
         requests.append(token)
-        if token == prior["token_id"]:
-            # The fixture token ID is shared; distinguish old/native window
-            # by its immutable time range, as the real API does.
-            if int(request.url.params["startTs"]) == int(
-                    datetime.fromisoformat(prior["opens_at"]).timestamp()):
-                return httpx.Response(200, json={"history": [
-                    {"t": int(lag.timestamp()), "p": .47}
-                ]})
+        # Fixture tokens are shared: use the immutable old-contract time range.
+        if (token == prior["token_id"]
+                and int(request.url.params["startTs"]) == int(
+                    datetime.fromisoformat(prior["opens_at"]).timestamp())):
+            return httpx.Response(200, json={"history": [
+                {"t": int(lag.timestamp()), "p": .47}
+            ]})
         return httpx.Response(200, json={"history": [
             {"t": int(at.timestamp()), "p": .61}
         ]})

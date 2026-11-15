@@ -406,10 +406,6 @@ def usable(doc: dict, *, now: datetime | None = None) -> bool:
         return False
 
 
-def _sigmoid(x: float) -> float:
-    return 1 / (1 + math.exp(-max(-30.0, min(30.0, x))))
-
-
 def probability(doc: dict, vector) -> float:
     """Serve-time probability for a 22-value vector (NaN = group absent).
 
@@ -417,28 +413,18 @@ def probability(doc: dict, vector) -> float:
     groups contribute the group mean, i.e. standardised 0), Platt
     calibrated, clamped to [0.02, 0.98].
     """
-    import numpy as np
+    from parlay_bot.research.logistic_runtime import calibrated_probability
 
     validate(doc)
     if len(vector) != len(FEATURES):
         raise ValueError("wrong volcal feature count")
-    mean = np.array(doc["standardizer"]["mean"], dtype=float)
-    std = np.array(doc["standardizer"]["std"], dtype=float)
-    values = np.array(vector, dtype=float)
+    values = list(vector)
     # An ablated artifact never reads its masked groups: NaN them
     # before standardising, exactly like archive_training.probability
     # (their fitted weights are 0 by construction, this is the guard).
     for name in _masked_features(doc.get("feature_groups_off", ())):
         values[FEATURES.index(name)] = float("nan")
-    x = _standardize_apply(values, mean, std)
-    raw = _sigmoid(float(np.hstack([[1.0], x]) @ np.array(doc["weights"], dtype=float)))
-    calibration = doc["calibration"]
-    calibrated = _sigmoid(
-        float(calibration["a"])
-        * math.log(max(1e-6, min(1 - 1e-6, raw)) / (1 - max(1e-6, min(1 - 1e-6, raw))))
-        + float(calibration["b"])
-    )
-    return float(min(SERVE_CLAMP[1], max(SERVE_CLAMP[0], calibrated)))
+    return calibrated_probability(doc, values, serve_clamp=SERVE_CLAMP)
 
 
 def artifact_identity(doc: dict) -> dict:

@@ -621,29 +621,14 @@ def usable(doc: dict, *, now: datetime | None = None) -> bool:
         return False
 
 
-def _sigmoid(x: float) -> float:
-    return 1 / (1 + math.exp(-max(-30.0, min(30.0, x))))
-
-
 def probability(doc: dict, vector) -> float:
     """Train-standardized, Platt-calibrated probability; missing inputs are rejected."""
-    import numpy as np
+    from parlay_bot.research.logistic_runtime import calibrated_probability
 
     validate(doc)
     if len(vector) != len(doc["features"]) or not all(math.isfinite(v) for v in vector):
         raise ValueError("wrong xmarket feature count")
-    mean = np.array(doc["standardizer"]["mean"], dtype=float)
-    std = np.array(doc["standardizer"]["std"], dtype=float)
-    values = np.array(vector, dtype=float)
-    x = _standardize_apply(values, mean, std)
-    raw = _sigmoid(float(np.hstack([[1.0], x]) @ np.array(doc["weights"], dtype=float)))
-    calibration = doc["calibration"]
-    calibrated = _sigmoid(
-        float(calibration["a"])
-        * math.log(max(1e-6, min(1 - 1e-6, raw)) / (1 - max(1e-6, min(1 - 1e-6, raw))))
-        + float(calibration["b"])
-    )
-    return float(min(SERVE_CLAMP[1], max(SERVE_CLAMP[0], calibrated)))
+    return calibrated_probability(doc, vector, serve_clamp=SERVE_CLAMP)
 
 
 def artifact_identity(doc: dict) -> dict:

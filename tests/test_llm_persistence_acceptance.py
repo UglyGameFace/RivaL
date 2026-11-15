@@ -111,7 +111,7 @@ def test_new_host_acceptance_requires_actual_math_evidence_and_fresh_model_row()
 
 
 
-def test_host_receipt_workflow_waits_for_actual_deployment():
+def test_host_receipt_workflow_waits_for_verified_native_source():
     """Green skipped CI/release jobs never authorize an LFM3 consumption."""
     workflow = (ROOT / ".github" / "workflows" /
                 "llm-persistence-acceptance.yml").read_text(encoding="utf-8")
@@ -120,8 +120,9 @@ def test_host_receipt_workflow_waits_for_actual_deployment():
     assert "types: [completed]" in workflow
     assert 'RELEASE_SHA" != "$main_sha"' in workflow
     assert 'RELEASE_CONCLUSION" != "success"' in workflow
-    assert 'deploy_steps" != "1"' in workflow
-    assert "Deploy tested RivaL app without replacing its host environment" in workflow
+    assert 'parity_steps" != "1"' in workflow
+    assert "Verify native Discloud source parity" in workflow
+    assert "Deploy tested RivaL app without replacing its host environment" not in workflow
     assert 'integration_state="$(gh api "repos/$GITHUB_REPOSITORY/issues/261"' in workflow
     assert "if: steps.receipt.outputs.outcome == 'verified'" in workflow
     assert "push:\n" not in workflow

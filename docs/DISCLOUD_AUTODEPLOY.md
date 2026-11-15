@@ -1,64 +1,63 @@
-# RivaL: verified GitHub → Discloud production delivery
+# RivaL production delivery: Discloud native GitHub Auto Deploy
 
-This repository has a **real deployment workflow**, not an assertion that a
-GitHub merge automatically updates the running Discord bot.
+## Single deployment owner
 
-## How a release works
+**Discloud's built-in GitHub Auto Deploy on the existing `RivaL` app, branch
+`main`, is the only production deployer.** The owner confirmed this connection
+in the Discloud dashboard. A merge to `main` can cause Discloud to update and
+restart the bot directly, independent of GitHub Actions.
 
-1. A change is merged into `main`.
-2. The existing `CI` workflow runs Ruff and the complete pytest suite,
-   including the PostgreSQL 16-backed tests.
-3. Only a **successful CI run for `main` in this repository** (either a `push`\n   or an owner-triggered `workflow_dispatch` test run) can
-   trigger `Deploy verified RivaL to Discloud`. Forks, pull requests and
-   failed test runs cannot deploy.
-4. The workflow checks that **both** secret values exist:
-   - `DISCLOUD_TOKEN`: your private API token from Discloud.
-   - `DISCLOUD_APP_ID`: the exact ID of the *existing* RivaL bot in Discloud.
-5. If either is missing, CI completes but deployment is explicitly **skipped
-   with a warning**. Do not mistake this for a running production release.
-6. When both exist, the official `discloud/deploy-action@v1` commits the
-   **same exact SHA tested by CI**, with app_id supplied to ensure this is an
-   update of the intended bot, not an accidental new app.
+`.github/workflows/discloud-deploy.yml` retains the name
+**RivaL Production Release**, but **no longer uploads, updates, restarts, or
+replaces anything on Discloud**. It is a read-only release *observer*, triggered
+by successful first-party main CI. This prevents the previous competing
+GitHub deployment action from causing additional restarts.
 
-**Important:** no `env` or `env_file` is passed to Discloud's action.
-Its documented `env` input could overwrite the deployed `.env`, so the
-workflow deliberately leaves the existing production secrets and database
-connection in Discloud untouched. Only `main.py`, `discloud.config`,
-`requirements.txt`, `pyproject.toml` and `src/**` are uploaded.
+**CI is not a deployment gate for native Discloud Auto Deploy.** A merged commit
+can be picked up by Discloud before CI passes. Review and validate changes
+*before merging*, and do not interpret a green CI run or a green observer
+workflow without its parity step as confirmation of a production deploy.
 
-The action's success means Discloud accepted the deployment. It does
-**not** prove that Discord logged in, commands synced, market vendors
-returned live data, or forecasts are profitable.
+## What the release observer actually verifies
 
-## One-time setup from Android
+1. A successful CI run belongs to first-party `main` (push or manual CI)
+   and its tested SHA is still the current `main` SHA.
+2. The observer checks out that exact tested SHA.
+3. Using GitHub-held `DISCLOUD_TOKEN` and `DISCLOUD_APP_ID` *only for a
+   read-only source check*, the observer calls the existing Discloud console
+   API with a fixed Python command.
+4. The console computes a deterministic SHA-256 fingerprint of `main.py`,
+   `requirements.txt`, `pyproject.toml`, `discloud.config` and all deployed
+   `src/**/*.py`. The observer compares it with the same files from the
+   exact CI checkout, retrying briefly while the native deployment arrives.
+5. Only a successful `Verify native Discloud source parity` step counts as
+   verified file parity. Missing credentials, inaccessible console, unexpected
+   files, malformed output, and unequal hashes **fail closed**.
 
-1. Open your RivaL repository's
-   [Actions Secrets and Variables](https://github.com/UglyGameFace/RivaL/settings/secrets/actions)
-   page in the browser. In **Repository secrets**, add the two secret
-   names above. Never put their values in chat, code, `.env.example`,
-   logs or screenshots.
-2. Obtain your account API token and the existing bot's exact application ID
-   from your [Discloud dashboard](https://discloud.com/dashboard).
-3. After secret setup, open [CI](https://github.com/UglyGameFace/RivaL/actions/workflows/ci.yml), tap **Run workflow**, choose **main**, and run the full tests. This works without making artificial commits. A successful main CI run activates the release workflow; historical successes are not replayed.
-4. Open the repository's [Actions](https://github.com/UglyGameFace/RivaL/actions)
-   list, find `RivaL Production Release`, and confirm that the
-   official deployment step **actually ran and succeeded**, not just
-   `skipped`.
-5. Confirm the Discloud bot startup log contains
-   `RivaL operational storage initialized (backend=postgres)` and a
-   successful global or development-guild command synchronization.
-6. From Discord, use `/rival-target coin:BTC timeframe:5 minutes`, then
-   confirm the private card changes to WAIT when its actual target candle
-   closes or the underlying feed is no longer current. Test `/rival-stop`
-   and verify the card visibly switches to **Target stopped**.
-7. Restart the RivaL bot in Discloud and confirm the same target continues
-   to refresh without another signup. Do not declare live production
-   accepted until this restart/continuity check succeeds.
+Source parity proves selected files **on disk**, not the running Python process
+has reloaded them, Discord is connected, PostgreSQL can be read, five XMarket
+models were imported, shadows are issuing, or any predicted edge is profitable.
+The independently authenticated host learning receipt remains responsible for
+actual PostgreSQL/worker observations, and downstream `workflow_run` events
+check the observer's verified parity step rather than a nonexistent upload.
 
-A valid model watch is **not** a real-money trading signal. The user must
-separately validate forecast accuracy, costs, legal venue eligibility and
-any future authorized execution before risking money.
+Scheduled/manual receipt checks are still allowed without waiting for a
+release. Those observations cannot by themselves establish the deployed SHA.
 
-If your Discloud dashboard is using its own GitHub integration instead
-of this repository Action, disable one automatic deploy route to avoid
-two competing deployments on the same SHA.
+## Owner operation (Android-friendly)
+
+- In Discloud, leave the existing app's GitHub Auto Deploy connected to
+  `UglyGameFace/RivaL` → `main`. **Do not add another deploy action.**
+- In GitHub, review the main CI and the RivaL Production Release workflow.
+  The last workflow must show the **source parity step succeeded**, not merely
+  a green run with its verification skipped.
+- Read the separate RivaL live learning cycle receipt for the actual host
+  forecast, learning, XMarket import and shadow counts. A successful
+  deployment/CI does not imply those stages are healthy.
+- For a production incident, first use the read-only Discloud logs or
+  the independent hourly uptime workflow. Do not restart the bot just to
+  make an evidence receipt appear.
+
+The existing Discloud app environment, PostgreSQL credentials, private Drive
+configuration, and native GitHub settings are never modified by this observer.
+No real-money orders, migrations, training, or model-gate changes occur here.

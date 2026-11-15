@@ -165,11 +165,13 @@ class XmarketInputs:
                                  "ON CONFLICT(asset,venue) DO UPDATE SET observed_at=excluded.observed_at",
                                  (asset, venue, now.isoformat()))
 
-    def due(self, source: str, contract: str, now: datetime) -> bool:
+    def due(self, source: str, contract: str, now: datetime, *,
+            cooldown_seconds: int = 55) -> bool:
+        """Throttle live calls and longer-spaced, source-exact recovery separately."""
         self._attempts = {k: v for k, v in self._attempts.items()
-                          if now - v < timedelta(minutes=20)}
+                          if timedelta(0) <= now - v < timedelta(minutes=20)}
         key = (source, contract)
-        if key in self._attempts and now - self._attempts[key] < timedelta(seconds=55):
+        if key in self._attempts and now - self._attempts[key] < timedelta(seconds=cooldown_seconds):
             return False
         self._attempts[key] = now
         return True
@@ -187,35 +189,100 @@ class XmarketInputs:
                         ("asset", "contract_id", "token_id", "slug", "opens_at", "closes_at")}
         return None
 
+    def _recent_pm_identities(self, asset: str, clock: datetime, *, limit: int = 5) -> list[dict]:
+        """Only source-verified identities seen on this host in the previous 90m.
+
+        The oldest of five closed 15m contracts can supply a genuine
+        60-minute lag. Never construct missing Gamma IDs from slug guesses.
+        """
+        self.initialize()
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                "SELECT sample_json FROM rival_xmarket_observations "
+                "WHERE asset=? AND source='polymarket' AND at>=? AND at<? "
+                "AND observed_at<=? ORDER BY at DESC LIMIT 240",
+                (asset, (clock - timedelta(minutes=90)).isoformat(),
+                 clock.isoformat(), clock.isoformat()),
+            ).fetchall()
+        selected: list[dict] = []
+        seen: set[str] = set()
+        for row in rows:
+            doc = json.loads(row["sample_json"])
+            closes = timestamp(doc["closes_at"])
+            key = str(doc["contract_id"])
+            if (key in seen or not clock - timedelta(minutes=90) <= closes <= clock):
+                continue
+            seen.add(key)
+            selected.append({k: doc[k] for k in
+                             ("asset", "contract_id", "token_id", "slug",
+                              "opens_at", "closes_at")})
+            if len(selected) == limit:
+                break
+        return selected
+
+    async def _capture_pm_contract(self, client, identity: dict, *,
+                                   clock: datetime, notice=None,
+                                   received_at: datetime | None = None) -> int:
+        end = min(clock, timestamp(identity["closes_at"]))
+        response = await client.get(POLY_HISTORY, params={
+            "market": identity["token_id"],
+            "startTs": int(timestamp(identity["opens_at"]).timestamp()),
+            "endTs": int(end.timestamp()), "fidelity": 1,
+        })
+        response.raise_for_status()
+        if response.is_redirect or len(response.content) > 100_000:
+            raise ValueError("unbounded PM history response")
+        points = parse_points("polymarket", response.json(), identity=identity,
+                              observed_at=received_at or datetime.now(UTC))
+        # Quote data is diagnostic only and cannot substitute for a native price.
+        if notice is not None:
+            for row in points:
+                if abs((timestamp(row["at"]) - notice.quote_at).total_seconds()) <= 60:
+                    row.update(yes_bid=getattr(notice, "up_bid", None),
+                               yes_ask=notice.up_ask,
+                               diagnostic_quote_at=notice.quote_at.isoformat())
+        return await asyncio.to_thread(self.record, points)
+
     async def capture_polymarket(self, notice, client, *, now: datetime | None = None) -> int:
         clock = now or datetime.now(UTC)
         if notice.horizon != 15 or not notice.issued <= clock < notice.expires \
                 or not self.due("polymarket", notice.slug, clock):
             return 0
-        identity = {"asset": notice.asset, "contract_id": notice.condition_id,
-                    "token_id": notice.up_token_id, "slug": notice.slug,
-                    "opens_at": notice.issued.isoformat(), "closes_at": notice.expires.isoformat()}
-        previous = (await asyncio.to_thread(self._previous_pm, notice.asset, clock)
-                    if clock.minute % 15 <= 1 else None)
-        identities = [previous, identity] if previous is not None else [identity]
-        saved = 0
-        for item in identities:
-            end = min(clock, timestamp(item["closes_at"]))
-            response = await client.get(POLY_HISTORY, params={"market": item["token_id"],
-                "startTs": int(timestamp(item["opens_at"]).timestamp()),
-                "endTs": int(end.timestamp()), "fidelity": 1})
-            response.raise_for_status()
-            if response.is_redirect or len(response.content) > 100_000:
-                raise ValueError("unbounded PM history response")
-            received = now or datetime.now(UTC)
-            points = parse_points("polymarket", response.json(), identity=item, observed_at=received)
-            # The quote diagnostic has its own source time and is never a model input.
-            if item is identity:
-                for row in points:
-                    if abs((timestamp(row["at"]) - notice.quote_at).total_seconds()) <= 60:
-                        row.update(yes_bid=getattr(notice, "up_bid", None), yes_ask=notice.up_ask,
-                                   diagnostic_quote_at=notice.quote_at.isoformat())
-            saved += await asyncio.to_thread(self.record, points)
+        current = {"asset": notice.asset, "contract_id": notice.condition_id,
+                   "token_id": notice.up_token_id, "slug": notice.slug,
+                   "opens_at": notice.issued.isoformat(), "closes_at": notice.expires.isoformat()}
+        saved = await self._capture_pm_contract(
+            client, current, clock=clock, notice=notice, received_at=now)
+
+        # The live endpoint can be incomplete at the 15-minute close.
+        # Previous-contract capture already existed, but only for 2 minutes
+        # after the boundary. Recover older verified identities at most once
+        # per 15 minutes so the genuine 60-minute model lag is available.
+        if clock.minute % 15 <= 1:
+            previous = await asyncio.to_thread(self._previous_pm, notice.asset, clock)
+            seen = {current["contract_id"]}
+            if previous is not None:
+                saved += await self._capture_pm_contract(
+                    client, previous, clock=clock, received_at=now)
+                seen.add(previous["contract_id"])
+            old = await asyncio.to_thread(self._recent_pm_identities, notice.asset, clock)
+            for identity in old:
+                key = identity["contract_id"]
+                if key in seen or not self.due(
+                    "polymarket-recovery", key, clock, cooldown_seconds=900
+                ):
+                    continue
+                seen.add(key)
+                try:
+                    saved += await self._capture_pm_contract(
+                        client, identity, clock=clock, received_at=now)
+                except Exception as exc:  # noqa: BLE001 - old source never blocks current source
+                    # Never revise an immutable old source or log private token IDs.
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "XMarket source-exact PM 60m recovery unavailable asset=%s error=%s",
+                        notice.asset, type(exc).__name__)
         return saved
 
     async def capture_kalshi(self, *, asset, ticker, opens, closes, clock, get) -> int:

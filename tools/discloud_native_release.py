@@ -53,11 +53,11 @@ def source_sha256(root: Path) -> str:
 def parse_remote_sha(payload: dict) -> str:
     """Fail closed on malformed, ambiguous or fabricated console output."""
     if not isinstance(payload, dict):
-        raise ValueError("invalid Discloud response")
+        raise TypeError("invalid Discloud response")
     shell = payload.get("apps", {}).get("shell", {})
     stdout = shell.get("stdout") if isinstance(shell, dict) else None
     if not isinstance(stdout, str):
-        raise ValueError("missing host stdout")
+        raise TypeError("missing host stdout")
     found = [
         line[len(MARKER):].strip()
         for line in stdout.splitlines()

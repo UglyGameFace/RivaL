@@ -160,6 +160,7 @@ async def test_live_pm_recovers_real_60m_lag_from_verified_old_contracts(learnin
             })
         return httpx.Response(200, json={"history": [
             {"t": int((start + timedelta(minutes=5)).timestamp()), "p": .55},
+            {"t": int((start + timedelta(minutes=10)).timestamp()), "p": .56},
             {"t": int((start + timedelta(minutes=15)).timestamp()), "p": .61},
         ]})
 

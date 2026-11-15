@@ -165,7 +165,8 @@ async def test_live_pm_recovers_real_60m_lag_from_verified_old_contracts(learnin
         ]})
 
     with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        assert await inputs.capture_polymarket(notice, client, now=clock) == 6
+        # Each previously seeded contract gains two new immutable 5m points.
+        assert await inputs.capture_polymarket(notice, client, now=clock) == 11
         assert requests == [opened, *previous]
         # A causal forecast that predates the recovery MUST NOT see the old
         # price, even though its market timestamp is an hour old.

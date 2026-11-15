@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import itertools
 import json
+import logging
 import statistics
 from datetime import UTC, datetime, timedelta
 
@@ -199,7 +200,8 @@ class XmarketInputs:
                         ("asset", "contract_id", "token_id", "slug", "opens_at", "closes_at")}
         return None
 
-    async def _recover_pm_60m_lag(self, *, asset: str, client, clock: datetime) -> int:
+    async def _recover_pm_60m_lag(self, *, asset: str, client, clock: datetime,
+                                  fixed_observation_time: bool = False) -> int:
         """Repair *future* source coverage, never retroactively issue a forecast.
 
         Live native history sometimes lacks the exact sixty-minute PM input
@@ -228,7 +230,7 @@ class XmarketInputs:
         response.raise_for_status()
         if response.is_redirect or len(response.content) > 100_000:
             raise ValueError("unbounded PM lag history response")
-        received = datetime.now(UTC) if clock > datetime.now(UTC) else clock
+        received = clock if fixed_observation_time else datetime.now(UTC)
         points = parse_points("polymarket", response.json(), identity=identity,
                               observed_at=received)
         return await asyncio.to_thread(self.record, points)
@@ -279,9 +281,9 @@ class XmarketInputs:
         # historical fetch/API/schema problems must not discard new native rows.
         try:
             saved += await self._recover_pm_60m_lag(
-                asset=notice.asset, client=client, clock=clock)
+                asset=notice.asset, client=client, clock=clock,
+                fixed_observation_time=now is not None)
         except Exception:  # noqa: BLE001 - verified future-only input repair
-            import logging
             logging.getLogger(__name__).warning(
                 "RivaL XMarket PM 60m lag recovery unavailable asset=%s",
                 notice.asset, exc_info=True)

@@ -176,3 +176,37 @@ async def test_xmarket_is_rechecked_after_a_minute_and_missing_reads_are_not_cac
         assert len(calls) == 3
     finally:
         await _close(bot, home)
+
+
+def test_page_cache_pressure_keeps_just_fetched_xmarket_read(monkeypatch):
+    """Crossing 256 shared entries must not discard the active sibling read."""
+    from types import SimpleNamespace
+
+    cache = {}
+    market = object()
+    monkeypatch.setattr(home_module, "_PAGE_READ_CACHE", cache)
+    monkeypatch.setattr(home_module, "time", SimpleNamespace(monotonic=lambda: 1000.))
+    monkeypatch.setattr(home_module.screen_snapshots, "remember", lambda *_: None)
+    # The old clear-all policy dropped fresh entries after the third
+    # concurrent reader pushed this cache over the limit.
+    for index in range(255):
+        cache[("old", index)] = (float(index), market, {"status": "recorded"})
+    calls = []
+
+    def xmarket(_market, _asset, _horizon):
+        calls.append("xmarket")
+        return {"status": "recorded"}
+
+    def trial(_market, _asset, _horizon):
+        calls.append("trial")
+        return {"status": "recorded"}
+
+    def best(_market, _asset, _horizon):
+        calls.append("best")
+        return {"status": "recorded"}
+
+    for reader in (xmarket, trial, best):
+        home_module._cached_page_read(reader, market, "BTC", 0)
+    home_module._cached_page_read(xmarket, market, "BTC", 0)
+    assert calls == ["xmarket", "trial", "best"]
+    assert len(cache) == 256

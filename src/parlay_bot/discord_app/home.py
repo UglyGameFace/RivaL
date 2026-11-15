@@ -632,8 +632,14 @@ def _cached_page_read(reader: Callable, market: object, asset: str, horizon: int
             return result      # part of it failed: shown once, never cached
         screen_snapshots.remember(getattr(reader, "__name__", "read"), asset, horizon, result)
         with _PAGE_READ_LOCK:
-            if len(_PAGE_READ_CACHE) > 256:
-                _PAGE_READ_CACHE.clear()
+            # Evict only the oldest entries when the shared 256-slot cache
+            # fills. Clearing all entries here invalidated a just-fetched
+            # XMarket read when concurrent Performance sections crossed the
+            # limit, triggering duplicate DB reads in the next render.
+            # Preserve refreshed keys and keep the bound under contention.
+            while key not in _PAGE_READ_CACHE and len(_PAGE_READ_CACHE) >= 256:
+                oldest = min(_PAGE_READ_CACHE, key=lambda k: _PAGE_READ_CACHE[k][0])
+                del _PAGE_READ_CACHE[oldest]
             _PAGE_READ_CACHE[key] = (time.monotonic(), market, result)
         return result
     finally:

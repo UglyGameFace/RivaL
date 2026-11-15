@@ -159,7 +159,7 @@ def test_xmarket_candidate_keeps_its_own_source_exact_quote_verdict(learning_sto
     bad = proof_progress(learning_store, now=now, **_scope())["evaluations"][0]
     assert bad["candidate"]["name"] == winner
     assert bad["xmarket_v1"]["valid"] is False
-    assert bad["xmarket_v1"]["qualified_paper"] is not True
+    assert bad["xmarket_v1"].get("qualified_paper", False) is False
 
 
 @pytest.mark.asyncio

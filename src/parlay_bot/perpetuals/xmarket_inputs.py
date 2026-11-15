@@ -10,11 +10,14 @@ import asyncio
 import hashlib
 import itertools
 import json
+import logging
 import statistics
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.research.supplemental_history import polymarket_history_points
 from parlay_bot.research.xmarket_features import PRICE_SEMANTICS, timestamp, validate_sample
+
+_LOG = logging.getLogger(__name__)
 
 BUNDLE_SCHEMA = "rival-xmarket-inputs-v1"
 BUNDLE_PREFIX = "xmarket-inputs-"
@@ -278,9 +281,7 @@ class XmarketInputs:
                         client, identity, clock=clock, received_at=now)
                 except Exception as exc:  # noqa: BLE001 - old source never blocks current source
                     # Never revise an immutable old source or log private token IDs.
-                    import logging
-
-                    logging.getLogger(__name__).warning(
+                    _LOG.warning(
                         "XMarket source-exact PM 60m recovery unavailable asset=%s error=%s",
                         notice.asset, type(exc).__name__)
         return saved

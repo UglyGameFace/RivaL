@@ -50,7 +50,7 @@ def test_remote_fingerprint_requires_exact_single_valid_marker():
                    + "\n" + observer.MARKER + digest):
         with pytest.raises(ValueError):
             observer.parse_remote_sha({"apps": {"shell": {"stdout": stdout}}})
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         observer.parse_remote_sha({"apps": {}})
 
 

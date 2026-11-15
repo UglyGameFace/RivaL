@@ -11,13 +11,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_deploy_archive_contains_host_acceptance_probe():
+def test_native_discloud_autodeploy_is_only_production_writer():
     workflow = (ROOT / ".github/workflows/discloud-deploy.yml").read_text()
+    assert (ROOT / "discloud.config").is_file()
+    assert (ROOT / "main.py").is_file()
     assert (ROOT / "tools/unattended_acceptance.py").is_file()
-    assert "test -f tools/unattended_acceptance.py" in workflow
-    assert "            tools/unattended_acceptance.py" in workflow.split("glob: |", 1)[1]
     assert (ROOT / "src/parlay_bot/perpetuals/acceptance_cli.py").is_file()
-    assert "            src/**" in workflow.split("glob: |", 1)[1]
+    assert "discloud/deploy-action" not in workflow
+    assert "Deploy tested RivaL app" not in workflow
+    assert "python tools/discloud_native_release.py" in workflow
+    assert "Verify native Discloud source parity" in workflow
 
 
 def test_standalone_discloud_probe_runs_without_installed_package(tmp_path):
@@ -70,17 +73,13 @@ def test_discloud_main_entrypoint_works_even_if_tools_directory_is_missing(tmp_p
         assert "ModuleNotFoundError" not in run.stderr
 
 
-def test_merges_that_land_together_deploy_as_one_restart():
-    """26 restarts a day on Nov 8-10; most came minutes before the next one."""
+def test_native_release_check_requires_successful_current_main_ci():
     workflow = (ROOT / ".github/workflows/discloud-deploy.yml").read_text()
-    steps = workflow.split("    steps:\n", 1)[1]
-    wait = steps.index("run: sleep 900")
-    # Only merges wait; a manually dispatched CI run deploys at once.
-    condition = steps[:wait].rsplit("if:", 1)[1]
-    assert "workflow_run.event == 'push'" in condition
-    # The superseded-commit check runs AFTER the wait, so a newer merge
-    # during the wait makes this run skip itself.
-    assert wait < steps.index("CURRENT_MAIN_SHA") < steps.index("Superseded main CI commit")
-    # One release at a time; a queued newer run is never cancelled mid-upload.
+    assert 'workflows: ["CI"]' in workflow
+    assert "github.event.workflow_run.conclusion == 'success'" in workflow
+    assert '"$SOURCE_BRANCH" != "main"' in workflow
+    assert '"$SOURCE_REPO" != "$GITHUB_REPOSITORY"' in workflow
+    assert '"$SOURCE_SHA" != "$current_sha"' in workflow
     assert "cancel-in-progress: false" in workflow
-    assert "timeout-minutes: 30" in workflow
+    assert "sleep 900" not in workflow
+    assert "deploy-action" not in workflow

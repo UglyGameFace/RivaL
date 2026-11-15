@@ -91,6 +91,61 @@ def test_hot_queries_use_time_bound_and_target_indexes(tmp_path):
         store.close()
 
 
+def test_model_lab_scored_review_uses_targeted_partial_index(tmp_path, monkeypatch):
+    """Exercise both exact PostgreSQL slow-query shapes, not copied SQL.
+
+    The four-family, four-asset review used to spend 3-5 seconds on each
+    scan of the full shadow ledger. Its partial access path must remain
+    selective for both daily target gains and distinct scored streams.
+    """
+    from parlay_bot.perpetuals.model_lab import ModelLab
+    from parlay_bot.storage import optional_reads
+
+    store, monitor = _prepare(tmp_path)
+    captured = []
+    original = optional_reads.optional_rows
+
+    def record_read(database, sql, params=(), *, what="optional read"):
+        if "FROM rival_model_shadow_forecasts" in sql:
+            captured.append((sql, tuple(params)))
+        return original(database, sql, params, what=what)
+
+    monkeypatch.setattr(optional_reads, "optional_rows", record_read)
+    now = datetime(2026, 11, 15, 12, tzinfo=UTC)
+    since = (now - timedelta(days=21)).isoformat()
+    families = [f"lab_5m_review_{i}" for i in range(4)]
+    try:
+        scores = ModelLab(store)._scores(families, 5, since, through=now)
+        assert scores is not None and set(scores) == set(families)
+        assert len(captured) == 2
+        with store.connect() as conn:
+            assert _columns(conn, "idx_rival_model_shadow_lab_scored") == [
+                "horizon_minutes", "family", "asset", "issued_at"
+            ]
+            definition = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name=?",
+                ("idx_rival_model_shadow_lab_scored",),
+            ).fetchone()["sql"]
+            assert "settled_at IS NOT NULL" in definition
+            assert "model_brier BETWEEN 0 AND 1" in definition
+            assert "incumbent_brier BETWEEN 0 AND 1" in definition
+            for sql, params in captured:
+                plan = conn.execute(
+                    "EXPLAIN QUERY PLAN " + sql, params,
+                ).fetchall()
+                assert "idx_rival_model_shadow_lab_scored" in " ".join(
+                    str(row["detail"]) for row in plan
+                ), (sql, [str(row["detail"]) for row in plan])
+        # Existing startup DDL must not duplicate or invalidate the index.
+        monitor._initialize_schema()
+        with store.connect() as conn:
+            assert _columns(conn, "idx_rival_model_shadow_lab_scored")[0] == (
+                "horizon_minutes"
+            )
+    finally:
+        store.close()
+
+
 def test_live_calibration_reuses_one_bounded_read_without_caching_historical_clocks(
     tmp_path, monkeypatch,
 ):

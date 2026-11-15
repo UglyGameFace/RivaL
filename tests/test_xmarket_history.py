@@ -164,7 +164,7 @@ async def test_live_pm_recovers_real_60m_lag_from_verified_old_contracts(learnin
             {"t": int((start + timedelta(minutes=15)).timestamp()), "p": .61},
         ]})
 
-    with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         # Each previously seeded contract gains two new immutable 5m points.
         assert await inputs.capture_polymarket(notice, client, now=clock) == 11
         assert requests == [opened, *previous]

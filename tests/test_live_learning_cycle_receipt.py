@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import json
 import runpy
-
-import pytest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from parlay_bot.perpetuals import learning_health_receipt as host
 

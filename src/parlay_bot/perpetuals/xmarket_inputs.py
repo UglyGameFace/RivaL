@@ -178,7 +178,7 @@ class XmarketInputs:
         return True
 
     def _lag_pm_identity(self, asset: str, target: datetime) -> dict | None:
-        """Find the *observed* native contract covering a missing 60m lag.
+        """Find the observed native contract covering an exact required bar.
 
         Only use verified identities already persisted from the original live
         reader. Never infer a token ID or construct one from a slug.
@@ -200,62 +200,60 @@ class XmarketInputs:
                         ("asset", "contract_id", "token_id", "slug", "opens_at", "closes_at")}
         return None
 
-    async def _recover_pm_60m_lag(self, *, asset: str, client, clock: datetime,
-                                  fixed_observation_time: bool = False) -> int:
-        """Repair *future* source coverage, never retroactively issue a forecast.
+    async def _recover_pm_lags(self, *, asset: str, client, clock: datetime,
+                               captured_contract: str,
+                               fixed_observation_time: bool = False) -> int:
+        """Complete the exact current/15m/60m inputs for future forecasts.
 
-        Live native history sometimes lacks the exact sixty-minute PM input
-        required by xmarket_v1. Re-request the already identified, historical
-        native 15m contract at most once per five minutes per asset. New points
-        receive their actual observation time, so a late repair cannot be used
-        by an earlier immutable forecast or fabricate its provenance.
+        A completed contract can publish its final points after the live
+        reader moves on. Recover each missing required bar from its stored
+        verified identity, once per five-minute bar. Never fetch the current
+        contract twice, invent identities, replace observations, or backdate
+        newly received history. Each optional request fails independently.
         """
         from parlay_bot.research.xmarket_features import sampled_bars
 
         bar = datetime.fromtimestamp(int(clock.timestamp() // 300) * 300, UTC)
-        lag = bar - timedelta(minutes=60)
         recent = await asyncio.to_thread(self.recent, asset, at=bar, now=clock)
-        if lag in sampled_bars(recent, asset=asset, as_of=clock)["polymarket"]:
-            return 0
-        if not self.due("polymarket-lag-60", asset, clock,
-                        cooldown_seconds=300):
-            return 0
-        identity = await asyncio.to_thread(self._lag_pm_identity, asset, lag)
-        if identity is None:
-            logging.getLogger(__name__).info(
-                "RivaL XMarket PM 60m lag missing verified old contract asset=%s",
-                asset)
-            return 0
-        response = await client.get(POLY_HISTORY, params={
-            "market": identity["token_id"],
-            "startTs": int(timestamp(identity["opens_at"]).timestamp()),
-            "endTs": int(timestamp(identity["closes_at"]).timestamp()),
-            "fidelity": 1,
-        })
-        response.raise_for_status()
-        if response.is_redirect or len(response.content) > 100_000:
-            raise ValueError("unbounded PM lag history response")
-        received = clock if fixed_observation_time else datetime.now(UTC)
-        points = parse_points("polymarket", response.json(), identity=identity,
-                              observed_at=received)
-        inserted = await asyncio.to_thread(self.record, points)
-        logging.getLogger(__name__).info(
-            "RivaL XMarket PM 60m lag recovery asset=%s inserted=%d parsed=%d",
-            asset, inserted, len(points))
-        return inserted
-
-    def _previous_pm(self, asset, clock):
-        self.initialize()
-        with self.store.connect() as conn:
-            rows = conn.execute("SELECT sample_json FROM rival_xmarket_observations "
-                "WHERE asset=? AND source='polymarket' AND at>=? ORDER BY at DESC LIMIT 64",
-                (asset, (clock - timedelta(minutes=20)).isoformat())).fetchall()
-        for raw in rows:
-            row = json.loads(raw["sample_json"])
-            if clock - timedelta(minutes=2) <= timestamp(row["closes_at"]) <= clock:
-                return {k: row[k] for k in
-                        ("asset", "contract_id", "token_id", "slug", "opens_at", "closes_at")}
-        return None
+        bars = sampled_bars(recent, asset=asset, as_of=clock)["polymarket"]
+        saved = 0
+        for minutes in (0, 15, 60):
+            lag = bar - timedelta(minutes=minutes)
+            if lag in bars or not self.due(
+                    "polymarket-lag", f"{asset}:{int(bar.timestamp())}:{minutes}",
+                    clock, cooldown_seconds=300):
+                continue
+            try:
+                identity = await asyncio.to_thread(self._lag_pm_identity, asset, lag)
+                if identity is None:
+                    logging.getLogger(__name__).info(
+                        "RivaL XMarket PM %dm lag missing verified old contract asset=%s",
+                        minutes, asset)
+                    continue
+                if identity["contract_id"] == captured_contract:
+                    continue
+                response = await client.get(POLY_HISTORY, params={
+                    "market": identity["token_id"],
+                    "startTs": int(timestamp(identity["opens_at"]).timestamp()),
+                    "endTs": int(timestamp(identity["closes_at"]).timestamp()),
+                    "fidelity": 1,
+                })
+                response.raise_for_status()
+                if response.is_redirect or len(response.content) > 100_000:
+                    raise ValueError("unbounded PM lag history response")
+                received = clock if fixed_observation_time else datetime.now(UTC)
+                points = parse_points("polymarket", response.json(), identity=identity,
+                                      observed_at=received)
+                inserted = await asyncio.to_thread(self.record, points)
+                saved += inserted
+                logging.getLogger(__name__).info(
+                    "RivaL XMarket PM %dm lag recovery asset=%s inserted=%d parsed=%d",
+                    minutes, asset, inserted, len(points))
+            except Exception as exc:  # noqa: BLE001 - isolate each optional source
+                logging.getLogger(__name__).warning(
+                    "RivaL XMarket PM %dm lag recovery unavailable asset=%s error=%s",
+                    minutes, asset, type(exc).__name__)
+        return saved
 
     async def capture_polymarket(self, notice, client, *, now: datetime | None = None) -> int:
         clock = now or datetime.now(UTC)
@@ -265,36 +263,31 @@ class XmarketInputs:
         identity = {"asset": notice.asset, "contract_id": notice.condition_id,
                     "token_id": notice.up_token_id, "slug": notice.slug,
                     "opens_at": notice.issued.isoformat(), "closes_at": notice.expires.isoformat()}
-        previous = (await asyncio.to_thread(self._previous_pm, notice.asset, clock)
-                    if clock.minute % 15 <= 1 else None)
-        identities = [previous, identity] if previous is not None else [identity]
-        saved = 0
-        for item in identities:
-            end = min(clock, timestamp(item["closes_at"]))
-            response = await client.get(POLY_HISTORY, params={"market": item["token_id"],
-                "startTs": int(timestamp(item["opens_at"]).timestamp()),
-                "endTs": int(end.timestamp()), "fidelity": 1})
-            response.raise_for_status()
-            if response.is_redirect or len(response.content) > 100_000:
-                raise ValueError("unbounded PM history response")
-            received = now or datetime.now(UTC)
-            points = parse_points("polymarket", response.json(), identity=item, observed_at=received)
-            # The quote diagnostic has its own source time and is never a model input.
-            if item is identity:
-                for row in points:
-                    if abs((timestamp(row["at"]) - notice.quote_at).total_seconds()) <= 60:
-                        row.update(yes_bid=getattr(notice, "up_bid", None), yes_ask=notice.up_ask,
-                                   diagnostic_quote_at=notice.quote_at.isoformat())
-            saved += await asyncio.to_thread(self.record, points)
+        response = await client.get(POLY_HISTORY, params={"market": identity["token_id"],
+            "startTs": int(notice.issued.timestamp()),
+            "endTs": int(clock.timestamp()), "fidelity": 1})
+        response.raise_for_status()
+        if response.is_redirect or len(response.content) > 100_000:
+            raise ValueError("unbounded PM history response")
+        received = now or datetime.now(UTC)
+        points = parse_points("polymarket", response.json(), identity=identity,
+                              observed_at=received)
+        # The quote diagnostic has its own source time and is never a model input.
+        for row in points:
+            if abs((timestamp(row["at"]) - notice.quote_at).total_seconds()) <= 60:
+                row.update(yes_bid=getattr(notice, "up_bid", None), yes_ask=notice.up_ask,
+                           diagnostic_quote_at=notice.quote_at.isoformat())
+        saved = await asyncio.to_thread(self.record, points)
         # Isolate optional lag repair from the authoritative live capture:
         # historical fetch/API/schema problems must not discard new native rows.
         try:
-            saved += await self._recover_pm_60m_lag(
+            saved += await self._recover_pm_lags(
                 asset=notice.asset, client=client, clock=clock,
+                captured_contract=identity["contract_id"],
                 fixed_observation_time=now is not None)
         except Exception:  # optional verified future-only input repair
             logging.getLogger(__name__).warning(
-                "RivaL XMarket PM 60m lag recovery unavailable asset=%s",
+                "RivaL XMarket PM lag recovery unavailable asset=%s",
                 notice.asset, exc_info=True)
         return saved
 

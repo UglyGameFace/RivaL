@@ -198,10 +198,10 @@ _CHECK_LABELS = (
 def proof_progress_text(proof: dict) -> str:
     """One short verdict line per evaluation; never imply execution profits.
 
-    Each line is the top candidate for one horizon with its five proof
-    checks as ✓/✗ — no prose, no counts. When the quote check fails,
-    the missing/duplicate counts ride along in one parenthetical, so
-    the reason the quotes fail stays visible. The paper-cost footer
+    Each line shows five proof checks as ✓/✗. When quotes fail, show
+    the actual ratio AND minimum counts (eligible, completed, trades),
+    plus missing/duplicate observations. Thus 100% raw coverage cannot
+    be mistaken for full quote qualification. The paper-cost footer
     stays: cost tests are assumed fees, real fills are NOT verified.
     """
     if not proof["evaluations"]:
@@ -225,16 +225,27 @@ def proof_progress_text(proof: dict) -> str:
         for key, label in _CHECK_LABELS:
             part = f"{label} {'✓' if checks.get(key) else '✗'}"
             if key == "quote_coverage" and not checks.get(key):
-                extra = ", ".join(
-                    f"{value} {name}"
-                    for value, name in (
-                        (candidate.get("missing_quote_windows"), "missing"),
-                        (candidate.get("duplicate_target_rows"), "dup"),
-                    )
-                    if isinstance(value, int) and value > 0
-                )
-                if extra:
-                    part += f" ({extra})"
+                # A 100% ratio can still mean only 3/150 paired exits.
+                # Expose each independent gate rather than labeling the
+                # whole conjunction "coverage" without an explanation.
+                coverage = candidate["quote_coverage"]
+                reasons = [f"{coverage:.1%} coverage"]
+                for field, label, minimum in (
+                    ("eligible_quotes", "eligible", MIN_WINDOWS),
+                    ("closed_quotes", "closed", MIN_WINDOWS),
+                    ("trades", "trades", MIN_TRADES),
+                ):
+                    value = candidate[field]
+                    if value < minimum:
+                        reasons.append(f"{value}/{minimum} {label}")
+                for field, label in (
+                    ("missing_quote_windows", "missing"),
+                    ("duplicate_target_rows", "dup"),
+                ):
+                    value = candidate.get(field)
+                    if isinstance(value, int) and value > 0:
+                        reasons.append(f"{value} {label}")
+                part += f" ({', '.join(reasons)})"
             parts.append(part)
         lines.append(f"{scope} {candidate['name']}: " + " · ".join(parts))
     return fit_embed_field_value(

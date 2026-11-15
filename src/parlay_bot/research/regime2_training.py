@@ -118,10 +118,6 @@ assert ARCHIVE_FEATURE_DIGEST != FEATURE_DIGEST
 assert ARCHIVE_MODEL_VERSION == "archive-offline-v1"
 
 
-def _sigmoid(x: float) -> float:
-    return 1 / (1 + math.exp(-max(-30.0, min(30.0, x))))
-
-
 def trending_mask(closes):
     """Per-stream trending mask over a closes Series (bar-close index).
 
@@ -634,23 +630,12 @@ def probability(doc: dict, vector) -> float:
     Standardised with the artifact's train-only standardiser (missing
     groups contribute the group mean, i.e. standardised 0), Platt
     calibrated, clamped to [0.02, 0.98]."""
-    import numpy as np
+    from parlay_bot.research.logistic_runtime import calibrated_probability
 
     validate(doc)
     if len(vector) != len(FEATURES):
         raise ValueError("wrong regime_v2 feature count")
-    mean = np.array(doc["standardizer"]["mean"], dtype=float)
-    std = np.array(doc["standardizer"]["std"], dtype=float)
-    values = np.array(vector, dtype=float)
-    x = _standardize_apply(values, mean, std)
-    raw = _sigmoid(float(np.hstack([[1.0], x]) @ np.array(doc["weights"], dtype=float)))
-    calibration = doc["calibration"]
-    calibrated = _sigmoid(
-        float(calibration["a"])
-        * math.log(max(1e-6, min(1 - 1e-6, raw)) / (1 - max(1e-6, min(1 - 1e-6, raw))))
-        + float(calibration["b"])
-    )
-    return float(min(SERVE_CLAMP[1], max(SERVE_CLAMP[0], calibrated)))
+    return calibrated_probability(doc, vector, serve_clamp=SERVE_CLAMP)
 
 
 def artifact_identity(doc: dict) -> dict:

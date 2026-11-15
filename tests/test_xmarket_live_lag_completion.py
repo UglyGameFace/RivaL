@@ -1,6 +1,7 @@
 """Complete native PM inputs before genuine future XMarket shadow issuance."""
 from __future__ import annotations
 
+import builtins
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -167,8 +168,9 @@ async def test_live_recovery_stamps_each_response_after_fetch(learning_store, mo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("horizon", [15, 60])
+@pytest.mark.parametrize("scientific_available", [True, False])
 async def test_recovered_inputs_issue_immutable_shadows_through_real_cycle(
-        learning_store, monkeypatch, horizon):
+        learning_store, monkeypatch, horizon, scientific_available):
     boundary = NOW.replace(minute=0, second=0, microsecond=0)
     clock = boundary + timedelta(minutes=3)
     market = PerpetualMarketStore(learning_store)
@@ -212,6 +214,15 @@ async def test_recovered_inputs_issue_immutable_shadows_through_real_cycle(
         assert conn.execute("SELECT COUNT(*) AS n FROM rival_model_shadow_forecasts "
             "WHERE family='xmarket_v1'").fetchone()["n"] == 0
     monkeypatch.setattr(forward_audit, "ISSUE_XMARKET_V1_CHALLENGERS", True)
+    if not scientific_available:
+        actual_import = builtins.__import__
+
+        def without_scientific_packages(name, *args, **kwargs):
+            if name.split(".")[0] in ("numpy", "pandas", "sklearn"):
+                raise ModuleNotFoundError(name)
+            return actual_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", without_scientific_packages)
     monitor.run_once(now=clock)
     with learning_store.connect() as conn:
         rows = [dict(r) for r in conn.execute("SELECT * FROM rival_model_shadow_forecasts "

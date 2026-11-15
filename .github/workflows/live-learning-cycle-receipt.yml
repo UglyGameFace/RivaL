@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require current successful main deployment
+      - name: Require current verified native Discloud source
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -45,9 +45,9 @@ jobs:
               echo "check=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            deploys="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_ID/jobs" --jq '[.jobs[].steps[]? | select(.name == "Deploy tested RivaL app without replacing its host environment" and .conclusion == "success")] | length')"
-            if [[ "$deploys" != "1" ]]; then
-              echo "::notice::Release did not actually upload to Discloud."
+            verified="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_ID/jobs" --jq '[.jobs[].steps[]? | select(.name == "Verify native Discloud source parity" and .conclusion == "success")] | length')"
+            if [[ "$verified" != "1" ]]; then
+              echo "::notice::Native Discloud source parity not proven; no host-version claim."
               echo "check=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi

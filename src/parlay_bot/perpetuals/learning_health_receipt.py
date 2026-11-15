@@ -152,6 +152,79 @@ def _future_proof(store, now: datetime) -> dict:
 
 
 
+
+def _xmarket_forward_handoff(progress: dict, source_proof: dict) -> dict:
+    """Reconcile issued scopes with stored source-exact cost evaluations.
+
+    This is a read-only correspondence check, not a second cost evaluator.
+    Unsupported quote venues and absent/stale source evaluations remain
+    UNKNOWN, never zero percent coverage or a failed trading result.
+    """
+    scope_rows = progress.get("scope_progress")
+    evaluated = source_proof.get("scopes")
+    if (source_proof.get("status") == "unavailable"
+            or not isinstance(scope_rows, list)
+            or not isinstance(evaluated, list)):
+        return {"status": "unavailable", "does_not_prove_edge": True}
+
+    fitted = [
+        row for row in scope_rows
+        if int(row.get("stored_gate_passing_artifacts") or 0) > 0
+    ]
+    reported = []
+    for fitted_scope in fitted:
+        asset = fitted_scope["asset"]
+        horizon = int(fitted_scope["horizon_minutes"])
+        issued = int(fitted_scope.get("shadow_rows_24h") or 0)
+        sources = [
+            row for row in evaluated
+            if row.get("asset") == asset
+            and row.get("horizon_minutes") == horizon
+        ]
+        fresh_valid = [
+            row for row in sources
+            if row.get("fresh") is True and row.get("status") == "recorded"
+        ]
+        if not issued:
+            status = "not_issuing"
+        elif fresh_valid:
+            status = "source_evaluation_recorded"
+        elif sources:
+            status = "stale_or_invalid_source_evaluation"
+        else:
+            status = "no_supported_source_evaluation"
+        reported.append({
+            "asset": asset,
+            "horizon_minutes": horizon,
+            "issued_24h": issued,
+            "status": status,
+            "source_evaluations": len(sources),
+            "fresh_valid_source_evaluations": len(fresh_valid),
+            "quote_gate_passing_sources": sum(
+                row.get("checks", {}).get("quote_coverage") is True
+                for row in fresh_valid
+            ),
+            "qualified_paper_sources": sum(
+                row.get("qualified_paper") is True for row in fresh_valid
+            ),
+        })
+    reported.sort(key=lambda row: (row["asset"], row["horizon_minutes"]))
+    return {
+        "status": "recorded",
+        "fitted_scopes": len(reported),
+        "issuing_scopes": sum(row["issued_24h"] > 0 for row in reported),
+        "issuing_scopes_with_fresh_source_evaluation": sum(
+            row["issued_24h"] > 0 and row["fresh_valid_source_evaluations"] > 0
+            for row in reported
+        ),
+        "issuing_scopes_missing_supported_source_evaluation": sum(
+            row["status"] == "no_supported_source_evaluation" for row in reported
+        ),
+        "scopes": reported,
+        "does_not_prove_edge": True,
+    }
+
+
 def _actual_learning_progress(store, now: datetime) -> dict:
     """Check stored *changes*, not whether the job heartbeat said 'learning'.
 
@@ -245,16 +318,21 @@ def read_receipt() -> dict:
             and learning.get("math_ok") is True
             and learning.get("model_review_ok") is True
         )
+        xmarket = _xmarket_progress(store, now)
+        forward_proof = _future_proof(store, now)
+        forward_proof["xmarket_v1"]["scope_handoff"] = (
+            _xmarket_forward_handoff(xmarket, forward_proof["xmarket_v1"])
+        )
         return {
             "outcome": "verified" if both_fresh else "unverified",
             "forecast": forecast,
             "learning": learning,
             "actual_learning": _actual_learning_progress(store, now),
             "recent_forward_calls": read_forward_calls(store, now),
-            "forward_proof": _future_proof(store, now),
+            "forward_proof": forward_proof,
             "path_targets": _path_target_progress(store, now),
             "polymarket_contest": _contest_progress(store, now),
-            "xmarket": _xmarket_progress(store, now),
+            "xmarket": xmarket,
             "research_loop": _research_progress(store, settings),
             "runtime_diagnostics": _runtime_diagnostics(store, now),
             "does_not_prove_prediction_edge": True,

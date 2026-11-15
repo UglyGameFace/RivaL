@@ -439,7 +439,7 @@ async def test_performance_page_uses_the_one_name_set(tmp_path, monkeypatch):
     carries the single disclaimer."""
     from parlay_bot.discord_app import trial_board
 
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     rows = trial_board.fold([("okx", "BTC-okx", {
         family: {"days": 9, "targets": 400, "forward_gain": .001}
         for family in ("regime_v1", "regime_live_v1", "regime_live_fast_v1",
@@ -461,7 +461,7 @@ async def test_performance_page_uses_the_one_name_set(tmp_path, monkeypatch):
                 "regime_live_v1", "live-learning", "pooled 6-year model",
                 "price feeds", "shadow", "challenger", "settled"):
         assert old not in lowered, old
-    for new in ("coin flip", "error", "main model", "trend-only", "trend learn",
+    for new in ("base-rate forecast", "error", "main model", "trend-only", "trend learn",
                 "6-year", "exchanges live", "graded"):
         assert new in lowered, new
     assert embeds[2].footer.text == RESEARCH_FOOTER + " · Per-model detail: Detailed Research"

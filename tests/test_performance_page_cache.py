@@ -199,7 +199,7 @@ def test_warmers_tolerate_a_failing_key(monkeypatch):
 async def test_render_reuses_cached_exchange_and_polymarket(tmp_path, monkeypatch):
     from tests.test_performance_overview import _close, _fields, _make_home, _score
 
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     try:
         exchange_calls = []
         poly_calls = []

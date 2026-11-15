@@ -63,3 +63,10 @@ jobs:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         run: python tools/discloud_native_release.py
+
+      - name: Verify deployed performance panels against PostgreSQL
+        if: steps.gate.outputs.check == 'true'
+        env:
+          DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+          DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+        run: python tools/discloud_performance_panels.py

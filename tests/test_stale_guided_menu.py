@@ -194,6 +194,29 @@ async def test_stale_coin_select_recovers_with_chosen_coin(tmp_path):
         bot.store.close()
 
 
+@pytest.mark.asyncio
+async def test_stale_performance_select_reopens_the_selected_panel(tmp_path, monkeypatch):
+    from tests.test_performance_overview import _patch_live_reads
+
+    bot = _client(tmp_path)
+    _patch_live_reads(monkeypatch)
+    try:
+        views = build_stale_guided_menu_views(lambda owner: _home(bot, owner))
+        interaction = _interaction()
+        item = _item_by_custom_id(views[3], "rival:guided:performance-section")
+        item._values = ["models"]
+        await item.callback(interaction)
+        fresh = interaction.edit_original_response.await_args.kwargs["view"]
+        assert fresh.owner_id == interaction.user.id
+        assert fresh.page == "performance" and fresh.performance_section == "models"
+        assert fresh.note == _STALE_NOTE
+        fresh.stop()
+    finally:
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()
+
+
 def _seed_watch(market, now):
     market.initialize()
     opened = now - timedelta(minutes=6)

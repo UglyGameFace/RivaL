@@ -34,7 +34,7 @@ def _all_fields(embeds) -> dict[str, str]:
     return out
 
 
-def _make_home(tmp_path):
+def _make_home(tmp_path, *, section="overview"):
     bot = _client(tmp_path)
     home = _home(bot)
     now = datetime.now(UTC)
@@ -55,6 +55,7 @@ def _make_home(tmp_path):
         "market_baseline_brier": .2222,
     }
     home.navigate("performance")
+    home.performance_section = section
     return bot, home
 
 
@@ -80,6 +81,8 @@ def _patch_live_reads(monkeypatch, *, trials=None, **_ignored):
     })
     monkeypatch.setattr(home_module, "_trial_board_record", lambda *_: trials or {
         "rows": [], "markets": 0, "trials": 0, "passed": 0, "stops": 0})
+    monkeypatch.setattr(home_module, "_xmarket_record", lambda *_: {
+        "status": "unavailable"})
     monkeypatch.setattr(home_module, "_calibration_record", lambda *_: {
         "bands": [], "regimes": {}, "window_days": 7})
 
@@ -90,7 +93,7 @@ HEALTH = "⚙️ Running and learning"
 
 @pytest.mark.asyncio
 async def test_page_is_verdict_first_then_scoreboard_trials_and_health(tmp_path, monkeypatch):
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
 
     def heavy_training(*_):
         raise AssertionError("full Drive/model summary must not run on Performance")
@@ -121,12 +124,12 @@ async def test_page_is_verdict_first_then_scoreboard_trials_and_health(tmp_path,
         assert "too few to judge — 7 graded" in score and "(3 of 7)" in score
         # The fixture's 7 decided vs 6 scored is caught, never shown as fine.
         assert "These numbers don't add up" in score
-        assert "vs a coin flip: behind (0.310 vs 0.240)" in score
+        assert "vs a base-rate forecast: behind (0.310 vs 0.240)" in score
         assert "7 of 8 predictions checked" in score and "main model only" in score
         health = fields[HEALTH]
         assert "✅ grading/review just now" in health and "✅ predictions just now" in health
         assert "✅ 1/1 exchanges live" in health
-        assert "**Getting more accurate?** too early to tell" in health
+        assert "**Baseline skill:** too early to judge" in health
         assert "No test models have scored results here yet." in embeds[1].description
         assert "All markets: 0 on trial · 0 passed · 0 cut early for losing" in embeds[1].description
         assert max(map(len, fields.values())) < 1024
@@ -138,7 +141,7 @@ async def test_page_is_verdict_first_then_scoreboard_trials_and_health(tmp_path,
 
 @pytest.mark.asyncio
 async def test_slow_or_broken_reads_say_so_and_hide_nothing_else(tmp_path, monkeypatch):
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     now = datetime.now(UTC)
     _patch_live_reads(monkeypatch)
     monkeypatch.setattr(home_module, "_performance_benefit", lambda *_:
@@ -157,10 +160,10 @@ async def test_slow_or_broken_reads_say_so_and_hide_nothing_else(tmp_path, monke
     try:
         embeds = await home.render_embeds()
         fields = _all_fields(embeds)
-        assert "vs a coin flip: behind" in fields[SCORE]
+        assert "vs a base-rate forecast: behind" in fields[SCORE]
         assert "**vs Polymarket odds — behind**" in fields[SCORE]
         health = fields[HEALTH]
-        assert "**Getting more accurate?** couldn't check right now" in health
+        assert "**Baseline skill:** couldn't check right now" in health
         assert "grading/review: couldn't check" in health
         assert "feeds: couldn't check" in health
         assert "✅ predictions just now" in health
@@ -171,7 +174,7 @@ async def test_slow_or_broken_reads_say_so_and_hide_nothing_else(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_a_timed_out_improvement_check_says_it_is_still_calculating(tmp_path, monkeypatch):
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     _patch_live_reads(monkeypatch)
     monkeypatch.setattr(home_module, "_performance_benefit", lambda *_:
                         (_ for _ in ()).throw(TimeoutError("independent score unavailable")))
@@ -207,7 +210,7 @@ async def test_every_model_on_trial_is_one_row_from_the_hourly_check(tmp_path, m
     folds the exchanges into one row per model, and marks cut models."""
     from parlay_bot.perpetuals.early_stop import EarlyStop
 
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     _patch_live_reads(monkeypatch)
     monkeypatch.setattr(home_module, "_trial_board_record", _real_trial_board_record)
     for venue, gain in (("okx", .004), ("bybit", .002)):
@@ -269,7 +272,7 @@ def _real_trial_board_record(market, asset, horizon):
 
 @pytest.mark.asyncio
 async def test_polymarket_contest_table_shows_only_when_scores_exist(tmp_path, monkeypatch):
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     _patch_live_reads(monkeypatch)
     try:
         home.contest_models = lambda *_: None        # league not computed yet

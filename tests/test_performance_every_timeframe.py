@@ -103,7 +103,7 @@ def test_the_ai_review_call_is_live_and_only_its_grades_are_cached(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("horizon", [15, 60])
 async def test_a_trial_read_that_fails_is_shown_not_dropped(tmp_path, monkeypatch, horizon):
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     home.horizon = horizon
 
     def slow(*_):
@@ -121,7 +121,7 @@ async def test_a_trial_read_that_fails_is_shown_not_dropped(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_nothing_is_flagged_when_every_read_worked(tmp_path, monkeypatch):
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     home.horizon = 15
     _patch_live_reads(monkeypatch)
     try:
@@ -140,7 +140,7 @@ async def test_nothing_is_flagged_when_every_read_worked(tmp_path, monkeypatch):
 async def test_the_learning_count_says_when_it_counts_whole_windows(
         tmp_path, monkeypatch, horizon, unit):
     """1,015 at 15 minutes vs 3,020 at 5 is by design (one per window)."""
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     home.horizon = horizon
     _patch_live_reads(monkeypatch)
     monkeypatch.setattr(home_module, "_performance_benefit", lambda *_: {
@@ -172,7 +172,7 @@ def _intel(age):
 async def test_an_old_ai_review_is_not_shown_as_a_call_for_the_next_candle(
         tmp_path, monkeypatch, horizon, age_minutes, expected):
     from datetime import timedelta
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     home.horizon = horizon
     _patch_live_reads(monkeypatch)
     monkeypatch.setattr(home_module, "_intelligence_status",

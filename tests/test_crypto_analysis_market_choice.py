@@ -189,6 +189,7 @@ async def test_dashboard_shows_polymarket_outcomes_without_market_choice(tmp_pat
     home = _home(bot)
     try:
         home.navigate("performance")
+        home.performance_section = "details"
         assert home.live_source is None
         home._buttons()
         assert all(x.custom_id != "rival:guided:market" for x in home.children)
@@ -229,6 +230,7 @@ async def test_polymarket_stats_do_not_require_exchange_or_drive(tmp_path):
     home = _home(bot)
     try:
         home.navigate("performance")
+        home.performance_section = "details"
 
         def unrelated_training(_asset, _horizon):
             raise RuntimeError("Unrelated exchange/Drive query failed")
@@ -251,7 +253,7 @@ async def test_polymarket_stats_do_not_require_exchange_or_drive(tmp_path):
         home.navigate("trust")
         assert home.page == "performance"
         detail = await home.render_embeds()
-        assert len({x.name for e in detail for x in e.fields}) == 3
+        assert len({x.name for e in detail for x in e.fields}) == 2
     finally:
         home.stop()
         await bot.zip_resolver.aclose()
@@ -309,6 +311,7 @@ async def test_exchange_performance_one_page_shows_sample_and_learning(
             "forward_brier": None, "market_baseline_brier": None,
         }
         home.navigate("performance")
+        home.performance_section = "details"
         home._buttons()
         assert "Refresh" in _labels(home)
         assert "Learning Details" not in _labels(home)
@@ -326,7 +329,7 @@ async def test_exchange_performance_one_page_shows_sample_and_learning(
         assert "Too early to compare with Polymarket's odds" in body
         assert "✅ grading/review just now" in body
         assert "Does it make money? Not proven yet" in body
-        assert "Getting more accurate?** couldn't check right now" in body
+        assert "Baseline skill:** couldn't check right now" in body
         assert "practice usdt" not in body.lower()
     finally:
         home.stop()

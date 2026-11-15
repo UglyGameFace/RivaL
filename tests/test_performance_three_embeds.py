@@ -198,7 +198,7 @@ def test_three_embeds_carry_every_number_from_the_old_card():
     assert "✅ grading/review just now" in health and "✅ predictions just now" in health
     assert "✅ 1/1 exchanges live" in health
     assert "⚠️ 279/288 cycles in 24h, 458 predictions skipped (ran late)" in health
-    assert ("**Getting more accurate?** no, not beating the coin flip "
+    assert ("**Baseline skill:** has not passed the base-rate and coin-flip checks "
             "(3,263 results over 12 days)") in health
     assert ("**AI reviewer:** automatic reviews are paused (last one 4 days ago); "
             "it still answers when asked") in health
@@ -250,7 +250,7 @@ def test_no_contest_means_the_third_embed_is_just_health():
 @pytest.mark.asyncio
 async def test_render_embeds_sends_three_embeds_for_the_performance_page(
         tmp_path, monkeypatch):
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     _patch_live_reads(monkeypatch)
     try:
         embeds = await home.render_embeds()
@@ -264,7 +264,7 @@ async def test_render_embeds_sends_three_embeds_for_the_performance_page(
 
 @pytest.mark.asyncio
 async def test_render_embeds_still_sends_one_embed_for_other_pages(tmp_path, monkeypatch):
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     _patch_live_reads(monkeypatch)
     try:
         home.navigate("help")

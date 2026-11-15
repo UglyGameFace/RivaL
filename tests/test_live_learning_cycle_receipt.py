@@ -1,10 +1,13 @@
 """Host production learning receipt rejects skipped and fabricated health."""
 from __future__ import annotations
 
+import json
 import runpy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from parlay_bot.perpetuals import learning_health_receipt as host
 
@@ -276,3 +279,24 @@ def test_actual_learning_receipt_reports_absent_lineage_without_inventing_progre
     assert result["lab"]["status"] == "not_initialized"
     assert result["streams_with_verified_weight_updates"] == 0
     assert result["proves_improvement"] is False
+
+
+def test_read_only_xmarket_diagnostic_marker_is_required_and_sanitized():
+    value = {"status": "recorded", "scopes": [],
+             "does_not_prove_prospective_predictions": True, "read_only": True}
+    stdout = RELAY["XMARKET_MARKER"] + json.dumps(value)
+    assert RELAY["parse_xmarket_probe"](stdout) == value
+    for invalid in (
+        {},
+        {**value, "read_only": False},
+        {**value, "does_not_prove_prospective_predictions": False},
+        {**value, "status": "verified"},
+    ):
+        with pytest.raises(ValueError):
+            RELAY["parse_xmarket_probe"](
+                RELAY["XMARKET_MARKER"] + json.dumps(invalid))
+    with pytest.raises(ValueError, match="missing XMarket diagnostic"):
+        RELAY["parse_xmarket_probe"]("no diagnostic")
+
+    assert "xmarket_shadow_diagnostic import main as shadow_probe" in RELAY["CMD"]
+    assert "main();shadow_probe()" in RELAY["CMD"]

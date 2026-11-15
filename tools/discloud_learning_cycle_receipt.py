@@ -1,6 +1,6 @@
 """Read-only production heartbeat acceptance via existing Discloud console API.
 
-Runs in GitHub Actions after the actual RivaL main application upload.
+Runs in GitHub Actions after verified native Discloud source parity.
 Does not spend AI allowance, execute model inference, or mutate PostgreSQL.
 """
 from __future__ import annotations
@@ -11,11 +11,13 @@ import sys
 from urllib import error, parse, request
 
 MARKER = "RIVAL_LEARNING_CYCLE_RECEIPT="
+XMARKET_MARKER = "RIVAL_XMARKET_SHADOW_DIAGNOSTIC="
 CMD = (
     "python -c 'import sys;"
     'sys.path.insert(0,"src");'
     "from parlay_bot.perpetuals.learning_health_receipt import main;"
-    "main()'"
+    "from parlay_bot.perpetuals.xmarket_shadow_diagnostic import main as shadow_probe;"
+    "main();shadow_probe()'"
 )
 
 
@@ -39,6 +41,24 @@ def parse_receipt(stdout: str) -> dict:
                     raise ValueError("invalid cycle status")
             return report
     raise ValueError("missing host learning receipt")
+
+
+
+def parse_xmarket_probe(stdout: str) -> dict:
+    """Structured source-stage evidence; never accept success without safety flags."""
+    for line in reversed(stdout.splitlines()):
+        if line.startswith(XMARKET_MARKER):
+            probe = json.loads(line[len(XMARKET_MARKER):])
+            if not isinstance(probe, dict) or probe.get("status") not in (
+                "recorded", "read_unavailable",
+            ):
+                raise ValueError("invalid XMarket diagnostic status")
+            if probe.get("read_only") is not True or probe.get(
+                "does_not_prove_prospective_predictions"
+            ) is not True:
+                raise ValueError("invalid XMarket diagnostic safety flags")
+            return probe
+    raise ValueError("missing XMarket diagnostic")
 
 
 def accepted(report: dict) -> bool:
@@ -72,7 +92,13 @@ def main() -> int:
         with request.urlopen(req, timeout=110) as response:
             data = json.load(response)
         shell = data.get("apps", {}).get("shell", {})
-        report = parse_receipt(str(shell.get("stdout", "")))
+        stdout = str(shell.get("stdout", ""))
+        report = parse_receipt(stdout)
+        try:
+            shadow = parse_xmarket_probe(stdout)
+        except (ValueError, KeyError, TypeError):
+            shadow = {"status": "read_unavailable",
+                      "does_not_prove_prospective_predictions": True}
     except (error.URLError, TimeoutError, ValueError, KeyError,
             OSError, TypeError, AttributeError) as exc:
         # Do not echo shell output, SQL, database URL, app token or API errors.
@@ -80,6 +106,7 @@ def main() -> int:
         return 1
     # The only host data emitted are bounded aggregate worker metrics.
     print("RivaL learning host receipt:", json.dumps(report, sort_keys=True))
+    print("XMarket shadow input diagnosis:", json.dumps(shadow, sort_keys=True))
     return 0 if accepted(report) else 1
 
 

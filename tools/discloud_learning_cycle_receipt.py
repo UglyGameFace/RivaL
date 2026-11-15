@@ -1,6 +1,6 @@
 """Read-only production heartbeat acceptance via existing Discloud console API.
 
-Runs in GitHub Actions after the actual RivaL main application upload.
+Runs in GitHub Actions after verified native Discloud source parity.
 Does not spend AI allowance, execute model inference, or mutate PostgreSQL.
 """
 from __future__ import annotations
@@ -10,7 +10,8 @@ import os
 import sys
 from urllib import error, parse, request
 
-MARKER = "RIVAL_LEARNING_CYCLE_RECEIPT="\nXMARKET_MARKER = "RIVAL_XMARKET_SHADOW_DIAGNOSTIC="
+MARKER = "RIVAL_LEARNING_CYCLE_RECEIPT="
+XMARKET_MARKER = "RIVAL_XMARKET_SHADOW_DIAGNOSTIC="
 CMD = (
     "python -c 'import sys;"
     'sys.path.insert(0,"src");'

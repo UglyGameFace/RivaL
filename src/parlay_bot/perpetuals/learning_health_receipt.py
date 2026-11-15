@@ -47,16 +47,45 @@ def _future_proof(store, now: datetime) -> dict:
     """
     try:
         snapshots = []
+        xmarket_scopes = []
         unavailable = 0
         for venue, currency in sorted(SUPPORTED_QUOTE_SOURCES):
             for asset in ("BTC", "ETH", "SOL", "XRP"):
                 result = proof_progress(store, asset=asset, venue=venue, now=now)
                 unavailable += int(result["status"] == "unavailable")
                 for item in result["evaluations"]:
+                    if item.get("quote") != currency:
+                        continue
+                    # Each source's persisted promotion verdict contains every
+                    # candidate, not merely the highest-ranked family. Expose
+                    # XMarket's own 21-day/quote/cost gates without rerunning
+                    # governance or touching the forecast/quote ledgers.
+                    xmarket = item.get("xmarket_v1")
+                    if isinstance(xmarket, dict):
+                        scoped = {
+                            "asset": asset, "venue": venue, "quote": currency,
+                            "horizon_minutes": item["horizon"],
+                            "fresh": bool(item["fresh"]),
+                            "status": ("recorded" if xmarket.get("valid") is True
+                                       else "invalid_saved_evidence"),
+                            "qualified_paper": bool(
+                                item["fresh"] and xmarket.get("qualified_paper")
+                                and xmarket.get("valid") is True
+                            ),
+                        }
+                        if xmarket.get("valid") is True:
+                            scoped.update({
+                                "targets": xmarket["targets"],
+                                "days": xmarket["days"],
+                                "eligible_quotes": xmarket["eligible_quotes"],
+                                "closed_quotes": xmarket["closed_quotes"],
+                                "quote_coverage": xmarket["quote_coverage"],
+                                "missing_quote_windows": xmarket["missing_quote_windows"],
+                                "checks": dict(xmarket["checks"]),
+                            })
+                        xmarket_scopes.append(scoped)
                     candidate = item["candidate"]
                     if candidate is None or not candidate.get("valid"):
-                        continue
-                    if item["quote"] != currency:
                         continue
                     snapshots.append({
                         "asset": asset, "venue": venue, "quote": currency,
@@ -70,6 +99,22 @@ def _future_proof(store, now: datetime) -> dict:
                         "qualified_paper": item["paper_qualified"],
                         "checks": candidate["checks"],
                     })
+        xmarket_proof = {
+            "status": ("recorded" if xmarket_scopes else
+                       "unavailable" if unavailable else "no_evaluations"),
+            "evaluated_scopes": len(xmarket_scopes),
+            "fresh_scopes": sum(
+                row["fresh"] and row["status"] == "recorded"
+                for row in xmarket_scopes
+            ),
+            "qualified_paper_scopes": sum(
+                row["qualified_paper"] for row in xmarket_scopes
+            ),
+            "scopes": sorted(xmarket_scopes, key=lambda row: (
+                row["asset"], row["horizon_minutes"], row["venue"],
+            )),
+            "does_not_prove_real_fills": True,
+        }
         if snapshots:
             # Report an actual single exact-source candidate, never mix the
             # best days of one venue with the quotes of another candidate.
@@ -84,19 +129,25 @@ def _future_proof(store, now: datetime) -> dict:
                 "fresh_scopes": sum(r["fresh"] for r in snapshots),
                 "qualified_paper_scopes": sum(r["qualified_paper"] for r in snapshots),
                 "best_exact_source": best,
+                "xmarket_v1": xmarket_proof,
                 "does_not_prove_real_fills": True,
             }
         return {
             "status": "unavailable" if unavailable else "no_evaluations",
             "evaluated_scopes": 0, "fresh_scopes": 0,
             "qualified_paper_scopes": 0, "best_exact_source": None,
+            "xmarket_v1": xmarket_proof,
             "does_not_prove_real_fills": True,
         }
     except Exception:  # noqa: BLE001 - optional research cannot mask a fresh heartbeat
         return {
             "status": "unavailable", "evaluated_scopes": 0,
             "fresh_scopes": 0, "qualified_paper_scopes": 0,
-            "best_exact_source": None, "does_not_prove_real_fills": True,
+            "best_exact_source": None, "xmarket_v1": {
+                "status": "unavailable", "evaluated_scopes": 0,
+                "fresh_scopes": 0, "qualified_paper_scopes": 0,
+                "scopes": [], "does_not_prove_real_fills": True,
+            }, "does_not_prove_real_fills": True,
         }
 
 

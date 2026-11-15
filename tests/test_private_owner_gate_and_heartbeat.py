@@ -184,8 +184,8 @@ async def test_heartbeat_survives_ping_errors_and_requires_https(caplog):
     assert "hc-ping.com" not in caplog.text
 
 
-def test_deploys_only_current_main_and_serializes_discloud_uploads():
-    """Fast merges must not deploy stale commits over running production."""
+def test_native_discloud_observer_checks_only_current_main_without_uploading():
+    """A superseded CI commit cannot be accepted as current host source."""
     workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows"
                 / "discloud-deploy.yml").read_text(encoding="utf-8")
     assert "group: rival-production-release-main" in workflow
@@ -193,8 +193,10 @@ def test_deploys_only_current_main_and_serializes_discloud_uploads():
     assert "SOURCE_SHA: " + "$" + "{{ github.event.workflow_run.head_sha }}" in workflow
     assert "GH_TOKEN: " + "$" + "{{ github.token }}" in workflow
     assert "set -euo pipefail" in workflow
-    assert 'CURRENT_MAIN_SHA="$(gh api' in workflow
-    assert 'if [[ "$SOURCE_SHA" != "$CURRENT_MAIN_SHA" ]]' in workflow
-    assert "ready=false" in workflow
-    assert "Superseded main CI commit; skipping stale Discloud deployment" in workflow
-    assert "uses: discloud/deploy-action@fae7024653d941a19daa2b6f56d2ae208e008c54" in workflow
+    assert 'current_sha="$(gh api' in workflow
+    assert 'if [[ "$SOURCE_SHA" != "$current_sha" ]]; then' in workflow
+    assert "check=false" in workflow
+    assert "Superseded main CI commit; native deployment check skipped" in workflow
+    assert "Verify native Discloud source parity" in workflow
+    assert "python tools/discloud_native_release.py" in workflow
+    assert "uses: discloud/deploy-action" not in workflow

@@ -8,6 +8,7 @@ per DEDUPE_SECONDS per fingerprint; Sentry still groups the issue.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import os
 import re
@@ -34,13 +35,33 @@ _lock = threading.Lock()
 
 
 def release() -> str | None:
-    """The deployed commit, written next to the package by the release workflow."""
-    path = Path(__file__).with_name("RELEASE_SHA")
+    """Explicit Sentry commit or truthful native-deploy source fingerprint.
+
+    The retired GitHub uploader stamped RELEASE_SHA on the old host. Native
+    GitHub Auto Deploy doesn't stamp it, so reading that leftover file would
+    misidentify fresh deployments as an older commit. Never trust it.
+    """
+    configured = os.environ.get("SENTRY_RELEASE", "").strip()
+    if re.fullmatch(r"[0-9a-f]{7,40}", configured):
+        return configured
+
+    root = Path(__file__).resolve().parents[2]
+    files = [root / name for name in (
+        "main.py", "requirements.txt", "pyproject.toml", "discloud.config",
+    )]
+    files.extend(sorted((root / "src").rglob("*.py")))
+    if len(files) <= 4 or any(not path.is_file() for path in files):
+        return None
+    digest = hashlib.sha256()
     try:
-        value = path.read_text(encoding="ascii").strip()
-    except (OSError, UnicodeError):
-        value = os.environ.get("SENTRY_RELEASE", "").strip()
-    return value if re.fullmatch(r"[0-9a-f]{7,40}", value or "") else None
+        for path in files:
+            digest.update(path.relative_to(root).as_posix().encode())
+            digest.update(bytes((0,)))
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+    except OSError:
+        return None
+    # This is deliberately NOT presented as a Git commit SHA.
+    return "src-" + digest.hexdigest()[:16]
 
 
 def _scrub(value, depth: int = 0):

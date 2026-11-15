@@ -3,11 +3,12 @@ name: CI
 on:
   # The PR already tests each branch commit. Restrict push CI to main so
   # simultaneous push+PR check runs cannot cancel each other and mark a
-  # successful PR unstable. Production release still gates on main CI.
+  # successful PR unstable. Native Discloud Auto Deploy is independent of CI;
+  # the read-only release observer runs after successful main CI.
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch:  # Owner can retest and redeploy current main without dummy commits.
+  workflow_dispatch:  # Owner can retest current main and recheck host source parity.
 
 permissions:
   contents: read

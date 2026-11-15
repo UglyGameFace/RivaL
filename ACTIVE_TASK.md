@@ -1,3 +1,14 @@
+## 2026-11-14 — Discloud native Auto Deploy single-writer repair (current work)
+
+- **Owner-confirmed host state:** Discloud dashboard shows the existing `rivalbot` bound to GitHub `UglyGameFace/RivaL` `main` with native Auto Deploy enabled and latest commit `a547854`. The historical GitHub release workflow also uploaded the bot, causing competing restart routes and skipped-release receipts.
+- **Branch:** `fix/discloud-native-autodeploy-parity-20261114` from `a547854083449f209f1cfd0e1e9582afc987b69d`. PR/CI and live post-merge check pending.
+- **Integrated change proposed:** Retain the `RivaL Production Release` workflow name as a downstream trigger, but remove the GitHub Discloud upload and 15-minute batching delay. On successful current-first-party-main CI only, perform a read-only SHA-256 comparison between the CI checkout and the actual Discloud app's selected on-disk source files; retry briefly for native deploy convergence and fail closed on mismatch. Keep native Auto Deploy as the only production writer, and point both the downstream learning receipt and LFM3 persisted-research acceptance to the newly verified parity step instead of the deleted upload. Preserve the independent daily host DB receipt and ten-minute signed evidence-board schedule. Preserve trustworthy Sentry issue attribution by rejecting stale legacy `RELEASE_SHA` stamps and using a deterministic, explicitly non-commit `src-<fingerprint>` tag when `SENTRY_RELEASE` is not configured. Update docs and regression tests.
+- **Proof boundary:** Source parity is not running-process version/uptime, imported XMarket models, issued prospective shadows, or after-cost edge. Native Discloud may deploy before CI passes; don't treat CI as a deployment gate. Credentials remain in GitHub secrets and are not logged.
+- **Validation:** Targeted mocked console/serialization parity regressions and release workflow static guards added; exact-head CI pending. No production mutations/restarts/training issued by this branch before merge.
+- **Next:** Obtain green exact-head CI, reconcile concurrent PR #591 before merge, verify native source-parity step after merge, then use actual authenticated host PostgreSQL report to diagnose XMarket import/shadow. Keep economic promotion gates unchanged.
+
+---
+
 ## 2026-11-14 — Finish source-verified XMarket training and fix Drive 502 initiation
 
 - **Objective:** Resolve original native archive → full chronological admission → gated fit/publication → authenticated Discloud import → prospective shadow evidence, without another duplicate collector or relaxed model edge gates. Website work paused.

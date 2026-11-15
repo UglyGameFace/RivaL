@@ -353,13 +353,28 @@ class ProspectivePathLedger:
         stamp=utc(now)
         self.initialize()
         with self.store.connect() as conn:
+            # Missing or invalid source candles must not occupy the oldest
+            # batch forever. Use the existing candle primary key to require
+            # a complete, already-observed future path BEFORE the work bound.
+            # The exact grid/source/time checks below remain authoritative.
             waiting=conn.execute(
-                """SELECT * FROM rival_forward_paths
-                   WHERE state='pending' AND target_opened_at<=?
-                    AND target_opened_at>=?
-                   ORDER BY target_opened_at LIMIT ?""",
+                """SELECT p.* FROM rival_forward_paths p
+                   WHERE p.state='pending' AND p.target_opened_at<=?
+                    AND p.target_opened_at>=? AND p.horizon_minutes IN (15,60)
+                    AND (SELECT COUNT(*) FROM perp_market_candles c
+                         WHERE c.venue=p.venue AND c.contract=p.contract
+                           AND c.quote=p.quote AND c.interval_minutes=5
+                           AND c.opened_at>p.issued_at
+                           AND c.opened_at<=p.target_opened_at
+                           AND c.first_observed_at>p.issued_at
+                           AND c.first_observed_at<=? AND c.closed_at<?
+                           AND c.closed_at<=c.first_observed_at
+                        )=p.horizon_minutes/5
+                   ORDER BY p.target_opened_at,p.venue,p.contract,p.quote,
+                            p.horizon_minutes,p.side LIMIT ?""",
                 ((stamp-timedelta(minutes=5)).isoformat(),
-                 (stamp-timedelta(days=14)).isoformat(),MAX_SETTLE),
+                 (stamp-timedelta(days=14)).isoformat(),
+                 stamp.isoformat(),stamp.isoformat(),MAX_SETTLE),
             ).fetchall()
             scored=ambiguous=0
             for p in waiting:

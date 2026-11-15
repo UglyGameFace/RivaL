@@ -9,9 +9,11 @@ import pytest
 
 from parlay_bot.perpetuals.first_passage import trace_barriers
 from parlay_bot.perpetuals.hyperliquid import MarketCandle
+from parlay_bot.perpetuals.learning_health_receipt import _path_target_progress
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.path_forward import (
     HORIZONS,
+    MAX_SETTLE,
     TARGET_VERSION,
     ProspectivePathLedger,
     empirical_paths,
@@ -40,6 +42,167 @@ def _row(c):
             c.closed_at.isoformat(),c.observed_at.isoformat(),
             c.open_price,c.high_price,c.low_price,c.close_price,
             c.volume_base,c.trades)
+
+
+def _future_path(last, *, steps=3):
+    return [replace(
+        last, opened_at=last.opened_at+timedelta(minutes=5*j),
+        closed_at=last.opened_at+timedelta(minutes=5*(j+1), milliseconds=-1),
+        observed_at=last.opened_at+timedelta(minutes=5*(j+1), seconds=2),
+        high_price=last.close_price+.001, low_price=last.close_price-.001,
+    ) for j in range(2, steps+2)]
+
+
+@pytest.mark.parametrize("blocked", ["missing", "observed_before_issue", "future_receipt"])
+def test_unscoreable_old_paths_cannot_starve_new_complete_paths(learning_store, blocked):
+    """A full oldest batch without valid source evidence must not stop progress."""
+    PerpetualMarketStore(learning_store).initialize()
+    ledger=ProspectivePathLedger(learning_store)
+    ledger.initialize()
+    candles=_candles()
+    last=candles[-1]
+    issued=last.observed_at+timedelta(seconds=1)
+    options=empirical_paths(candles,horizon=15,now=issued)
+    future=_future_path(last)
+    now=future[-1].observed_at+timedelta(minutes=1)
+    old=[]
+    with learning_store.connect() as conn:
+        for index in range(MAX_SETTLE//2+1):
+            shift=timedelta(hours=-24, minutes=20*index)
+            prior=replace(last, opened_at=last.opened_at+shift,
+                          closed_at=last.closed_at+shift,
+                          observed_at=last.observed_at+shift)
+            old.append(prior)
+            assert ledger.issue(conn,candles=[prior],asset="BTC",horizon=15,
+                                now=issued+shift,issued_at=issued+shift,options=options)==2
+            if blocked != "missing":
+                for bar in _future_path(prior):
+                    observed=(issued+shift-timedelta(seconds=1)
+                              if blocked == "observed_before_issue"
+                              else now+timedelta(minutes=1))
+                    conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                 _row(replace(bar,observed_at=observed)))
+        assert ledger.issue(conn,candles=candles,asset="BTC",horizon=15,
+                            now=issued,issued_at=issued,options=options)==2
+        for bar in future:
+            conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         _row(bar))
+        frozen=conn.execute("""SELECT reference_opened_at,issued_at,training_sha256,
+                                     tp1_probability,tp2_probability
+                              FROM rival_forward_paths ORDER BY reference_opened_at,side""").fetchall()
+    before=_path_target_progress(learning_store,now)
+    assert before["status"]=="settlement_backlog"
+    assert before["due_pending_paths_14d"]==2*len(old)+2
+    assert ledger.settle(now=now)=={"settled":2,"ambiguous":0}
+    progress=_path_target_progress(learning_store,now)
+    assert progress["status"]=="observed"
+    assert progress["settled_close_targets_24h"]==2
+    assert progress["due_pending_paths_14d"]==2*len(old)
+    # A new worker must not need a process-local skip list to retain progress.
+    restarted=ProspectivePathLedger(learning_store)
+    assert restarted.settle(now=now)=={"settled":0,"ambiguous":0}
+    with learning_store.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS n FROM rival_forward_paths WHERE state='pending'").fetchone()["n"] > MAX_SETTLE
+        assert conn.execute("SELECT COUNT(*) AS n FROM rival_forward_path_targets WHERE state='settled'").fetchone()["n"]==2
+        after=conn.execute("""SELECT reference_opened_at,issued_at,training_sha256,
+                                    tp1_probability,tp2_probability
+                             FROM rival_forward_paths ORDER BY reference_opened_at,side""").fetchall()
+        assert [dict(row) for row in after]==[dict(row) for row in frozen]
+        if blocked == "missing":
+            for bar in _future_path(old[0]):
+                conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                             _row(bar))
+    if blocked == "missing":
+        # A source that later supplies its original complete future path is
+        # reconsidered; incomplete prospects are not discarded as losses.
+        assert restarted.settle(now=now)=={"settled":2,"ambiguous":0}
+
+
+def test_ready_path_batch_remains_bounded_and_drains_across_worker_restarts(learning_store, monkeypatch):
+    from parlay_bot.perpetuals import path_forward
+
+    monkeypatch.setattr(path_forward,"MAX_SETTLE",2)
+    PerpetualMarketStore(learning_store).initialize()
+    ledger=ProspectivePathLedger(learning_store)
+    ledger.initialize()
+    candles=_candles()
+    last=candles[-1]
+    issued=last.observed_at+timedelta(seconds=1)
+    options=empirical_paths(candles,horizon=15,now=issued)
+    now=_future_path(last)[-1].observed_at+timedelta(minutes=1)
+    with learning_store.connect() as conn:
+        for asset in ("BTC","ETH","SOL"):
+            source=replace(last,contract=asset)
+            assert ledger.issue(conn,candles=[source],asset=asset,horizon=15,
+                                now=issued,issued_at=issued,options=options)==2
+            for bar in _future_path(source):
+                conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                             _row(bar))
+    for _ in range(3):
+        assert ProspectivePathLedger(learning_store).settle(now=now)=={
+            "settled":2,"ambiguous":0,
+        }
+    assert ledger.settle(now=now)=={"settled":0,"ambiguous":0}
+    progress=_path_target_progress(learning_store,now)
+    assert progress["settled_close_targets_24h"]==6
+    assert progress["pending_paths_14d"]==progress["due_pending_paths_14d"]==0
+
+
+def test_path_receipt_distinguishes_no_issuance_future_targets_and_backlog(learning_store):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    candles=_candles()
+    last=candles[-1]
+    issued=last.observed_at+timedelta(seconds=1)
+    assert _path_target_progress(learning_store,issued)["status"]=="not_initialized"
+    PerpetualMarketStore(learning_store).initialize()
+    ledger=ProspectivePathLedger(learning_store)
+    ledger.initialize()
+
+    @contextmanager
+    def connect():
+        with learning_store.connect() as conn:
+            class ReadOnly:
+                def execute(self,sql,params=()):
+                    assert sql.lstrip().upper().startswith("SELECT ")
+                    return conn.execute(sql,params)
+            yield ReadOnly()
+
+    reader=SimpleNamespace(connect=connect,database=learning_store.database)
+    empty=_path_target_progress(reader,issued)
+    assert empty["status"]=="no_recent_issuance"
+    assert empty["path_forecasts_issued_24h"]==empty["due_pending_paths_14d"]==0
+    with learning_store.connect() as conn:
+        assert ledger.issue(conn,candles=candles,asset="BTC",horizon=60,
+                            now=issued,issued_at=issued)==2
+    waiting=_path_target_progress(reader,issued)
+    assert waiting["status"]=="waiting_for_forward_outcomes"
+    assert waiting["path_forecasts_issued_24h"]==waiting["pending_paths_14d"]==2
+    assert waiting["due_pending_paths_14d"]==0
+    future=_future_path(last,steps=12)
+    now=future[-1].observed_at+timedelta(minutes=1)
+    backlog=_path_target_progress(reader,now)
+    assert backlog["status"]=="settlement_backlog"
+    assert backlog["due_pending_paths_14d"]==2
+    assert backlog["oldest_due_target_at"]==future[-1].opened_at.isoformat()
+    # All bars from a different contract/quote cannot settle this prospect.
+    with learning_store.connect() as conn:
+        for bar in future:
+            conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         _row(replace(bar,quote="USD")))
+    assert ledger.settle(now=now)=={"settled":0,"ambiguous":0}
+    with learning_store.connect() as conn:
+        for bar in future:
+            conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         _row(bar))
+    assert ledger.settle(now=now)=={"settled":2,"ambiguous":0}
+    observed=_path_target_progress(reader,now)
+    assert observed["status"]=="observed"
+    assert observed["settled_close_targets_24h"]==2
+    assert observed["horizons"][0]["horizon_minutes"]==60
+    assert observed["read_only"] and not observed["counts_are_independent_targets"]
+    assert observed["does_not_prove_prediction_edge"] and not observed["after_cost_qualified"]
 
 
 def test_causal_source_matched_training_and_conservative_first_passage():

@@ -93,6 +93,15 @@ def test_unscoreable_old_paths_cannot_starve_new_complete_paths(learning_store, 
     before=_path_target_progress(learning_store,now)
     assert before["status"]=="settlement_backlog"
     assert before["due_pending_paths_14d"]==2*len(old)+2
+    sample=before["settlement_sample"]
+    assert sample["status"]=="sampled" and sample["read_only"]
+    assert sample["sample_only_not_backlog_census"] and sample["sides_are_correlated"]
+    assert sample["by_reason"]["ready_for_settlement"]>=1
+    assert sample["by_reason"][{
+        "missing": "missing_source_candles",
+        "observed_before_issue": "source_seen_before_issuance",
+        "future_receipt": "source_not_yet_observed",
+    }[blocked]]>=1
     assert ledger.settle(now=now)=={"settled":2,"ambiguous":0}
     progress=_path_target_progress(learning_store,now)
     assert progress["status"]=="observed"
@@ -208,6 +217,7 @@ def test_path_receipt_distinguishes_no_issuance_future_targets_and_backlog(learn
     empty=_path_target_progress(reader,issued)
     assert empty["status"]=="no_recent_issuance"
     assert empty["path_forecasts_issued_24h"]==empty["due_pending_paths_14d"]==0
+    assert empty["settlement_sample"]["status"]=="no_due_pending_paths"
     with learning_store.connect() as conn:
         assert ledger.issue(conn,candles=candles,asset="BTC",horizon=60,
                             now=issued,issued_at=issued)==2
@@ -221,6 +231,7 @@ def test_path_receipt_distinguishes_no_issuance_future_targets_and_backlog(learn
     assert backlog["status"]=="settlement_backlog"
     assert backlog["due_pending_paths_14d"]==2
     assert backlog["oldest_due_target_at"]==future[-1].opened_at.isoformat()
+    assert backlog["settlement_sample"]["by_reason"]=={"missing_source_candles":1}
     # All bars from a different contract/quote cannot settle this prospect.
     with learning_store.connect() as conn:
         for bar in future:
@@ -231,6 +242,8 @@ def test_path_receipt_distinguishes_no_issuance_future_targets_and_backlog(learn
         for bar in future:
             conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          _row(bar))
+    ready=_path_target_progress(reader,now)["settlement_sample"]
+    assert ready["by_reason"]=={"ready_for_settlement":1}
     assert ledger.settle(now=now)=={"settled":2,"ambiguous":0}
     observed=_path_target_progress(reader,now)
     assert observed["status"]=="observed"

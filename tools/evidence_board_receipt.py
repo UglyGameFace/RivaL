@@ -136,7 +136,7 @@ def _recent_forecast_summary(source: object) -> dict:
             row.get("direction"), row.get("status"), row.get("outcome_up")
         )
         if direction not in ("UP", "DOWN", "NEUTRAL") or status not in (
-            "open", "awaiting_settlement", "settled",
+            "open", "awaiting_settlement", "settled", "ungraded",
         ):
             continue
         if (prob > 0.5 and direction != "UP" or

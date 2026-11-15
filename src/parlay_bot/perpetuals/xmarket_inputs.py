@@ -292,7 +292,7 @@ class XmarketInputs:
             saved += await self._recover_pm_60m_lag(
                 asset=notice.asset, client=client, clock=clock,
                 fixed_observation_time=now is not None)
-        except Exception:  # noqa: BLE001 - verified future-only input repair
+        except Exception:  # optional verified future-only input repair
             logging.getLogger(__name__).warning(
                 "RivaL XMarket PM 60m lag recovery unavailable asset=%s",
                 notice.asset, exc_info=True)

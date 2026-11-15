@@ -14,6 +14,7 @@ from parlay_bot.discord_app.home import _performance_cycles
 from parlay_bot.perpetuals.dashboard_forward_receipt import read_forward_calls
 from parlay_bot.perpetuals.family_quotes import SUPPORTED_QUOTE_SOURCES
 from parlay_bot.perpetuals.proof_progress import proof_progress
+from parlay_bot.perpetuals.xmarket_watchdog_receipt import read_xmarket_watchdog
 from parlay_bot.storage.hot import PostgresHotStore
 
 MARKER = "RIVAL_LEARNING_CYCLE_RECEIPT="
@@ -333,6 +334,7 @@ def read_receipt() -> dict:
             "path_targets": _path_target_progress(store, now),
             "polymarket_contest": _contest_progress(store, now),
             "xmarket": xmarket,
+            "xmarket_watchdog": read_xmarket_watchdog(store, now),
             "research_loop": _research_progress(store, settings),
             "runtime_diagnostics": _runtime_diagnostics(store, now),
             "does_not_prove_prediction_edge": True,

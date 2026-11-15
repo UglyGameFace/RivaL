@@ -217,9 +217,14 @@ class XmarketInputs:
         recent = await asyncio.to_thread(self.recent, asset, at=bar, now=clock)
         if lag in sampled_bars(recent, asset=asset, as_of=clock)["polymarket"]:
             return 0
+        if not self.due("polymarket-lag-60", asset, clock,
+                        cooldown_seconds=300):
+            return 0
         identity = await asyncio.to_thread(self._lag_pm_identity, asset, lag)
-        if identity is None or not self.due("polymarket-lag-60", asset, clock,
-                                            cooldown_seconds=300):
+        if identity is None:
+            logging.getLogger(__name__).info(
+                "RivaL XMarket PM 60m lag missing verified old contract asset=%s",
+                asset)
             return 0
         response = await client.get(POLY_HISTORY, params={
             "market": identity["token_id"],
@@ -233,7 +238,11 @@ class XmarketInputs:
         received = clock if fixed_observation_time else datetime.now(UTC)
         points = parse_points("polymarket", response.json(), identity=identity,
                               observed_at=received)
-        return await asyncio.to_thread(self.record, points)
+        inserted = await asyncio.to_thread(self.record, points)
+        logging.getLogger(__name__).info(
+            "RivaL XMarket PM 60m lag recovery asset=%s inserted=%d parsed=%d",
+            asset, inserted, len(points))
+        return inserted
 
     def _previous_pm(self, asset, clock):
         self.initialize()

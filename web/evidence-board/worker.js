@@ -31,8 +31,91 @@ async function publicGithubRunDetails(id){
   return {jobs,artifacts,errors};
 }
 
+
+// RivaL operations dashboard: an explicit, bounded read-only bridge to the
+// existing public market Worker. This is NOT a proxy to private/auth/order routes.
+// No credentials, wallet actions, model weights or user data are forwarded.
+const RIVAL_MARKET_ASSETS=['BTC','ETH','SOL','XRP'];
+function marketNum(v){return typeof v==='number'&&Number.isFinite(v)?v:null}
+function marketText(v,max=110){return typeof v==='string'?v.slice(0,max):null}
+function marketTime(v){return marketNum(v)}
+async function rivalPublicGet(path){
+ if(typeof RIVAL_MARKET_FEED==='undefined'||!RIVAL_MARKET_FEED||typeof RIVAL_MARKET_FEED.fetch!=='function')
+  throw Error('market_binding_unavailable');
+ // The URL is assembled exclusively by trusted code, never from a user-supplied path.
+ const upstream=await RIVAL_MARKET_FEED.fetch(new Request('https://rival.the420lobby.com'+path,{method:'GET'}));
+ if(!upstream.ok)throw Error('upstream_http_'+upstream.status);
+ const json=await upstream.json();
+ if(!json||typeof json!=='object'||!Number.isFinite(json.generated_at))throw Error('invalid_public_market_payload');
+ return json;
+}
+async function marketPerps(){
+ try{
+  const j=await rivalPublicGet('/api/perps'),assets=j.assets||{};
+  const venues=(Array.isArray(j.venues)?j.venues:[]).slice(0,12).map(v=>({
+   id:marketText(v.id,32),name:marketText(v.name,48),status:marketText(v.status,22),
+   latency_ms:marketNum(v.latency_ms),received_at:marketTime(v.received_at),http_status:marketNum(v.http_status)
+  }));
+  const rows=RIVAL_MARKET_ASSETS.map(asset=>{
+   const d=assets[asset]||{};
+   return {asset,price:marketNum(d.median),change_24h_pct:marketNum(d.chg24_median_pct),
+    venues_used:marketNum(d.venues_used),dispersion_bps:marketNum(d.dispersion_bps),
+    spread_bps:marketNum(d.spread_median_bps),volume_24h_usd:marketNum(d.vol24_usd_total),
+    open_interest_usd:marketNum(d.oi_usd_total),
+    venues:(Array.isArray(d.rows)?d.rows:[]).slice(0,12).map(r=>({
+     venue:marketText(r.venue,32),status:marketText(r.status,24),reason:marketText(r.reason,64),
+     mid:marketNum(r.mid),bid:marketNum(r.bid),ask:marketNum(r.ask),
+     change_24h_pct:marketNum(r.chg24_pct),funding:marketNum(r.funding),
+     spread_bps:marketNum(r.spread_bps),open_interest_usd:marketNum(r.oi_usd),
+     latency_ms:marketNum(r.age_ms)
+    }))
+   };
+  });
+  return response({source:'rival-public-site',status:'ok',generated_at:j.generated_at,venues,assets:rows,
+    limitation:'Indicative venue quotes, not bot model calls, fills or guaranteed executable prices.'},200,'public,max-age=12');
+ }catch(_){return response({source:'rival-public-site',status:'unavailable',generated_at:null,venues:[],assets:[],reason:'public_market_feed_unavailable'},503,'no-store')}
+}
+async function marketPredictions(asset){
+ if(!RIVAL_MARKET_ASSETS.includes(asset))return response({status:'invalid_asset'},400,'no-store');
+ const [pm,ka]=await Promise.allSettled([
+  rivalPublicGet('/api/polymarket?asset='+asset),
+  rivalPublicGet('/api/kalshi?asset='+asset)
+ ]);
+ const result={source:'rival-public-site',asset,
+  limitation:'Public order-book or summary quotes only. They are NOT RivaL signals, model odds, or a guarantee of executable size.',
+  polymarket:{status:'unavailable',generated_at:null,contracts:[]},
+  kalshi:{status:'unavailable',generated_at:null,quote_source:null,markets:[],open_count:null}
+ };
+ if(pm.status==='fulfilled'){
+  const v=pm.value;result.polymarket={status:'ok',generated_at:v.generated_at,
+   contracts:(Array.isArray(v.contracts)?v.contracts:[]).filter(c=>c.asset===asset).slice(0,3).map(c=>({
+    horizon:marketNum(c.horizon),title:marketText(c.title,170),status:marketText(c.status,24),
+    closes:marketTime(c.closes),accepting_orders:c.accepting_orders===true,
+    url:typeof c.url==='string'&&c.url.startsWith('https://polymarket.com/event/')?c.url:null,
+    up_ask:marketNum(c.up&&c.up.best_ask),down_ask:marketNum(c.down&&c.down.best_ask),
+    up_bid:marketNum(c.up&&c.up.best_bid),down_bid:marketNum(c.down&&c.down.best_bid),
+    up_ask_depth:marketNum(c.up&&c.up.ask_depth),down_ask_depth:marketNum(c.down&&c.down.ask_depth),
+    book_age_ms:marketNum(c.book_age_ms)
+   }))};
+ }
+ if(ka.status==='fulfilled'){
+  const v=ka.value,a=v.assets&&v.assets[asset]||{};
+  result.kalshi={status:'ok',generated_at:v.generated_at,quote_source:marketText(v.quote_source,48),
+   open_count:marketNum(a.open_count),
+   markets:(Array.isArray(a.markets)?a.markets:[]).slice(0,8).map(c=>({
+    ticker:marketText(c.ticker,90),title:marketText(c.title,170),close_time:marketTime(c.close_time),
+    yes_bid:marketNum(c.yes_bid),yes_ask:marketNum(c.yes_ask),no_ask:marketNum(c.no_ask),
+    last:marketNum(c.last),volume_24h:marketNum(c.volume_24h),oi:marketNum(c.oi)
+   }))};
+ }
+ return response(result,pm.status==='fulfilled'||ka.status==='fulfilled'?200:503,
+  pm.status==='fulfilled'||ka.status==='fulfilled'?'public,max-age=15':'no-store');
+}
+
 addEventListener('fetch',e=>{e.respondWith(handle(e.request))});
 async function handle(req){const url=new URL(req.url);if(req.method!=='GET'&&req.method!=='HEAD')return response({error:'read-only: method not allowed'},405,'no-store');
+if(url.pathname==='/api/market/perps')return marketPerps();
+if(url.pathname==='/api/market/predictions')return marketPredictions((url.searchParams.get('asset')||'').toUpperCase());
 if(url.pathname==='/api/evidence-history'){try{const r=await RIVAL_EVIDENCE_RECEIPTS.fetch('https://rival-evidence-collector.staytrippynlw.workers.dev/history');if(!r.ok)return response({source:'unavailable',points:[]},503);const data=await r.json();return response(data,200,'public,max-age=60');}catch(_){return response({source:'unavailable',points:[]},503)}}
 if(url.pathname==='/api/source-evidence'){try{const r=await RIVAL_EVIDENCE_RECEIPTS.fetch('https://rival-evidence-collector.staytrippynlw.workers.dev/latest');if(!r.ok)return response({status:'unavailable',error:'source_unavailable'},503);const obj=await r.json();return response(obj,200,'public,max-age=25');}catch(_){return response({status:'unavailable',error:'receipt_unavailable'},503)}}
 if(url.pathname==='/api/training-snapshot'){try{const r=await RIVAL_EVIDENCE_RECEIPTS.fetch('https://rival-evidence-collector.staytrippynlw.workers.dev/training-snapshot');if(!r.ok)return response({status:'unavailable'},503);return response(await r.json(),200,'public,max-age=300');}catch(_){return response({status:'unavailable'},503)}}

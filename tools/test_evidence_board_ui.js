@@ -165,4 +165,60 @@ assert.match(source,/age>=0&&age<1500/,'Future-dated receipts cannot pass freshn
 assert.match(cx.sourcePanel(),/SIGNED RECEIPT/);
 assert.match(source,/if\(url.pathname==='\/api\/status'\)/);
 assert.doesNotMatch(source,/signed auto-updates/);
+
+// The primary product UI must be an operations dashboard, not a PR index.
+assert.deepEqual(Array.from(cx.NAV),['Command','Markets','Signals','Models','XMarket','Intelligence','Diagnostics']);
+assert.match(cx.opsCommand(),/See what the bot is actually doing/);
+assert.doesNotMatch(cx.opsCommand(),/Tracked changes|Pending workflows|Work queues/);
+assert.match(cx.opsSignals(),/Per-call signal feed not yet published/);
+assert.match(cx.opsSignals(),/Coverage is not an 80% prediction-accuracy rule/);
+assert.match(cx.opsModels(),/Are RivaL predictions improving/);
+assert.match(cx.opsXMarket(),/From market inputs to usable shadow predictions/);
+assert.match(cx.opsXMarket(),/7 rejected by offline gates/);
+assert.match(cx.opsIntelligenceView(),/Is the model actually serving/);
+assert.match(cx.opsDiagnostics(),/Diagnostics and source evidence/);
+assert.match(cx.opsMore(),/Everything else in RivaL/);
+assert.match(cx.opsSourceBanner(),/production receipt/);
+cx.ops.perpsStatus='ok';
+cx.ops.perps={
+ status:'ok',generated_at:Date.now(),
+ venues:[{id:'okx',name:'OKX',status:'ok'},{id:'binance',name:'Binance',status:'blocked'}],
+ assets:[
+  {asset:'BTC',price:64000,change_24h_pct:-3.5,venues_used:8,dispersion_bps:6.1,
+   volume_24h_usd:2000000000,open_interest_usd:500000000,
+   venues:[{venue:'okx',status:'ok',mid:64000,spread_bps:.15,funding:-.00005}]},
+  {asset:'ETH',price:2020,change_24h_pct:2,venues_used:7},
+  {asset:'SOL',price:130,change_24h_pct:-2,venues_used:5},
+  {asset:'XRP',price:1.4,change_24h_pct:0,venues_used:3}
+ ]
+};
+cx.ops.predictions.BTC={
+ asset:'BTC',polymarket:{status:'ok',generated_at:Date.now(),contracts:[
+ {asset:'BTC',horizon:5,title:'BTC',status:'ok',closes:Date.now()+300000,
+  up_ask:.52,down_ask:null,up_ask_depth:100,down_ask_depth:0,
+  url:'https://polymarket.com/event/btc-test'}
+ ]},
+ kalshi:{status:'ok',generated_at:Date.now(),quote_source:'kalshi_market_summary',
+  markets:[{title:'BTC threshold',ticker:'BTCX',yes_bid:.48,yes_ask:.54,
+   volume_24h:500,close_time:Date.now()+300000}],open_count:1}
+};
+assert.match(cx.opsCommand(),/\$64,000/);
+assert.match(cx.opsMarkets(),/Polymarket contracts/);
+assert.match(cx.opsMarkets(),/Kalshi crypto markets/);
+assert.match(cx.opsMarkets(),/No quote/,'Absent quote side must not be shown as zero');
+assert.match(cx.opsMarkets(),/Binance|okx/);
+cx.ops.predictions.BTC.polymarket.contracts=[];
+assert.match(cx.opsMarkets(),/No current Polymarket contract book returned/);
+cx.ops.predictions.BTC.kalshi.markets=[];
+assert.match(cx.opsMarkets(),/No Kalshi market summaries returned/);
+cx.ops.predictions.BTC=undefined;
+assert.match(cx.opsMarkets(),/Polymarket CLOB snapshot unavailable/);
+cx.ops.perps=null;cx.ops.perpsStatus='unavailable';
+assert.match(cx.opsMarkets(),/Exchange quotes unavailable/);
+assert.match(cx.opsCommand(),/Live public venue quotes are unavailable/);
+assert.match(source,/RIVAL_MARKET_FEED\.fetch/);
+assert.match(source,/\/api\/market\/perps/);
+assert.match(source,/\/api\/market\/predictions/);
+console.log('RivaL operations dashboard UI regressions passed');
+
 console.log('Evidence Board source-backed UI smoke passed');

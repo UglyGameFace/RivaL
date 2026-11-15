@@ -167,7 +167,7 @@ function cleanForwardCalls(value){
       ||!Number.isFinite(x.probability_up)||!Number.isFinite(x.baseline_up)
       ||x.probability_up<0||x.probability_up>1||x.baseline_up<0||x.baseline_up>1)continue;
    const direction=x.probability_up>0.5?'UP':x.probability_up<0.5?'DOWN':'NEUTRAL';
-   if(x.direction!==direction||!['open','awaiting_settlement','settled'].includes(x.status))continue;
+   if(x.direction!==direction||!['open','awaiting_settlement','settled','ungraded'].includes(x.status))continue;
    if(typeof x.lead_seconds!=='number'||!Number.isFinite(x.lead_seconds)
       ||x.lead_seconds<=0||x.lead_seconds>7200)continue;
    if(x.status==='settled' && !(x.outcome_up===0||x.outcome_up===1))continue;

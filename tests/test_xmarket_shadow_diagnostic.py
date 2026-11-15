@@ -6,11 +6,11 @@ from datetime import timedelta
 
 import pytest
 
+from parlay_bot.perpetuals import xmarket_shadow_diagnostic as diagnostic
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.xmarket_inputs import XmarketInputs
 from parlay_bot.perpetuals.xmarket_model import XmarketModelSet
-from parlay_bot.perpetuals import xmarket_shadow_diagnostic as diagnostic
 from tests.xmarket_fixtures import NOW, point, valid_doc
 
 TARGET = NOW.replace(second=0, microsecond=0)
@@ -101,6 +101,10 @@ def test_missing_dispersion_venue_is_reported_without_relaxing_it(learning_store
     assert result["native_at_issuance"]["native_complete"] == 1
 
 
-def test_missing_tables_or_invalid_host_data_are_not_passed_as_verified(learning_store):
-    with pytest.raises(Exception):
-        diagnostic.read_probe(learning_store, CLOCK)
+def test_unavailable_database_cannot_pass_read_only_proof():
+    class Missing:
+        def connect(self):
+            raise RuntimeError("database unavailable")
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        diagnostic.read_probe(Missing(), CLOCK)

@@ -143,7 +143,7 @@ async def test_live_pm_recovers_real_60m_lag_from_verified_old_contracts(learnin
         # Only an old, validated native identity is enough to ask the provider
         # for its exact historical 15m window. No guessed condition ID.
         inputs.record([point("polymarket", old_open + timedelta(minutes=5))])
-    active = point("polymarket", opened)
+    active = point("polymarket", opened + timedelta(seconds=10))
     notice = SimpleNamespace(
         horizon=15, issued=opened, expires=opened + timedelta(minutes=15),
         asset="BTC", slug=active["slug"], condition_id=active["contract_id"],
@@ -196,7 +196,7 @@ async def test_unavailable_pm_lag_never_gets_synthesized_from_old_native_source(
     clock = opened + timedelta(seconds=30)
     past = opened - timedelta(minutes=75)
     inputs.record([point("polymarket", past + timedelta(minutes=5))])
-    p = point("polymarket", opened)
+    p = point("polymarket", opened + timedelta(seconds=10))
     notice = SimpleNamespace(
         horizon=15, issued=opened, expires=opened + timedelta(minutes=15),
         asset="BTC", slug=p["slug"], condition_id=p["contract_id"],

@@ -44,6 +44,8 @@ def test_only_exact_fresh_paper_candidate_can_pass_all_gates(learning_store):
     assert example["candidate"]["closed_quotes"] == 168
     assert all(example["candidate"]["checks"].values())
     assert example["paper_qualified"]
+    assert example["evaluated_at"] == now.isoformat()
+    assert example["age_seconds"] == 0
     readable = proof_progress_text(result)
     assert "outcomes ✓" in readable
     assert "baselines ✓" in readable

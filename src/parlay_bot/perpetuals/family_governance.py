@@ -26,6 +26,8 @@ MIN_TRADES = 50
 MIN_COVERAGE = .80
 LOOKBACK = timedelta(days=30)
 FRESH_FOR = timedelta(hours=48)
+# Bound one artifact's evaluation without silently removing later families.
+MAX_FORECASTS_PER_FAMILY = 24000
 # Kill switch 2 (spec §2.8, §3.5 #6): a family in this set can never serve,
 # even with a fresh promoted_paper row. Default: empty. Changing this set
 # requires Felix's explicit approval of the specific change.
@@ -116,26 +118,10 @@ class FamilyPromotion:
         FamilyQuoteShadow(self.store).initialize()
         # Prove the exact same selected stream, not other venues of the asset.
         with self.store.connect() as conn:
-            forecasts=conn.execute(
-                """SELECT s.family,s.reference_opened_at,s.issued_at,
-                          s.target_opened_at,s.settled_at,s.outcome_up,
-                          s.probability_up,s.incumbent_up,s.baseline_up,
-                          s.model_brier,s.incumbent_brier,s.baseline_brier,
-                          q.state,q.training_sha256 AS quote_training,
-                          s.training_sha256,q.entry_at,q.exit_at,
-                          q.target_close_at,q.challenger_gross_bps,
-                          q.incumbent_gross_bps,q.challenger_side,q.incumbent_side,
-                          q.quantity
-                   FROM rival_model_shadow_forecasts s
-                   LEFT JOIN rival_family_quote_shadow q
-                    ON q.venue=s.venue AND q.contract=s.contract AND q.quote=s.quote
-                    AND q.horizon_minutes=s.horizon_minutes
-                    AND q.family=s.family
-                    AND q.reference_opened_at=s.reference_opened_at
-                   WHERE s.asset=? AND s.venue=? AND s.contract=?
-                    AND s.quote=? AND s.horizon_minutes=?
-                    AND s.issued_at>=? AND s.issued_at<=?
-                   ORDER BY s.family,s.target_opened_at,s.issued_at,s.reference_opened_at LIMIT 24000""",
+            families=conn.execute(
+                """SELECT DISTINCT family FROM rival_model_shadow_forecasts
+                   WHERE asset=? AND venue=? AND contract=? AND quote=?
+                    AND horizon_minutes=? AND issued_at>=? AND issued_at<=?""",
                 (asset,venue,contract,quote,horizon,
                  (stamp-LOOKBACK).isoformat(),stamp.isoformat()),
             ).fetchall()
@@ -178,11 +164,46 @@ class FamilyPromotion:
         # Distinct immutable boosted artifacts compete only on their own
         # source-specific future records, never as one pooled model family.
         observed_families = sorted({
-            str(row["family"]) for row in forecasts
+            str(row["family"]) for row in families
             if str(row["family"]).startswith(CHALLENGER_PREFIXES)
             and len(str(row["family"])) <= 64
         })
         for family in list(FAMILIES) + observed_families:
+            # A shared alphabetically sorted LIMIT let earlier artifacts
+            # erase XMarket from the evaluation entirely. Read one indexed,
+            # source-exact family at a time, and filter its active pin BEFORE
+            # the limit so queued artifacts cannot consume its input budget.
+            forecasts = []
+            if family not in pinned_shas or pinned_shas[family] is not None:
+                pin_sql = " AND s.training_sha256=?" if family in pinned_shas else ""
+                pin_params = (pinned_shas[family],) if family in pinned_shas else ()
+                with self.store.connect() as conn:
+                    forecasts = conn.execute(
+                        """SELECT s.family,s.reference_opened_at,s.issued_at,
+                                  s.target_opened_at,s.settled_at,s.outcome_up,
+                                  s.probability_up,s.incumbent_up,s.baseline_up,
+                                  s.model_brier,s.incumbent_brier,s.baseline_brier,
+                                  q.state,q.training_sha256 AS quote_training,
+                                  s.training_sha256,q.entry_at,q.exit_at,
+                                  q.target_close_at,q.challenger_gross_bps,
+                                  q.incumbent_gross_bps,q.challenger_side,q.incumbent_side,
+                                  q.quantity
+                           FROM rival_model_shadow_forecasts s
+                           LEFT JOIN rival_family_quote_shadow q
+                            ON q.venue=s.venue AND q.contract=s.contract AND q.quote=s.quote
+                            AND q.horizon_minutes=s.horizon_minutes AND q.family=s.family
+                            AND q.reference_opened_at=s.reference_opened_at
+                           WHERE s.asset=? AND s.venue=? AND s.contract=? AND s.quote=?
+                            AND s.horizon_minutes=? AND s.family=?
+                            AND s.issued_at>=? AND s.issued_at<=?""" + pin_sql + """
+                           ORDER BY s.target_opened_at,s.issued_at,s.reference_opened_at
+                           LIMIT ?""",
+                        (asset,venue,contract,quote,horizon,family,
+                         (stamp-LOOKBACK).isoformat(),stamp.isoformat(),
+                         *pin_params,MAX_FORECASTS_PER_FAMILY+1),
+                    ).fetchall()
+            input_complete = len(forecasts) <= MAX_FORECASTS_PER_FAMILY
+            forecasts = forecasts[:MAX_FORECASTS_PER_FAMILY]
             # Models train from their own venue/horizon labels. Only uniquely
             # aligned target windows can contribute independent evidence.
             seen=set()
@@ -196,13 +217,6 @@ class FamilyPromotion:
             covered=eligible=trades=0
             invalid=0
             for row in forecasts:
-                if row["family"]!=family:
-                    continue
-                if family in pinned_shas and str(row["training_sha256"]) != pinned_shas[family]:
-                    # D14: a row from a non-pinned fit is not this
-                    # family's evidence (it belongs to a queued fit, or
-                    # to no pin at all).
-                    continue
                 # A single target outcome is one independent observation,
                 # regardless of how many overlapping reference candles issued
                 # forecasts for it. Select the EARLIEST issued row before
@@ -317,7 +331,7 @@ class FamilyPromotion:
                     ),
                 }
             qualified=bool(
-                proof is not None and proof.status=="qualified_shadow"
+                input_complete and proof is not None and proof.status=="qualified_shadow"
                 and base_proof is not None and base_proof.status=="qualified_shadow"
                 and coin_proof is not None and coin_proof.status=="qualified_shadow"
                 and calibration["status"]=="research_screen_passed"
@@ -341,6 +355,7 @@ class FamilyPromotion:
                 qualified=qualified and bool(search["passed"])
             scored[family]={
                 "gate_status": {
+                    "complete evidence": input_complete,
                     "days": bool(proof and proof.days >= MIN_DAYS),
                     "targets": bool(proof and proof.targets >= MIN_WINDOWS),
                     "incumbent superiority": bool(proof and proof.status == "qualified_shadow"),
@@ -356,6 +371,9 @@ class FamilyPromotion:
                     "search correction": search is None or bool(search["passed"]),
                 },
                 "search_bar":search,
+                "input_complete":input_complete,
+                "input_rows":len(forecasts),
+                "input_row_limit":MAX_FORECASTS_PER_FAMILY,
                 "qualified":qualified,
                 "targets":proof.targets if proof else 0,
                 "days":proof.days if proof else 0,

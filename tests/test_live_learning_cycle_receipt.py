@@ -86,6 +86,8 @@ def test_on_host_read_uses_production_reader_no_writes(monkeypatch):
     monkeypatch.setattr(host, "PostgresHotStore", lambda _: store)
     watchdog = {"status": "fresh", "operational_status": "healthy"}
     monkeypatch.setattr(host, "read_xmarket_watchdog", lambda *_args: watchdog)
+    quotes = {"status": "recorded", "read_only": True}
+    monkeypatch.setattr(host, "read_xmarket_quotes", lambda *_args: quotes)
     monkeypatch.setattr(host, "_performance_cycles", lambda market: (
         {"forecast": {
             "status": "recorded", "checked_at": now,
@@ -102,6 +104,7 @@ def test_on_host_read_uses_production_reader_no_writes(monkeypatch):
     assert report["forecast"]["issued"] == 10
     assert report["learning"]["settled"] == 5
     assert report["xmarket_watchdog"] == watchdog
+    assert report["xmarket_quote_progress"] == quotes
     assert store.closed
 
 

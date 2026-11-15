@@ -60,3 +60,27 @@ on the original exchange-specific **training and validation** partitions.
 The existing models are evaluated independently. The proposal-derived trials
 never read the sealed holdout, enter the model import folder, or promote.
 Fresh prospective comparisons and actual after-cost tests remain necessary.
+
+
+## Optional private Jarvis business chat (default OFF)
+
+To let Jarvis use the real LFM3 runtime on the **same Discloud VLAN**, set
+`JARVIS_LLM_ENABLED=true` and a unique, random 32+ character
+`JARVIS_LLM_TOKEN` in the **RivaL-Intelligence** application's private
+environment. It must not match the research or voice tokens. Deploy the
+updated gateway using this repository's normal upstream mirror and release
+pipeline. The endpoint is `POST http://rival-llm:8765/v1/chat/completions`,
+with `Authorization: Bearer <JARVIS_LLM_TOKEN>`, `model:
+LiquidAI/LFM3-1.7B-GGUF:Q4_K_M`, and plain system/user messages.
+No model tool calls, streaming, direct network actions, invoicing, or calendar
+writes are permitted by the gateway. The generation budget is at most 192
+tokens, guarded by a rendered-template tokenizer preflight, a single busy
+semaphore and the runtime deadline. `GET /v1/jarvis/status` uses the Jarvis
+token and returns the actual model identity/readiness. Disabling the flag
+returns 503 to attempted Jarvis inference. Do not route this private endpoint
+through a public Cloudflare Worker, expose its token to frontend JavaScript,
+or reuse RivaL's existing shared research credential.
+
+Jarvis must independently enforce all financial and approval policies. The
+LLM supplies **words, not authorization**. The service remains single-inference
+CPU-only; parallel Jarvis and RivaL workloads can cause 429 responses.

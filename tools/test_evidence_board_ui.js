@@ -183,6 +183,8 @@ cx.state.evidence.host.recent_forward_calls={
 assert.match(cx.opsSignals(),/62.0%/);
 assert.match(cx.opsSignals(),/52.0% UP/);
 assert.match(cx.opsSignals(),/Target pending/);
+assert.match(cx.opsSignals(),/Target closes \(5m candle\)/);
+assert.match(cx.opsSignals(),/not a guarantee of a 60-minute-ahead forecast/);
 assert.match(cx.opsCommand(),/Latest research forecasts/);
 assert.match(cx.opsCommand(),/62.0%/);
 cx.state.evidence.host.recent_forward_calls.rows[0].status='settled';

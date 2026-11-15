@@ -100,6 +100,68 @@ def test_bad_saved_proof_never_becomes_qualified(learning_store):
     assert "invalid" in result["evaluations"][0]["reason"].lower()
 
 
+
+def test_xmarket_candidate_keeps_its_own_source_exact_quote_verdict(learning_store):
+    """The best incumbent rival cannot conceal XMarket's unqualified cost gap."""
+    now = datetime(2026, 11, 2, 16, tzinfo=UTC)
+    winner = _seed(learning_store, now)
+    verdict = FamilyPromotion(learning_store).evaluate(
+        now=now, contract="BTC", quote="USDC", horizon=5, **_scope(),
+    )
+    assert verdict["selected_family"] == winner
+    with learning_store.connect() as conn:
+        saved = conn.execute(
+            "SELECT evidence_json FROM rival_family_promotion"
+        ).fetchone()["evidence_json"]
+        evidence = json.loads(saved)
+        # Simulate the evaluator's persisted family-specific result, not a
+        # synthetic market or historical forecast added to production.
+        xmarket = dict(evidence[winner])
+        xmarket.update({
+            "qualified": False, "days": 2, "targets": 42,
+            "eligible_quotes": 42, "closed_quotes": 0,
+            "challenger_trades": 0, "missing_quote_windows": 42,
+            "quote_coverage": 0.0,
+        })
+        evidence["xmarket_v1"] = xmarket
+        conn.execute(
+            "UPDATE rival_family_promotion SET evidence_json=?",
+            (json.dumps(evidence),),
+        )
+
+    result = proof_progress(learning_store, now=now, **_scope())
+    row = result["evaluations"][0]
+    assert row["candidate"]["name"] == winner  # Existing card preserved
+    assert row["paper_qualified"] is True
+    own = row["xmarket_v1"]
+    assert own["name"] == "xmarket_v1"
+    assert own["valid"] is True and own["qualified_paper"] is False
+    assert own["targets"] == 42 and own["days"] == 2
+    assert own["missing_quote_windows"] == 42
+    assert own["checks"]["future_outcomes"] is False
+    assert own["checks"]["quote_coverage"] is False
+    assert proof_progress(learning_store, asset="ETH", venue="hyperliquid",
+                          now=now)["evaluations"] == []
+
+    stale = proof_progress(
+        learning_store, now=now + timedelta(hours=49), **_scope(),
+    )["evaluations"][0]
+    assert stale["fresh"] is False
+    assert stale["xmarket_v1"]["qualified_paper"] is False
+
+    # An inconsistent saved quote denominator fails closed for XMarket only.
+    evidence["xmarket_v1"]["closed_quotes"] = 999
+    with learning_store.connect() as conn:
+        conn.execute(
+            "UPDATE rival_family_promotion SET evidence_json=?",
+            (json.dumps(evidence),),
+        )
+    bad = proof_progress(learning_store, now=now, **_scope())["evaluations"][0]
+    assert bad["candidate"]["name"] == winner
+    assert bad["xmarket_v1"]["valid"] is False
+    assert bad["xmarket_v1"].get("qualified_paper", False) is False
+
+
 @pytest.mark.asyncio
 async def test_progress_is_a_lightweight_navigable_results_section(learning_store):
     now = datetime(2026, 11, 2, 16, tzinfo=UTC)

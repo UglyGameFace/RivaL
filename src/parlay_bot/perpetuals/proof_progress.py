@@ -138,6 +138,16 @@ def proof_progress(store, *, asset: str, venue: str,
                 )
             )
             candidate = candidates[0] if candidates else None
+            # Preserve the familiar best-candidate card, but also expose the
+            # XMarket candidate's OWN stored source-exact governance evidence.
+            # It may have fewer target days than another family, so the
+            # best-candidate ranking must not conceal its quote/after-cost gap.
+            # Reuse the already validated saved proof; no second SQL read,
+            # re-evaluation, price reconstruction, or promotion side effects.
+            xmarket = next(
+                (item for item in candidates if item["name"] == "xmarket_v1"),
+                None,
+            )
             if candidate is None:
                 reason = "No eligible challenger evaluated"
             elif not candidate["valid"]:
@@ -155,6 +165,7 @@ def proof_progress(store, *, asset: str, venue: str,
                 "contract": str(record["contract"]), "quote": str(record["quote"]),
                 "fresh": current, "candidate": candidate, "reason": reason,
                 "paper_qualified": bool(candidate and candidate.get("qualified_paper")),
+                "xmarket_v1": xmarket,
             })
         except (ValueError, TypeError, KeyError, OverflowError):
             evaluations.append({

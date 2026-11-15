@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 from evidence_board_receipt import (
     _nonnegative,
+    _recent_forecast_summary,
     read_drive,
     summarize_host,
     summarize_xmarket_report,
@@ -18,6 +19,36 @@ from evidence_board_receipt import (
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_latest_research_calls_strip_private_fields(self) -> None:
+        source = {
+            "status": "observed", "captured_at": "2026-11-15T00:00:00+00:00",
+            "window_hours": 6, "not_trading_calls": True,
+            "rows": [{
+                "asset": "BTC", "horizon": 5, "venue": "okx",
+                "quote": "USDT", "issued_at": "2026-11-14T23:57:00+00:00",
+                "target_close_at": "2026-11-15T00:00:00+00:00",
+                "probability_up": 0.61, "baseline_up": 0.54,
+                "lead_seconds": 180.0, "direction": "UP", "status": "settled",
+                "outcome_up": 1, "model_version": "prospective-logistic-persistent-v3",
+                "weights_sha256": "PRIVATE", "contract": "PRIVATE",
+                "api_token": "PRIVATE",
+            }],
+        }
+        clean = _recent_forecast_summary(source)
+        self.assertEqual(clean["status"], "observed")
+        self.assertEqual(len(clean["rows"]), 1)
+        self.assertEqual(clean["rows"][0]["probability_up"], 0.61)
+        self.assertNotIn("PRIVATE", str(clean))
+        host, _ = summarize_host({"recent_forward_calls": source})
+        self.assertEqual(host["recent_forward_calls"]["rows"][0]["direction"], "UP")
+        self.assertEqual(
+            summarize_host(None)[0]["recent_forward_calls"]["status"],
+            "read_unavailable"
+        )
+        bad = {**source, "rows": [{**source["rows"][0], "probability_up": 1.4}]}
+        self.assertEqual(_recent_forecast_summary(bad)["status"], "read_unavailable")
+        self.assertEqual(_recent_forecast_summary(bad)["rows"], [])
+
     def test_missing_host_is_unknown_not_zero(self) -> None:
         host, db = summarize_host(None)
         self.assertEqual(host["status"], "unavailable")

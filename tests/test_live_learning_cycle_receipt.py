@@ -380,3 +380,77 @@ def test_read_only_xmarket_diagnostic_marker_is_required_and_sanitized():
 
     assert "xmarket_shadow_diagnostic import main as shadow_probe" in RELAY["CMD"]
     assert "main();shadow_probe()" in RELAY["CMD"]
+
+
+
+def test_xmarket_proof_handoff_marks_unevaluated_issued_scopes_unknown():
+    """Five live fits do not imply five supported-source paper evaluations."""
+    progress = {
+        "status": "shadow_issuing",
+        "scope_progress": [
+            {"asset": asset, "horizon_minutes": horizon,
+             "stored_gate_passing_artifacts": 1, "shadow_rows_24h": 12}
+            for asset, horizon in (
+                ("BTC", 15), ("BTC", 60), ("SOL", 15),
+                ("XRP", 15), ("XRP", 60),
+            )
+        ] + [{
+            "asset": "ETH", "horizon_minutes": 15,
+            "stored_gate_passing_artifacts": 0, "shadow_rows_24h": 0,
+        }],
+    }
+    proof = {
+        "status": "recorded",
+        "scopes": [
+            {"asset": "SOL", "horizon_minutes": 15, "venue": "hyperliquid",
+             "status": "recorded", "fresh": True, "qualified_paper": False,
+             "checks": {"quote_coverage": False}},
+            {"asset": "XRP", "horizon_minutes": 15, "venue": "hyperliquid",
+             "status": "recorded", "fresh": True, "qualified_paper": False,
+             "checks": {"quote_coverage": False}},
+            {"asset": "XRP", "horizon_minutes": 60, "venue": "hyperliquid",
+             "status": "recorded", "fresh": True, "qualified_paper": False,
+             "checks": {"quote_coverage": False}},
+        ],
+    }
+    result = host._xmarket_forward_handoff(progress, proof)
+    assert result["fitted_scopes"] == 5
+    assert result["issuing_scopes"] == 5
+    assert result["issuing_scopes_with_fresh_source_evaluation"] == 3
+    assert result["issuing_scopes_missing_supported_source_evaluation"] == 2
+    btc = [row for row in result["scopes"] if row["asset"] == "BTC"]
+    assert len(btc) == 2
+    assert all(row["status"] == "no_supported_source_evaluation"
+               and row["source_evaluations"] == 0
+               and row["quote_gate_passing_sources"] == 0 for row in btc)
+    assert all(row["qualified_paper_sources"] == 0 for row in result["scopes"])
+    assert result["does_not_prove_edge"] is True
+    assert "quote_coverage" not in json.dumps(btc)
+
+
+def test_xmarket_proof_handoff_fails_closed_for_stale_invalid_and_missing():
+    fitted = {
+        "status": "shadow_issuing",
+        "scope_progress": [
+            {"asset": "BTC", "horizon_minutes": 15,
+             "stored_gate_passing_artifacts": 1, "shadow_rows_24h": 3},
+            {"asset": "BTC", "horizon_minutes": 60,
+             "stored_gate_passing_artifacts": 1, "shadow_rows_24h": 0},
+        ],
+    }
+    stale = {"status": "recorded", "scopes": [
+        {"asset": "BTC", "horizon_minutes": 15,
+         "fresh": False, "status": "recorded", "qualified_paper": True,
+         "checks": {"quote_coverage": True}},
+    ]}
+    report = host._xmarket_forward_handoff(fitted, stale)
+    assert report["issuing_scopes_with_fresh_source_evaluation"] == 0
+    assert report["scopes"][0]["status"] == "stale_or_invalid_source_evaluation"
+    assert report["scopes"][0]["qualified_paper_sources"] == 0
+    assert report["scopes"][1]["status"] == "not_issuing"
+    assert host._xmarket_forward_handoff(
+        {"status": "read_unavailable"}, stale
+    ) == {"status": "unavailable", "does_not_prove_edge": True}
+    assert host._xmarket_forward_handoff(
+        fitted, {"status": "unavailable"}
+    ) == {"status": "unavailable", "does_not_prove_edge": True}

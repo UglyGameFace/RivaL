@@ -62,7 +62,7 @@ def test_real_historical_utc_hour_identity_and_bounds():
     payload([trade(START + 10), trade(START + 11)]),
     b"not-json",
     b"{}",
-    b" " * 9_000_001,
+    pytest.param(b" " * 9_000_001, id="oversized-whitespace"),
 ])
 def test_reject_misaligned_duplicate_foreign_trades(raw):
     with pytest.raises(HistoryImportError):

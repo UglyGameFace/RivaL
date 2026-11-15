@@ -45,7 +45,7 @@ def test_window_and_date_boundaries():
     payload(ident=""),
     b"{}",
     b"not-json",
-    b" " * 3_000_001,
+    pytest.param(b" " * 3_000_001, id="oversized-whitespace"),
 ])
 def test_incomplete_wrong_contract_or_invented_rows_rejected(raw):
     start, end = bounds("2021-01-01")

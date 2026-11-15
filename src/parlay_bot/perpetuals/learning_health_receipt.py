@@ -348,6 +348,129 @@ def read_receipt() -> dict:
 
 
 
+
+def _path_settlement_sample(store, now: datetime) -> dict:
+    """Diagnose a bounded sample of due paths without changing their evidence.
+
+    The old and newest pending source paths are sampled per horizon, not the
+    whole backlog. One long/short pair is ONE source path. These observations
+    are deliberately not a replacement for the worker's full causal checks.
+    """
+    import math
+    from collections import Counter
+
+    stamp = now.astimezone(UTC)
+    reasons: Counter[str] = Counter()
+    examples = []
+    sampled = set()
+    try:
+        with store.connect() as conn:
+            for horizon in (15, 60):
+                for order in ("ASC", "DESC"):
+                    # state/target_opened_at is indexed. The LIMIT applies
+                    # before the source reads, so a six-figure backlog never
+                    # becomes an unbounded diagnostic query.
+                    candidates = conn.execute(
+                        """SELECT venue,contract,quote,horizon_minutes,side,
+                                  reference_opened_at,issued_at,target_opened_at,
+                                  reference_close,sigma_horizon
+                           FROM rival_forward_paths
+                           WHERE state='pending' AND horizon_minutes=?
+                             AND target_opened_at>=? AND target_opened_at<=?
+                           ORDER BY target_opened_at """ + order + " LIMIT 4",
+                        (horizon, (stamp-timedelta(days=14)).isoformat(),
+                         (stamp-timedelta(minutes=5)).isoformat()),
+                    ).fetchall()
+                    for path in candidates:
+                        key = (path["venue"], path["contract"], path["quote"],
+                               horizon, path["reference_opened_at"],
+                               path["issued_at"], path["target_opened_at"])
+                        if key in sampled:
+                            continue
+                        sampled.add(key)
+                        reason = "ready_for_settlement"
+                        try:
+                            reference = datetime.fromisoformat(
+                                str(path["reference_opened_at"])).astimezone(UTC)
+                            issued = datetime.fromisoformat(
+                                str(path["issued_at"])).astimezone(UTC)
+                            target = datetime.fromisoformat(
+                                str(path["target_opened_at"])).astimezone(UTC)
+                            steps = horizon // 5
+                            if (not issued < reference+timedelta(minutes=10)
+                                    or target != reference+timedelta(minutes=5*(steps+1))
+                                    or issued > stamp):
+                                reason = "invalid_forecast_clock"
+                            else:
+                                bars = conn.execute(
+                                    """SELECT opened_at,closed_at,first_observed_at,
+                                              high_price,low_price,close_price
+                                       FROM perp_market_candles
+                                       WHERE venue=? AND contract=? AND quote=?
+                                         AND interval_minutes=5 AND opened_at>?
+                                         AND opened_at<=?
+                                       ORDER BY opened_at""",
+                                    (path["venue"],path["contract"],path["quote"],
+                                     (reference+timedelta(minutes=5)).isoformat(),
+                                     target.isoformat()),
+                                ).fetchall()
+                                if len(bars) != steps:
+                                    reason = "missing_source_candles"
+                                else:
+                                    for index, bar in enumerate(bars):
+                                        opened = datetime.fromisoformat(
+                                            str(bar["opened_at"])).astimezone(UTC)
+                                        closed = datetime.fromisoformat(
+                                            str(bar["closed_at"])).astimezone(UTC)
+                                        observed = datetime.fromisoformat(
+                                            str(bar["first_observed_at"])).astimezone(UTC)
+                                        if opened != reference+timedelta(minutes=5*(index+2)):
+                                            reason = "source_grid_mismatch"
+                                        elif observed <= issued:
+                                            reason = "source_seen_before_issuance"
+                                        elif observed > stamp:
+                                            reason = "source_not_yet_observed"
+                                        elif closed >= stamp:
+                                            reason = "source_not_yet_closed"
+                                        elif closed > observed:
+                                            reason = "source_seen_before_close"
+                                        elif not all(
+                                            math.isfinite(float(bar[field]))
+                                            for field in ("high_price","low_price","close_price")
+                                        ) or float(bar["close_price"]) <= 0:
+                                            reason = "invalid_source_prices"
+                                        if reason != "ready_for_settlement":
+                                            break
+                                    if reason == "ready_for_settlement":
+                                        ref_price = float(path["reference_close"])
+                                        sigma = float(path["sigma_horizon"])
+                                        if not (math.isfinite(ref_price) and ref_price > 0
+                                                and math.isfinite(sigma) and sigma > 0):
+                                            reason = "invalid_forecast_values"
+                        except (ValueError, TypeError, OverflowError, KeyError):
+                            reason = "invalid_source_or_forecast_values"
+                        reasons[reason] += 1
+                        examples.append({
+                            "venue": str(path["venue"]),
+                            "contract": str(path["contract"]),
+                            "quote": str(path["quote"]),
+                            "horizon_minutes": horizon,
+                            "target_opened_at": str(path["target_opened_at"]),
+                            "reason": reason,
+                        })
+        return {
+            "status": "sampled" if sampled else "no_due_pending_paths",
+            "sampled_unique_paths": len(sampled),
+            "by_reason": dict(sorted(reasons.items())),
+            "examples": examples,
+            "sample_only_not_backlog_census": True,
+            "sides_are_correlated": True,
+            "read_only": True,
+        }
+    except Exception:  # noqa: BLE001 - optional, bounded diagnostic only
+        return {"status": "read_unavailable", "sample_only_not_backlog_census": True}
+
+
 def _path_target_progress(store, now: datetime) -> dict:
     """Bounded read-only check of independently scored path target heads.
 
@@ -417,6 +540,9 @@ def _path_target_progress(store, now: datetime) -> dict:
             "due_pending_paths_14d": due,
             "oldest_due_target_at": min(oldest) if oldest else None,
             "lifecycle_by_horizon": [dict(row) for row in lifecycle],
+            "settlement_sample": (_path_settlement_sample(store, now) if due else
+                                  {"status": "no_due_pending_paths",
+                                   "sampled_unique_paths": 0, "read_only": True}),
             "counts_are_independent_targets": False,
             "read_only": True,
             "does_not_prove_prediction_edge": True,

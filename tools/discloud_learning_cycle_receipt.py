@@ -10,12 +10,13 @@ import os
 import sys
 from urllib import error, parse, request
 
-MARKER = "RIVAL_LEARNING_CYCLE_RECEIPT="
+MARKER = "RIVAL_LEARNING_CYCLE_RECEIPT="\nXMARKET_MARKER = "RIVAL_XMARKET_SHADOW_DIAGNOSTIC="
 CMD = (
     "python -c 'import sys;"
     'sys.path.insert(0,"src");'
     "from parlay_bot.perpetuals.learning_health_receipt import main;"
-    "main()'"
+    "from parlay_bot.perpetuals.xmarket_shadow_diagnostic import main as shadow_probe;"
+    "main();shadow_probe()'"
 )
 
 
@@ -72,7 +73,13 @@ def main() -> int:
         with request.urlopen(req, timeout=110) as response:
             data = json.load(response)
         shell = data.get("apps", {}).get("shell", {})
-        report = parse_receipt(str(shell.get("stdout", "")))
+        stdout = str(shell.get("stdout", ""))
+        report = parse_receipt(stdout)
+        try:
+            shadow = parse_xmarket_probe(stdout)
+        except (ValueError, KeyError, TypeError):
+            shadow = {"status": "read_unavailable",
+                      "does_not_prove_prospective_predictions": True}
     except (error.URLError, TimeoutError, ValueError, KeyError,
             OSError, TypeError, AttributeError) as exc:
         # Do not echo shell output, SQL, database URL, app token or API errors.
@@ -80,6 +87,7 @@ def main() -> int:
         return 1
     # The only host data emitted are bounded aggregate worker metrics.
     print("RivaL learning host receipt:", json.dumps(report, sort_keys=True))
+    print("XMarket shadow input diagnosis:", json.dumps(shadow, sort_keys=True))
     return 0 if accepted(report) else 1
 
 

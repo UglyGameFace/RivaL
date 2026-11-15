@@ -54,21 +54,28 @@ def _row(item: dict, *, asset: str, horizon: int, now: datetime) -> dict | None:
         return None
     settled = _utc(item.get("settled_at")) if item.get("settled_at") is not None else None
     outcome = item.get("outcome_up")
-    verified_settlement = (
-        settled is not None and settled >= close and settled <= now
-        and outcome is not None and str(outcome) in ("0", "1")
-    )
-    if settled is not None and not verified_settlement:
-        return None  # A malformed settlement is not a trustworthy outcome.
-    status = ("settled" if verified_settlement else
-              "awaiting_settlement" if now >= close else "open")
+    if settled is not None:
+        if settled < close or settled > now:
+            return None
+        # A market with no price trade is explicitly settled but ungraded.
+        # It is not a losing bet, model error, or unobserved forecast.
+        if outcome is None:
+            status = "ungraded"
+        elif str(outcome) in ("0", "1"):
+            status = "settled"
+        else:
+            return None
+    else:
+        if outcome is not None:
+            return None
+        status = "awaiting_settlement" if now >= close else "open"
     return {
         "asset": asset, "horizon": horizon, "venue": venue, "quote": quote,
         "issued_at": issued.isoformat(), "target_close_at": close.isoformat(),
         "probability_up": prob, "baseline_up": baseline,
         "direction": "UP" if prob > 0.5 else "DOWN" if prob < 0.5 else "NEUTRAL",
         "lead_seconds": round((close - issued).total_seconds(), 2),
-        "status": status, "outcome_up": int(outcome) if verified_settlement else None,
+        "status": status, "outcome_up": int(outcome) if status == "settled" else None,
         "model_version": MODEL_VERSION,
     }
 

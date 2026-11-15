@@ -43,6 +43,24 @@ def parse_receipt(stdout: str) -> dict:
     raise ValueError("missing host learning receipt")
 
 
+
+def parse_xmarket_probe(stdout: str) -> dict:
+    """Structured source-stage evidence; never accept success without safety flags."""
+    for line in reversed(stdout.splitlines()):
+        if line.startswith(XMARKET_MARKER):
+            probe = json.loads(line[len(XMARKET_MARKER):])
+            if not isinstance(probe, dict) or probe.get("status") not in (
+                "recorded", "read_unavailable",
+            ):
+                raise ValueError("invalid XMarket diagnostic status")
+            if probe.get("read_only") is not True or probe.get(
+                "does_not_prove_prospective_predictions"
+            ) is not True:
+                raise ValueError("invalid XMarket diagnostic safety flags")
+            return probe
+    raise ValueError("missing XMarket diagnostic")
+
+
 def accepted(report: dict) -> bool:
     """No success for skipped, absent, stale or failed worker receipts."""
     forecast, learning = report.get("forecast"), report.get("learning")

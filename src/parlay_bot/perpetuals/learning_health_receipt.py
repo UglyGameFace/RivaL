@@ -509,6 +509,9 @@ def _path_target_progress(store, now: datetime) -> dict:
             lifecycle = conn.execute(
                 """SELECT horizon_minutes,
                           SUM(CASE WHEN issued_at>=? THEN 1 ELSE 0 END) AS issued_24h,
+                          SUM(CASE WHEN state IN ('settled','ambiguous')
+                                    AND settled_at>=? AND settled_at<=?
+                                   THEN 1 ELSE 0 END) AS resolved_24h,
                           SUM(CASE WHEN state='pending' THEN 1 ELSE 0 END) AS pending_14d,
                           SUM(CASE WHEN state='pending' AND target_opened_at<=?
                                    THEN 1 ELSE 0 END) AS due_pending_14d,
@@ -520,6 +523,7 @@ def _path_target_progress(store, now: datetime) -> dict:
                      AND target_opened_at>=? AND target_opened_at<=? AND issued_at<=?
                    GROUP BY horizon_minutes ORDER BY horizon_minutes""",
                 ((now-timedelta(days=1)).isoformat(),
+                 (now-timedelta(days=1)).isoformat(),now.isoformat(),
                  (now-timedelta(minutes=5)).isoformat(),
                  (now-timedelta(minutes=5)).isoformat(),
                  (now-timedelta(days=14)).isoformat(),
@@ -536,6 +540,10 @@ def _path_target_progress(store, now: datetime) -> dict:
             "horizons": [dict(row) for row in rows],
             "settled_close_targets_24h": sum(int(row["settled"]) for row in rows),
             "path_forecasts_issued_24h": issued,
+            # Parent paths can predate the close-only companion heads. Show
+            # actual processing separately from recent-target qualification;
+            # draining old barriers alone does not validate current heads.
+            "resolved_path_sides_24h": sum(int(row["resolved_24h"]) for row in lifecycle),
             "pending_paths_14d": sum(int(row["pending_14d"]) for row in lifecycle),
             "due_pending_paths_14d": due,
             "oldest_due_target_at": min(oldest) if oldest else None,

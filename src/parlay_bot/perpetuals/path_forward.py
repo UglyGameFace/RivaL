@@ -29,6 +29,10 @@ MAX_TRAIN = 280
 # selects at most 40 streams x 2 horizons: 80 paths / 160 side records.
 # Batching 100 side records cannot keep up even without missing evidence.
 MAX_SETTLE = 100
+# Give current outcomes at least the normal 80-path issuance capacity while
+# retaining 20 slots for older evidence. Unused capacity is shared. This is
+# scheduling only: all paths retain the same 14-day and causal source gates.
+CURRENT_SETTLEMENT_WINDOW = timedelta(hours=2)
 
 
 def _sigma(candles, index: int, steps: int) -> float:
@@ -351,22 +355,18 @@ class ProspectivePathLedger:
             count+=int(result.rowcount==1)
         return count
 
-    def settle(self, *, now: datetime) -> dict:
-        """Never settle using an old backfill, a different book or OHLC guess."""
-        stamp=utc(now)
-        self.initialize()
-        with self.store.connect() as conn:
-            # Missing or invalid source candles must not occupy the oldest
-            # batch forever. Use the existing candle primary key to require
-            # a complete, already-observed future path BEFORE the work bound.
-            # The exact grid/source/time checks below remain authoritative.
-            waiting=conn.execute(
-                """WITH ready AS (
+    def _ready_paths(self, conn, *, stamp: datetime, current: bool) -> list:
+        """Read at most MAX_SETTLE source paths from one disjoint age queue."""
+        comparison = ">=" if current else "<"
+        direction = "DESC" if current else "ASC"
+        rows = conn.execute(
+                f"""WITH ready AS (
                        SELECT p.venue,p.contract,p.quote,p.horizon_minutes,
                               p.reference_opened_at,p.issued_at,p.target_opened_at
                        FROM rival_forward_paths p
                        WHERE p.state='pending' AND p.target_opened_at<=?
                         AND p.target_opened_at>=? AND p.horizon_minutes IN (15,60)
+                        AND p.target_opened_at {comparison} ?
                         AND p.side IN ('long','short')
                         AND (SELECT COUNT(*) FROM perp_market_candles c
                              WHERE c.venue=p.venue AND c.contract=p.contract
@@ -379,7 +379,7 @@ class ProspectivePathLedger:
                             )=p.horizon_minutes/5
                        GROUP BY p.venue,p.contract,p.quote,p.horizon_minutes,
                                 p.reference_opened_at,p.issued_at,p.target_opened_at
-                       ORDER BY p.target_opened_at,p.venue,p.contract,p.quote,
+                       ORDER BY p.target_opened_at {direction},p.venue,p.contract,p.quote,
                                 p.horizon_minutes,p.reference_opened_at,p.issued_at
                        LIMIT ?
                    ) SELECT p.* FROM rival_forward_paths p JOIN ready r
@@ -388,12 +388,38 @@ class ProspectivePathLedger:
                       AND p.reference_opened_at=r.reference_opened_at
                       AND p.issued_at=r.issued_at AND p.target_opened_at=r.target_opened_at
                    WHERE p.state='pending' AND p.side IN ('long','short')
-                   ORDER BY p.target_opened_at,p.venue,p.contract,p.quote,
+                   ORDER BY p.target_opened_at {direction},p.venue,p.contract,p.quote,
                             p.horizon_minutes,p.reference_opened_at,p.issued_at,p.side""",
                 ((stamp-timedelta(minutes=5)).isoformat(),
                  (stamp-timedelta(days=14)).isoformat(),
+                 (stamp-CURRENT_SETTLEMENT_WINDOW).isoformat(),
                  stamp.isoformat(),stamp.isoformat(),MAX_SETTLE),
             ).fetchall()
+        paths = {}
+        for row in rows:
+            key = tuple(row[field] for field in (
+                "venue", "contract", "quote", "horizon_minutes",
+                "reference_opened_at", "issued_at", "target_opened_at",
+            ))
+            paths.setdefault(key, []).append(row)
+        return list(paths.values())
+
+    def settle(self, *, now: datetime) -> dict:
+        """Settle current and older paper paths with bounded, shared capacity."""
+        stamp=utc(now)
+        self.initialize()
+        with self.store.connect() as conn:
+            # Both SELECTs filter complete, already-observed exact-source
+            # paths before their bound. Older missing evidence stays pending.
+            # Oldest-first alone can spend every cycle on pre-companion
+            # forecasts for days while current close targets never score.
+            current = self._ready_paths(conn, stamp=stamp, current=True)
+            backlog = self._ready_paths(conn, stamp=stamp, current=False)
+            reserved = max(1, MAX_SETTLE//5) if MAX_SETTLE > 1 else 0
+            current_limit = MAX_SETTLE-min(reserved, len(backlog))
+            selected = current[:current_limit]
+            selected += backlog[:MAX_SETTLE-len(selected)]
+            waiting = [row for path in selected for row in path]
             scored=ambiguous=0
             paths={}
             for p in waiting:

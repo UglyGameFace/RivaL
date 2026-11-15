@@ -127,7 +127,9 @@ def test_unscoreable_old_paths_cannot_starve_new_complete_paths(learning_store, 
         assert restarted.settle(now=now)=={"settled":2,"ambiguous":0}
 
 
-def test_ready_path_batch_remains_bounded_and_drains_across_worker_restarts(learning_store, monkeypatch):
+@pytest.mark.parametrize("delay", [timedelta(), timedelta(days=3)], ids=["current", "backlog"])
+def test_ready_path_batch_remains_bounded_and_drains_across_worker_restarts(learning_store,
+                                                                          monkeypatch, delay):
     from parlay_bot.perpetuals import path_forward
 
     monkeypatch.setattr(path_forward,"MAX_SETTLE",2)
@@ -138,7 +140,7 @@ def test_ready_path_batch_remains_bounded_and_drains_across_worker_restarts(lear
     last=candles[-1]
     issued=last.observed_at+timedelta(seconds=1)
     options=empirical_paths(candles,horizon=15,now=issued)
-    now=_future_path(last)[-1].observed_at+timedelta(minutes=1)
+    now=_future_path(last)[-1].observed_at+timedelta(minutes=1)+delay
     with learning_store.connect() as conn:
         for asset in ("BTC","ETH","SOL"):
             source=replace(last,contract=asset)
@@ -153,11 +155,14 @@ def test_ready_path_batch_remains_bounded_and_drains_across_worker_restarts(lear
         }
     assert ledger.settle(now=now)=={"settled":0,"ambiguous":0}
     progress=_path_target_progress(learning_store,now)
-    assert progress["settled_close_targets_24h"]==6
+    assert progress["settled_close_targets_24h"]==(6 if not delay else 0)
+    assert progress["resolved_path_sides_24h"]==6
     assert progress["pending_paths_14d"]==progress["due_pending_paths_14d"]==0
 
 
-def test_one_full_issuance_cycle_settles_without_accumulating_a_capacity_backlog(learning_store):
+@pytest.mark.parametrize("legacy_paths", [0, MAX_SETTLE+1], ids=["empty-backlog", "older-backlog"])
+def test_one_full_issuance_cycle_settles_without_accumulating_a_capacity_backlog(learning_store,
+                                                                             legacy_paths):
     """40 streams x 2 horizons x 2 sides exceed the former 100-row ceiling."""
     from parlay_bot.perpetuals.forward_audit import MAX_STREAMS_PER_CYCLE
 
@@ -174,6 +179,18 @@ def test_one_full_issuance_cycle_settles_without_accumulating_a_capacity_backlog
             "kucoin","deribit","lighter","phemex")
     streams=0
     with learning_store.connect() as conn:
+        for index in range(legacy_paths):
+            shift = timedelta(days=-3, minutes=20*index)
+            prior = replace(last, opened_at=last.opened_at+shift,
+                            closed_at=last.closed_at+shift,
+                            observed_at=last.observed_at+shift)
+            assert ledger.issue(conn, candles=[prior], asset="BTC", horizon=15,
+                                now=issued+shift, issued_at=issued+shift,
+                                options=options[15]) == 2
+            for bar in _future_path(prior):
+                conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                             _row(bar))
+        conn.execute("DELETE FROM rival_forward_path_targets")
         for venue in venues:
             for asset in ("BTC","ETH","SOL","XRP"):
                 source=replace(last,venue=venue,contract=asset)
@@ -185,11 +202,94 @@ def test_one_full_issuance_cycle_settles_without_accumulating_a_capacity_backlog
                     conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                  _row(bar))
     assert streams==MAX_STREAMS_PER_CYCLE
-    assert ledger.settle(now=now)=={"settled":160,"ambiguous":0}
-    assert ProspectivePathLedger(learning_store).settle(now=now)=={"settled":0,"ambiguous":0}
+    assert ledger.settle(now=now)=={"settled":200 if legacy_paths else 160,"ambiguous":0}
     progress=_path_target_progress(learning_store,now)
     assert progress["settled_close_targets_24h"]==160
+    assert progress["pending_paths_14d"]==progress["due_pending_paths_14d"]==(
+        2*(legacy_paths-20) if legacy_paths else 0)
+    # With current work drained, the older queue borrows the full bound.
+    assert ProspectivePathLedger(learning_store).settle(now=now)=={
+        "settled":2*(legacy_paths-20) if legacy_paths else 0,"ambiguous":0}
+    assert ledger.settle(now=now)=={"settled":0,"ambiguous":0}
+    progress=_path_target_progress(learning_store,now)
     assert progress["pending_paths_14d"]==progress["due_pending_paths_14d"]==0
+
+
+def test_current_targets_settle_while_legacy_backlog_drains_across_restarts(learning_store,
+                                                                         monkeypatch):
+    """Old eligible paths must not consume every cycle before new heads score."""
+    from parlay_bot.perpetuals import path_forward
+
+    monkeypatch.setattr(path_forward, "MAX_SETTLE", 4)
+    PerpetualMarketStore(learning_store).initialize()
+    ledger = ProspectivePathLedger(learning_store)
+    ledger.initialize()
+    candles = _candles()
+    last = candles[-1]
+    issued = last.observed_at + timedelta(seconds=1)
+    options = empirical_paths(candles, horizon=15, now=issued)
+    with learning_store.connect() as conn:
+        for index in range(6):
+            shift = timedelta(days=-3, minutes=20*index)
+            prior = replace(last, opened_at=last.opened_at+shift,
+                            closed_at=last.closed_at+shift,
+                            observed_at=last.observed_at+shift)
+            assert ledger.issue(conn, candles=[prior], asset="BTC", horizon=15,
+                                now=issued+shift, issued_at=issued+shift,
+                                options=options) == 2
+            for bar in _future_path(prior):
+                conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                             _row(bar))
+        # Before close-only heads were introduced, the real ledger already
+        # held prospective barrier forecasts. Never fabricate companion heads
+        # for these older records when they later become scoreable.
+        conn.execute("DELETE FROM rival_forward_path_targets")
+        frozen = [dict(row) for row in conn.execute(
+            """SELECT venue,contract,reference_opened_at,issued_at,side,
+                      tp1_probability,tp2_probability,training_sha256
+               FROM rival_forward_paths ORDER BY reference_opened_at,side""",
+        ).fetchall()]
+    for cycle in range(6):
+        shift = timedelta(minutes=20*cycle)
+        current = replace(last, opened_at=last.opened_at+shift,
+                          closed_at=last.closed_at+shift,
+                          observed_at=last.observed_at+shift)
+        with learning_store.connect() as conn:
+            for asset in ("BTC", "ETH", "SOL"):
+                source = replace(current, contract=asset)
+                assert ledger.issue(conn, candles=[source], asset=asset, horizon=15,
+                                    now=issued+shift, issued_at=issued+shift,
+                                    options=options) == 2
+                for bar in _future_path(source):
+                    conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                 _row(bar))
+        now = _future_path(current)[-1].observed_at + timedelta(minutes=1)
+        result = ProspectivePathLedger(learning_store).settle(now=now)
+        assert result == {"settled": 8, "ambiguous": 0}
+        with learning_store.connect() as conn:
+            pending_current = conn.execute(
+                "SELECT COUNT(*) AS n FROM rival_forward_path_targets WHERE state='pending'",
+            ).fetchone()["n"]
+            assert pending_current == 0, "old paths consumed the current targets' batch"
+            pending_old = conn.execute(
+                """SELECT COUNT(*) AS n FROM rival_forward_paths
+                   WHERE state='pending' AND issued_at<?""", (issued.isoformat(),),
+            ).fetchone()["n"]
+            assert pending_old == 2*(5-cycle)
+    with learning_store.connect() as conn:
+        after = [dict(row) for row in conn.execute(
+            """SELECT venue,contract,reference_opened_at,issued_at,side,
+                      tp1_probability,tp2_probability,training_sha256
+               FROM rival_forward_paths WHERE issued_at<?
+               ORDER BY reference_opened_at,side""", (issued.isoformat(),),
+        ).fetchall()]
+        assert after == frozen
+        assert conn.execute("SELECT COUNT(*) AS n FROM rival_forward_path_targets").fetchone()["n"] == 36
+    progress = _path_target_progress(learning_store, now)
+    assert progress["settled_close_targets_24h"] == 36
+    assert progress["resolved_path_sides_24h"] == 48
+    assert progress["due_pending_paths_14d"] == 0
+    assert ledger.settle(now=now) == {"settled": 0, "ambiguous": 0}
 
 
 def test_path_receipt_distinguishes_no_issuance_future_targets_and_backlog(learning_store):

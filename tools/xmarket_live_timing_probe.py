@@ -7,6 +7,7 @@ from urllib import parse, request
 REMOTE = r'''
 import json
 import sys
+import importlib.util
 from datetime import UTC, datetime, timedelta
 sys.path.insert(0, "src")
 from parlay_bot.config import Settings
@@ -102,6 +103,8 @@ try:
 finally:
     store.close()
 print("RIVAL_XMARKET_TIMING="+json.dumps({"observed_at":clock.isoformat(),"read_only":True,"targets":out,
+    "numpy_available":importlib.util.find_spec("numpy") is not None,
+    "pandas_available":importlib.util.find_spec("pandas") is not None,
     "feature_windows":windows},sort_keys=True))
 '''
 

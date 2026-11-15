@@ -173,6 +173,18 @@ class ShadowModelCompetition:
                 ON rival_model_shadow_forecasts (asset,horizon_minutes,issued_at,family)
                 WHERE settled_at IS NOT NULL AND outcome_up IN (0,1)
                   AND probability_up BETWEEN 0 AND 1 AND probability_up<>0.5;
+            -- Model Lab's 30-minute review performs two scored-ledger reads:
+            -- day/target gain and distinct scored streams. Unlike the live
+            -- hit-rate index, both filter on valid settled Brier pairs and
+            -- choose four families across assets for one horizon. Restrict
+            -- index entries to those scored rows and make the equality
+            -- dimensions precede the issued-at range.
+            CREATE INDEX IF NOT EXISTS idx_rival_model_shadow_lab_scored
+                ON rival_model_shadow_forecasts
+                (horizon_minutes,family,asset,issued_at)
+                WHERE settled_at IS NOT NULL AND outcome_up IN (0,1)
+                  AND model_brier BETWEEN 0 AND 1
+                  AND incumbent_brier BETWEEN 0 AND 1;
             """)
             # Stops recorded by early_stop: issue() reads this on every
             # stream, so it must exist wherever the ledger does.

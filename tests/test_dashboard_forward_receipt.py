@@ -112,6 +112,18 @@ class ForwardDashboardReceiptTests(unittest.TestCase):
         row["settled_at"] = (NOW - timedelta(minutes=3)).isoformat()
         self.assertIsNone(_row(row, asset="BTC", horizon=5, now=NOW))
 
+    def test_no_trade_candle_remains_issued_but_ungraded(self):
+        row = sample()
+        row["target_opened_at"] = (NOW - timedelta(minutes=7)).isoformat()
+        row["issued_at"] = (NOW - timedelta(minutes=6)).isoformat()
+        row["settled_at"] = (NOW - timedelta(minutes=1)).isoformat()
+        row["outcome_up"] = None
+        result = _row(row, asset="BTC", horizon=5, now=NOW)
+        self.assertEqual(result["status"], "ungraded")
+        self.assertIsNone(result["outcome_up"])
+        row["settled_at"] = (NOW - timedelta(minutes=3)).isoformat()
+        self.assertIsNone(_row(row, asset="BTC", horizon=5, now=NOW))
+
     def test_missing_table_or_connection_is_unknown_not_zero(self):
         class BadStore:
             def connect(self):

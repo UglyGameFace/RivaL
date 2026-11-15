@@ -132,15 +132,16 @@ async def test_live_capture_reuses_clients_and_native_price_not_normalized_ask_r
 
 
 @pytest.mark.asyncio
-async def test_live_lag_recovery_fills_real_60m_native_point_without_backdating(
-        learning_store):
+@pytest.mark.parametrize("minutes", [15, 60])
+async def test_live_lag_recovery_fills_each_required_native_point_without_backdating(
+        learning_store, minutes):
     from parlay_bot.research.xmarket_features import sampled_bars
 
     inputs = XmarketInputs(learning_store)
     opened = NOW.replace(minute=0, second=0, microsecond=0)
     clock = opened + timedelta(minutes=6)
     at = opened + timedelta(minutes=5)
-    lag = at - timedelta(minutes=60)
+    lag = at - timedelta(minutes=minutes)
     prior = point("polymarket", lag - timedelta(minutes=4))
     # A genuine older contract identity exists; only its exact lag price
     # was absent. The runtime cannot invent missing token/contract IDs.

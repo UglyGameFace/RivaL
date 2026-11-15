@@ -168,6 +168,11 @@ function cleanForwardCalls(value){
       ||x.probability_up<0||x.probability_up>1||x.baseline_up<0||x.baseline_up>1)continue;
    const direction=x.probability_up>0.5?'UP':x.probability_up<0.5?'DOWN':'NEUTRAL';
    if(x.direction!==direction||!['open','awaiting_settlement','settled','ungraded'].includes(x.status))continue;
+   // Preserve original host event clock: an open target cannot have closed yet,
+   // and a settled/ungraded/awaiting target cannot claim a future close.
+   const closeTime=Date.parse(target),captureTime=Date.parse(captured);
+   if((x.status==='open'&&closeTime<=captureTime)||
+      (x.status!=='open'&&closeTime>captureTime))continue;
    if(typeof x.lead_seconds!=='number'||!Number.isFinite(x.lead_seconds)
       ||x.lead_seconds<=0||x.lead_seconds>7200)continue;
    if(x.status==='settled' && !(x.outcome_up===0||x.outcome_up===1))continue;

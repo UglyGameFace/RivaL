@@ -1,7 +1,10 @@
 """Host production learning receipt rejects skipped and fabricated health."""
 from __future__ import annotations
 
+import json
 import runpy
+
+import pytest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -279,9 +282,6 @@ def test_actual_learning_receipt_reports_absent_lineage_without_inventing_progre
 
 
 def test_read_only_xmarket_diagnostic_marker_is_required_and_sanitized():
-    import json
-    import pytest
-
     value = {"status": "recorded", "scopes": [],
              "does_not_prove_prospective_predictions": True, "read_only": True}
     stdout = RELAY["XMARKET_MARKER"] + json.dumps(value)

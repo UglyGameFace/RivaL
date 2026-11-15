@@ -14,7 +14,7 @@ import discord
 
 from parlay_bot.discord_app import screen_snapshots
 from parlay_bot.discord_app.alert_control import stop_all_notifications
-from parlay_bot.discord_app.answer_cards import RESEARCH_FOOTER, rename_text
+from parlay_bot.discord_app.answer_cards import RESEARCH_FOOTER
 from parlay_bot.discord_app.api_limits import OwnerLimitsView
 from parlay_bot.discord_app.cdna_public import CDNAPersonalReader
 from parlay_bot.discord_app.cdna_ui import (
@@ -103,7 +103,7 @@ EXPLAIN = {
     "quote": "Ask is about what you'd pay to buy; bid is about what you'd get to sell. Real orders can fill at a different price.",
     "practice": "Practice uses pretend money only. Buy if you think the price will rise, sell if you think it will fall. Pretend wins never count as real profit.",
     "results": "These are your own pretend trades. They never count toward the bot's prediction record.",
-    "performance": "Shows how often RivaL's saved predictions turned out right, whether it beats a simple guess, and whether everything is running. Exchange and Polymarket predictions are scored separately.",
+    "performance": "Choose Models for XMarket imports and forecast activity, Exchange results or Polymarket results for their own scores, and Health for running and baseline checks. Full evidence keeps the detailed tables.",
     "help": "Crypto covers prediction markets and crypto exchanges. Sports covers sportsbook odds. DraftKings sports futures are sports bets, not crypto.",
     "advanced": "Detailed Research, Sports, Help, how much of each data service is being used, and exact-price alerts.",
     "feeds": "This screen moved: Bot Performance now shows whether price feeds and predictions are running.",
@@ -223,6 +223,23 @@ class _Horizon(discord.ui.Select["GuidedHome"]):
     async def callback(self, interaction: discord.Interaction) -> None:
         assert self.view is not None
         self.view.horizon = int(self.values[0])
+        self.view.note = None
+        await interaction.response.defer()
+        await self.view.redraw(interaction)
+
+
+class _PerformanceSection(discord.ui.Select["GuidedHome"]):
+    def __init__(self, selected: str) -> None:
+        from parlay_bot.discord_app.performance_panels import SECTIONS
+
+        super().__init__(placeholder="Choose performance view", row=2,
+            custom_id="rival:guided:performance-section",
+            options=[discord.SelectOption(label=label, value=key, default=key == selected)
+                     for key, label in SECTIONS.items()])
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        self.view.performance_section = self.values[0]
         self.view.note = None
         await interaction.response.defer()
         await self.view.redraw(interaction)
@@ -586,7 +603,7 @@ _PAGE_READ_LOCK = threading.Lock()
 
 
 def _cached_page_read(reader: Callable, market: object, asset: str, horizon: int, *,
-                      refresh: bool = False):
+                      refresh: bool = False, max_age_seconds: float = PAGE_READ_CACHE_SECONDS):
     """``reader(market, asset, horizon)``, cached per coin and timeframe.
 
     Same rules as the scorecard caches: a fresh hit is returned at once, a
@@ -601,7 +618,7 @@ def _cached_page_read(reader: Callable, market: object, asset: str, horizon: int
         with _PAGE_READ_LOCK:
             hit = _PAGE_READ_CACHE.get(key)
             if (not refresh and hit is not None and hit[1] is market
-                    and time.monotonic() - hit[0] < PAGE_READ_CACHE_SECONDS):
+                    and time.monotonic() - hit[0] < max_age_seconds):
                 return hit[2]
             running = _PAGE_READ_INFLIGHT.get(key)
             if running is None:
@@ -788,6 +805,13 @@ def _trial_board_record(market: object, asset: str, horizon: int) -> dict:
                             retired=trial_board.retired_families())
 
 
+def _xmarket_record(market: object, asset: str, _horizon: int) -> dict:
+    from parlay_bot.discord_app.xmarket_status import read
+
+    with statement_timeout(PERFORMANCE_STATEMENT_TIMEOUT_MS):
+        return read(market.store, asset=asset)
+
+
 def _best_record(market: object, asset: str, horizon: int) -> dict:
     """Per timeframe: the top model on trial for this coin, plus the Model Lab.
 
@@ -950,7 +974,8 @@ def _when(age_minutes: int) -> str:
     return "just now" if age_minutes <= 0 else f"{age_minutes} min ago"
 
 
-def _scoreboard_text(coin: str, horizon: int, reports: dict, now: datetime) -> tuple[str, str]:
+def _scoreboard_text(coin: str, horizon: int, reports: dict, now: datetime, *,
+                     polymarket_only: bool = False) -> tuple[str, str]:
     """(headline, scoreboard): the verdict, then one line per market it is graded on."""
     def money(cents: float) -> str:
         return f"{cents:+.1f}¢ per $1"
@@ -994,7 +1019,7 @@ def _scoreboard_text(coin: str, horizon: int, reports: dict, now: datetime) -> t
                          f"{money(pooled['value_bet_avg_return'] * 100)} before fees")
             lines.append(line)
         kalshi = poly.get("kalshi") or {}
-        if kalshi.get("contracts"):
+        if kalshi.get("contracts") and not polymarket_only:
             better = kalshi["model_brier"] < kalshi["market_brier"]
             line = (f"🟦 **vs Kalshi 15-min odds — {'ahead' if better else 'behind'}**\n"
                     f"{kalshi['model_brier']:.3f} vs {kalshi['market_brier']:.3f} · "
@@ -1007,6 +1032,8 @@ def _scoreboard_text(coin: str, horizon: int, reports: dict, now: datetime) -> t
             lines.append(f"⚠️ Saw {int(poly['observed_contracts']):,} contracts but couldn't "
                          "read any of their results yet")
 
+    if polymarket_only:
+        return headline, "\n".join(lines)
     exchange = reports.get("exchange")
     part = exchange.get("last_7d", {}).get(horizon) if isinstance(exchange, dict) else None
     if not isinstance(part, dict):
@@ -1016,11 +1043,12 @@ def _scoreboard_text(coin: str, horizon: int, reports: dict, now: datetime) -> t
         decided, correct = int(part.get("decided") or 0), int(part.get("correct") or 0)
         hit = part.get("hit_rate")
         brier, base = part.get("brier"), part.get("baseline_brier")
-        guess = (f" · vs a simple guess: {'ahead' if brier < base else 'behind'} "
+        benchmark = "coin flip" if base == .25 else "base-rate forecast"
+        guess = (f" · vs a {benchmark}: {'ahead' if brier < base else 'behind'} "
                  f"({brier:.3f} vs {base:.3f})"
                  if isinstance(brier, (int, float)) and isinstance(base, (int, float)) else "")
         if isinstance(hit, (int, float)) and decided:
-            right = f"right **{rate_or_too_few(decided, f'{hit:.1%}', what='decided')}**"
+            right = f"right **{rate_or_too_few(decided, f'{hit:.1%}', what='graded')}**"
             lines.append(f"📈 **Up/down calls** — {right}\n"
                          f"({correct:,} of {decided:,}){guess}")
         else:
@@ -1201,21 +1229,22 @@ def _health_text(coin: str, horizon: int, reports: dict, now: datetime,
 
     benefit = reports.get("benefit")
     if isinstance(benefit, dict):
-        reason = {"supported": "maybe, not proven yet",
-                  "not_improving": "no, not beating the simple guess",
-                  "insufficient": "too early to tell"}.get(benefit.get("status"), "can't confirm")
+        reason = {"supported": "beats the base-rate and coin-flip benchmarks so far",
+                  "not_improving": "has not passed the base-rate and coin-flip checks",
+                  "insufficient": "too early to judge"}.get(benefit.get("status"), "can't confirm")
         days = int(benefit.get("days") or 0)
         counted = int(benefit.get("targets") or 0)
         unit = "results" if horizon == 5 else f"separate {horizon}-min windows"
         need = (", needs 7"
                 if benefit.get("status") == "insufficient" and days < 7 else "")
-        lines.append(f"**Getting more accurate?** {reason} ({counted:,} {unit} over "
+        lines.append(f"**Baseline skill:** {reason} ({counted:,} {unit} over "
                      f"{days} day{'s' if days != 1 else ''}{need})")
+        lines.append("**Improvement over time:** not established by this baseline comparison.")
     elif isinstance(benefit, TimeoutError):
-        lines.append("**Getting more accurate?** still calculating (a long check); "
+        lines.append("**Baseline skill:** still calculating (a long check); "
                      "press Refresh in a minute")
     else:
-        lines.append("**Getting more accurate?** couldn't check right now")
+        lines.append("**Baseline skill:** couldn't check right now")
 
     intelligence = reports.get("intelligence")
     if isinstance(intelligence, dict):
@@ -1261,6 +1290,7 @@ _SAVED_NAMES = {
     "exchange": ("exchange", 0), "benefit": ("benefit", None),
     "polymarket": ("polymarket", None), "calibration": ("_calibration_record", None),
     "trials": ("_trial_board_record", None), "best": ("_best_record", 0),
+    "xmarket": ("_xmarket_record", 0),
 }
 
 
@@ -1315,7 +1345,7 @@ def performance_embeds(coin: str, horizon: int, reports: dict, *, now: datetime,
                      "result was known. Does it make money? Not proven yet."),
         color=discord.Color.orange() if stale else discord.Color.blurple(),
     )
-    _add_field(first, stale, "🎯 Scoreboard (last 7 days)", rename_text(scoreboard),
+    _add_field(first, stale, "🎯 Scoreboard (last 7 days)", scoreboard,
                ("exchange", "polymarket"))
     confidence, conditions = _calibration_sections(reports)
     _add_field(first, stale, "🎚️ Can you trust its confidence?", confidence,
@@ -1355,7 +1385,7 @@ def performance_embeds(coin: str, horizon: int, reports: dict, *, now: datetime,
     if contest:
         _add_field(third, stale, "🎲 Polymarket contest", contest, ())
     _add_field(third, stale, "⚙️ Running and learning",
-               rename_text(_health_text(coin, horizon, reports, now, venues)),
+               _health_text(coin, horizon, reports, now, venues),
                ("benefit",))
     third.timestamp = now
     third.set_footer(text=f"{RESEARCH_FOOTER} · Per-model detail: Detailed Research")
@@ -1388,7 +1418,8 @@ def performance_embed(coin: str, horizon: int, reports: dict, *, now: datetime,
     return performance_embeds(coin, horizon, reports, now=now, venues=venues)[0]
 
 
-def _intelligence_status(market: object, asset: str, horizon: int) -> dict | None:
+def _intelligence_status(market: object, asset: str, horizon: int, *,
+                         refresh: bool = False) -> dict | None:
     """RivaL Intelligence's graded reviews of the models (None if never run)."""
     from parlay_bot.perpetuals.intelligence import IntelligenceLedger
 
@@ -1397,7 +1428,8 @@ def _intelligence_status(market: object, asset: str, horizon: int) -> dict | Non
     if latest is None:
         return None
     return {"latest": latest,
-            "report": _cached_page_read(_intelligence_report, market, asset, horizon)}
+            "report": _cached_page_read(_intelligence_report, market, asset, horizon,
+                                        refresh=refresh)}
 
 
 def _intelligence_report(market: object, asset: str, horizon: int) -> dict:
@@ -1678,6 +1710,8 @@ class GuidedHome(discord.ui.View):
         self.back_stack: list[str] = []
         self.coin = "BTC"
         self.horizon = 5
+        self.performance_section = "overview"
+        self._performance_refresh = False
         self.risk = RiskMode.BALANCED
         self.slip = None
         self.note: str | None = None
@@ -1794,11 +1828,12 @@ class GuidedHome(discord.ui.View):
         elif p == "performance":
             self.add_item(_Coin(self.coin, row=0))
             self.add_item(_Horizon(self.horizon, row=1))
-            self._add("Refresh", "performance", 2, "🔄", True)
+            self.add_item(_PerformanceSection(self.performance_section))
+            self._add("Refresh", "performance", 3, "🔄", True)
             if self.research_factory is not None:
-                self._add("Detailed Research", "research", 2, "🔬")
+                self._add("Detailed Research", "research", 3, "🔬")
                 self._add("Track Next Predictions", "track-forward", 3, "🎯")
-            self._add("After-Cost Check", "proof", 3, "💸")
+            self._add("After-Cost Check", "proof", 4, "💸")
         elif p == "help":
             self._add("Markets", "crypto-desk", 0, "📈", True)
             self._add("Bot Performance", "performance", 0, "📊")
@@ -1819,7 +1854,8 @@ class GuidedHome(discord.ui.View):
 
     def navigate(self, page: str) -> None:
         if page in ("feeds", "trust"):
-            page = "performance"  # Legacy buttons use the single scorecard.
+            self.performance_section = "health"
+            page = "performance"  # Legacy diagnostic buttons open the matching panel.
         if page == self.page:
             return
         if page == "home":
@@ -2488,10 +2524,7 @@ class GuidedHome(discord.ui.View):
                     inline=False,
                 )
         elif p == "performance":
-            embed = performance_embed(
-                self.coin, self.horizon, await self._performance_reports(),
-                now=datetime.now(UTC), venues=self.venues,
-            )
+            return (await self.render_embeds())[0]
         elif p == "help":
             embed = discord.Embed(
                 title="❓ Getting Started",
@@ -2529,65 +2562,44 @@ class GuidedHome(discord.ui.View):
         return embed
 
     async def _performance_reports(self) -> dict:
-        """The Performance page's reads, each bounded and independent.
-
-        A slow or failed read shows as "couldn't load" (or the last good
-        copy, marked ⏳ OLD COPY), never hides the other sections.
-        """
-        readers = {}
+        """Read only the selected panel's evidence; failed reads stay explicit."""
+        required = {
+            "overview": {"exchange", "polymarket", "xmarket", "trials", "cycles"},
+            "models": {"trials", "best", "xmarket"},
+            "exchanges": {"exchange", "calibration"},
+            "polymarket": {"polymarket", "contest"},
+            "health": {"benefit", "cycles", "coverage", "feeds", "intelligence", "xmarket"},
+        }.get(self.performance_section)
+        refresh = {"refresh": True} if self._performance_refresh else {}
+        self._performance_refresh = False
+        specs = {}
         if self.market is not None:
-            readers["exchange"] = asyncio.wait_for(
-                asyncio.to_thread(_cached_exchange, self.market, self.coin),
-                timeout=PERFORMANCE_READ_SECONDS,
-            )
-            readers["benefit"] = asyncio.wait_for(
-                asyncio.to_thread(
-                    _cached_benefit, self.market, self.coin, self.horizon,
-                ), timeout=PERFORMANCE_READ_SECONDS,
-            )
-            readers["calibration"] = asyncio.wait_for(
-                asyncio.to_thread(_cached_page_read, _calibration_record, self.market,
-                                  self.coin, self.horizon),
-                timeout=PERFORMANCE_READ_SECONDS,
-            )
-            readers["trials"] = asyncio.wait_for(
-                asyncio.to_thread(_cached_page_read, _trial_board_record, self.market,
-                                  self.coin, self.horizon),
-                timeout=PERFORMANCE_READ_SECONDS,
-            )
-            readers["best"] = asyncio.wait_for(
-                asyncio.to_thread(_cached_page_read, _best_record, self.market,
-                                  self.coin, 0),
-                timeout=PERFORMANCE_READ_SECONDS,
-            )
-            readers["intelligence"] = asyncio.wait_for(
-                asyncio.to_thread(
-                    _intelligence_status, self.market, self.coin, self.horizon,
-                ), timeout=PERFORMANCE_READ_SECONDS,
-            )
-            readers["coverage"] = asyncio.wait_for(
-                asyncio.to_thread(_cycle_coverage, self.market),
-                timeout=PERFORMANCE_READ_SECONDS,
-            )
-            readers["cycles"] = asyncio.wait_for(
-                asyncio.to_thread(_performance_cycles, self.market),
-                timeout=PERFORMANCE_READ_SECONDS,
-            )
+            specs = {
+                "exchange": (_cached_exchange, (self.market, self.coin), refresh),
+                "benefit": (_cached_benefit, (self.market, self.coin, self.horizon), refresh),
+                "calibration": (_cached_page_read,
+                    (_calibration_record, self.market, self.coin, self.horizon), refresh),
+                "trials": (_cached_page_read,
+                    (_trial_board_record, self.market, self.coin, self.horizon), refresh),
+                "best": (_cached_page_read, (_best_record, self.market, self.coin, 0), refresh),
+                "xmarket": (_cached_page_read, (_xmarket_record, self.market, self.coin, 0),
+                    {**refresh, "max_age_seconds": 60}),
+                "intelligence": (_intelligence_status,
+                    (self.market, self.coin, self.horizon), refresh),
+                "coverage": (_cycle_coverage, (self.market,), {}),
+                "cycles": (_performance_cycles, (self.market,), {}),
+            }
             if callable(getattr(self.market, "feed_health", None)):
-                readers["feeds"] = asyncio.wait_for(
-                    asyncio.to_thread(self.market.feed_health),
-                    timeout=PERFORMANCE_READ_SECONDS,
-                )
+                specs["feeds"] = (self.market.feed_health, (), {})
         if self.polymarket_status is not None:
-            readers["polymarket"] = asyncio.wait_for(
-                asyncio.to_thread(
-                    _cached_polymarket_status, self.polymarket_status,
-                    self.coin, self.horizon,
-                ), timeout=PERFORMANCE_READ_SECONDS,
-            )
+            specs["polymarket"] = (_cached_polymarket_status,
+                (self.polymarket_status, self.coin, self.horizon), refresh)
+        readers = {name: asyncio.wait_for(
+            asyncio.to_thread(fn, *args, **kwargs), timeout=PERFORMANCE_READ_SECONDS)
+            for name, (fn, args, kwargs) in specs.items()
+            if required is None or name in required}
         reports = dict(zip(
-            readers, await asyncio.gather(*readers.values(), return_exceptions=True),
-        ))
+            readers, await asyncio.gather(*readers.values(), return_exceptions=True)))
         stale = {}
         for name, result in list(reports.items()):
             if isinstance(result, Exception):
@@ -2597,20 +2609,23 @@ class GuidedHome(discord.ui.View):
                     reports[name], stale[name] = saved
         if stale:
             reports["_stale"] = stale
-        if self.contest_models is not None:
-            try:  # in memory, refreshed by the live board every 10 minutes
+        if self.contest_models is not None and (required is None or "contest" in required):
+            try:
                 reports["contest"] = self.contest_models(self.coin, self.horizon)
-            except Exception as exc:  # noqa: BLE001 - never breaks the page
+            except Exception as exc:  # noqa: BLE001 - one source cannot hide the panel
                 reports["contest"] = exc
         return reports
 
     async def render_embeds(self) -> list[discord.Embed]:
-        """Every embed for this page: one, except Performance which sends three."""
+        """One compact Performance view; full evidence remains an explicit choice."""
         if self.page != "performance":
             return [await self.render()]
         reports = await self._performance_reports()
-        embeds = performance_embeds(self.coin, self.horizon, reports,
-                                    now=datetime.now(UTC), venues=self.venues)
+        from parlay_bot.discord_app.performance_panels import build
+
+        embeds = build(self.coin, self.horizon, reports, section=self.performance_section,
+                       now=datetime.now(UTC), venues=self.venues,
+                       details_renderer=performance_embeds)
         if self.note:
             embeds[0].add_field(name="What Happened",
                                 value=fit_embed_field_value(self.note, budget=1000),
@@ -2643,6 +2658,8 @@ class GuidedHome(discord.ui.View):
         view.back_stack = list(self.back_stack)
         view.coin = self.coin
         view.horizon = self.horizon
+        view.performance_section = self.performance_section
+        view._performance_refresh = self._performance_refresh
         view.risk = self.risk
         view.slip = self.slip
         view.note = self.note
@@ -3242,6 +3259,8 @@ class GuidedHome(discord.ui.View):
             self.navigate("live" if self.live_source is not None else "crypto-desk")
         elif action in ("home", "discover", "sports", "crypto", "crypto-desk", "hunt", "live", "practice",
                         "results", "performance", "help", "advanced", "feeds", "trust"):
+            if action == "performance" and self.page == "performance":
+                self._performance_refresh = True
             self.navigate(action)
             if action == "sports":
                 await self._refresh_odds()
@@ -3666,6 +3685,20 @@ class _StaleHorizon(discord.ui.Select["_StaleGuidedMenuBase"]):
         )
 
 
+class _StalePerformanceSection(discord.ui.Select["_StaleGuidedMenuBase"]):
+    def __init__(self) -> None:
+        from parlay_bot.discord_app.performance_panels import SECTIONS
+
+        super().__init__(placeholder="Choose performance view",
+            custom_id="rival:guided:performance-section",
+            options=[discord.SelectOption(label=label, value=key)
+                     for key, label in SECTIONS.items()])
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        await self.view.recover(interaction, performance_section=self.values[0])
+
+
 class _StaleGuidedMenuBase(discord.ui.View):
     """Persistent fallback for one slice of the guided menu's custom_ids."""
 
@@ -3676,7 +3709,7 @@ class _StaleGuidedMenuBase(discord.ui.View):
     async def recover(
         self, interaction: discord.Interaction, *, action: str | None = None,
         coin: str | None = None, horizon: int | None = None,
-        market: str | None = None,
+        market: str | None = None, performance_section: str | None = None,
     ) -> None:
         await interaction.response.defer()
         home = self.home_factory(interaction.user.id)
@@ -3684,7 +3717,12 @@ class _StaleGuidedMenuBase(discord.ui.View):
             home.coin = coin
         if horizon is not None and horizon in RESEARCH_HORIZONS:
             home.horizon = horizon
-        if market in MARKET_NAMES:
+        from parlay_bot.discord_app.performance_panels import SECTIONS
+
+        if performance_section in SECTIONS:
+            home.performance_section = performance_section
+            home.navigate("performance")
+        elif market in MARKET_NAMES:
             home.live_source = market
             home.navigate("crypto-desk")
         elif action in _STALE_SAFE_PAGES:
@@ -3737,6 +3775,7 @@ class StaleGuidedMenuViewD(_StaleGuidedMenuBase):
         super().__init__(home_factory)
         for action in _STALE_BUTTONS_D:
             self.add_item(_StaleButton(action))
+        self.add_item(_StalePerformanceSection())
 
 
 def build_stale_guided_menu_views(

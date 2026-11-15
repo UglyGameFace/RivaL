@@ -34,13 +34,13 @@ async def test_legacy_feed_link_shows_real_cycle_health_on_one_page(tmp_path) ->
     home.market = market
     home.collector = CurrentBoardCollector(client=None, store=bot.store)
     home.venues = ("hyperliquid",)
-    home.navigate("feeds")  # Old link now opens the one-page scorecard.
+    home.navigate("feeds")  # Old link opens the matching Health panel.
     try:
         assert home.page == "performance"
         embeds = await home.render_embeds()
         fields = _all_fields(embeds)
-        assert len(fields) == 3
-        health = fields["⚙️ Running and learning"]
+        assert len(fields) == 2
+        health = fields["Running and baseline checks"]
         assert "⚠️ 0/1 exchanges live (behind: hyperliquid)" in health
         assert "⚠️ predictions: no run recorded yet" in health
 
@@ -48,7 +48,7 @@ async def test_legacy_feed_link_shows_real_cycle_health_on_one_page(tmp_path) ->
 
         ForwardAccuracyMonitor(market).run_once()
         recorded = await home.render_embeds()
-        after = _all_fields(recorded)["⚙️ Running and learning"]
+        after = _all_fields(recorded)["Running and baseline checks"]
         assert "✅ predictions just now" in after
         assert "no run recorded" not in after.split("**")[0].replace("learning loop", "")
     finally:
@@ -122,6 +122,7 @@ async def test_feed_read_failure_does_not_hide_recorded_cycle(tmp_path, monkeypa
     home.market = market
     home.venues = ("hyperliquid",)
     home.navigate("performance")
+    home.performance_section = "health"
 
     def broken_feed():
         raise RuntimeError("simulated feed database failure")
@@ -129,10 +130,10 @@ async def test_feed_read_failure_does_not_hide_recorded_cycle(tmp_path, monkeypa
     monkeypatch.setattr(market, "feed_health", broken_feed)
     try:
         embeds = await home.render_embeds()
-        status = _all_fields(embeds)["⚙️ Running and learning"]
+        status = _all_fields(embeds)["Running and baseline checks"]
         assert "feeds: couldn't check" in status
         assert "✅ predictions just now" in status
-        assert len(_all_fields(embeds)) == 3
+        assert len(_all_fields(embeds)) == 2
     finally:
         home.stop()
         await bot.zip_resolver.aclose()

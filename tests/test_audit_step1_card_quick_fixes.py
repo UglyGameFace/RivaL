@@ -183,7 +183,7 @@ async def test_performance_page_worst_case_fields_fit_and_tell_the_truth(
     even with every number at its widest."""
     from parlay_bot.discord_app.trial_board import TrialRow
 
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     now = datetime.now(UTC)
     rows = [TrialRow(name=f"Model {i:02d}", days=99, results=999999, gain=-.999,
                      ahead=9, exchanges=9, stopped=0, passed=False, after_fees_bps=-99.9)
@@ -226,7 +226,7 @@ async def test_performance_page_worst_case_fields_fit_and_tell_the_truth(
 async def test_24h_tick_stays_green_when_nothing_was_skipped(
         tmp_path, monkeypatch):
     """Control: a clean 288/288 with zero skipped predictions is still ✅."""
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     _patch_live_reads(monkeypatch)
     monkeypatch.setattr(
         home_module, "_cycle_coverage",
@@ -243,7 +243,7 @@ async def test_24h_tick_stays_green_when_nothing_was_skipped(
 async def test_exchange_accuracy_hides_rate_below_20(tmp_path, monkeypatch):
     """_score()'s default is 3 of 7: a 42.9% headline on 7 results is
     noise, not evidence. At 15 of 30 the rate shows."""
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     _patch_live_reads(monkeypatch)
     try:
         fields = _all_fields(await home.render_embeds())
@@ -253,7 +253,7 @@ async def test_exchange_accuracy_hides_rate_below_20(tmp_path, monkeypatch):
     assert "too few to judge — 7 graded" in score
     assert "42.9%" not in score
 
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     _patch_live_reads(monkeypatch)
     monkeypatch.setattr(home_module, "_performance_exchange", lambda *_: {
         "last_7d": {5: {"decided": 30, "correct": 15, "hit_rate": 0.5,

@@ -20,7 +20,7 @@ def _headline(panel) -> str:
 @pytest.mark.asyncio
 async def test_headline_verdict_first_when_trailing_polymarket(tmp_path):
     """Default fixture: RivaL 0.239 vs Polymarket 0.222."""
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     try:
         panel = await home.render()
         assert _headline(panel) == "**No edge yet: Polymarket's odds are still more accurate.**"
@@ -33,7 +33,7 @@ async def test_headline_verdict_first_when_trailing_polymarket(tmp_path):
 
 @pytest.mark.asyncio
 async def test_headline_verdict_first_when_beating_polymarket(tmp_path):
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     home.polymarket_status = lambda *_: {
         "settled_forward_contracts": 300, "learned_contracts": 402,
         "score_window_days": 7, "forward_brier": .2100, "market_baseline_brier": .2222,
@@ -50,7 +50,7 @@ async def test_headline_verdict_first_when_beating_polymarket(tmp_path):
 
 @pytest.mark.asyncio
 async def test_headline_verdict_first_when_too_early(tmp_path):
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     home.polymarket_status = lambda *_: {
         "observed_contracts": 99, "learned_contracts": 99,
         "settled_forward_contracts": 0, "forward_brier": None, "market_baseline_brier": None,
@@ -65,7 +65,7 @@ async def test_headline_verdict_first_when_too_early(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_failed_polymarket_read_is_never_a_verdict(tmp_path):
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
 
     def broken(*_):
         raise RuntimeError("down")
@@ -80,7 +80,7 @@ async def test_a_failed_polymarket_read_is_never_a_verdict(tmp_path):
 
 @pytest.mark.asyncio
 async def test_after_fees_line_stays_on_the_scoreboard(tmp_path):
-    bot, home = _make_home(tmp_path)
+    bot, home = _make_home(tmp_path, section="details")
     home.polymarket_status = lambda *_: {
         "settled_forward_contracts": 300, "learned_contracts": 402,
         "score_window_days": 7, "forward_brier": .2387, "market_baseline_brier": .2222,
@@ -108,7 +108,7 @@ async def test_headlines_are_twelve_words_or_fewer(tmp_path):
          "market_baseline_brier": None},
     ]
     for status in variants:
-        bot, home = _make_home(tmp_path)
+        bot, home = _make_home(tmp_path, section="details")
         home.polymarket_status = lambda *_, _s=status: _s
         try:
             headline = _headline(await home.render())

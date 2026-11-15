@@ -102,11 +102,30 @@ def test_model_quality_alert_is_a_warning_with_its_own_fingerprint():
         "promotion must stay gated")
 
 
-def test_release_is_the_stamped_commit(tmp_path, monkeypatch):
+def test_stale_upload_release_stamp_cannot_mislabel_native_deploy(tmp_path, monkeypatch):
+    monkeypatch.delenv("SENTRY_RELEASE", raising=False)
     monkeypatch.setattr(observability, "__file__", str(tmp_path / "observability.py"))
     assert observability.release() is None
     (tmp_path / "RELEASE_SHA").write_text("63b91ab" + "0" * 33 + "\n")
+    assert observability.release() is None
+    monkeypatch.setenv("SENTRY_RELEASE", "63b91ab" + "0" * 33)
     assert observability.release() == "63b91ab" + "0" * 33
+
+
+def test_native_sentry_source_tag_matches_deploy_observer(tmp_path, monkeypatch):
+    from tools import discloud_native_release
+
+    monkeypatch.delenv("SENTRY_RELEASE", raising=False)
+    for name in discloud_native_release.REQUIRED:
+        (tmp_path / name).write_text(name)
+    module = tmp_path / "src" / "parlay_bot" / "observability.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("alpha = 1\n")
+    monkeypatch.setattr(observability, "__file__", str(module))
+    expected = discloud_native_release.source_sha256(tmp_path)
+    assert observability.release() == "src-" + expected[:16]
+    module.write_text("alpha = 2\n")
+    assert observability.release() != "src-" + expected[:16]
 
 
 def test_handled_task_errors_are_not_reported_but_real_crashes_are():

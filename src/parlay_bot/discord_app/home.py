@@ -1833,7 +1833,7 @@ class GuidedHome(discord.ui.View):
             if self.research_factory is not None:
                 self._add("Detailed Research", "research", 3, "🔬")
                 self._add("Track Next Predictions", "track-forward", 3, "🎯")
-            self._add("After-Cost Check", "proof", 3, "💸")
+            self._add("After-Cost Check", "proof", 4, "💸")
         elif p == "help":
             self._add("Markets", "crypto-desk", 0, "📈", True)
             self._add("Bot Performance", "performance", 0, "📊")

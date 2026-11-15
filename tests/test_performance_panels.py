@@ -81,6 +81,14 @@ def test_baseline_comparison_never_claims_a_temporal_improvement_test():
     assert "Getting more accurate?" not in text
 
 
+def test_overview_withholds_accuracy_when_graded_counts_contradict_scored_counts():
+    exchange = _reports()["exchange"]
+    exchange["last_7d"][5]["scored"] = 1
+    text = _text(_build(exchange=exchange))
+    assert "Exchange counts need checking" in text
+    assert "Right **" not in text
+
+
 def test_failed_or_stale_xmarket_reads_cannot_turn_into_no_models():
     failed = _text(_build(xmarket=RuntimeError("private data must not leak")))
     assert "lifecycle unavailable" in failed and "private data must not leak" not in failed
@@ -106,7 +114,10 @@ async def test_default_home_is_one_overview_and_skips_unrelated_slow_readers(tmp
         assert set(reports) == {"exchange", "polymarket", "trials", "xmarket", "cycles"}
         embeds = await home.render_embeds()
         assert len(embeds) == 1 and "Overview" in embeds[0].title
+        home.research_factory = lambda _owner: object()
         home._buttons()
+        rows = [c.row for c in home.children if isinstance(c, home_module.discord.ui.Button)]
+        assert all(rows.count(row) <= 3 for row in set(rows))
         select = next(c for c in home.children if c.custom_id.endswith("performance-section"))
         assert {o.value for o in select.options} == set(SECTIONS)
         home.performance_section = "models"

@@ -20,13 +20,15 @@ def _number(value):
 
 
 def exchange_summary(reports, horizon):
+    from parlay_bot.discord_app.home import score_consistency_problems
+
     report = reports.get("exchange")
     part = report.get("last_7d", {}).get(horizon) if isinstance(report, dict) else None
     if not isinstance(part, dict):
         return "Exchange performance unavailable", "Couldn't load this scope. Press Refresh."
     n, correct = int(part.get("decided") or 0), int(part.get("correct") or 0)
     model, baseline = _number(part.get("brier")), _number(part.get("baseline_brier"))
-    if not 0 <= correct <= n:
+    if not 0 <= correct <= n or score_consistency_problems(part):
         return "Exchange counts need checking", "Counts are inconsistent; no accuracy shown."
     calls = f"Right **{correct/n:.1%}** · {n:,} graded calls" if n >= 20 else \
         f"{n:,} graded calls · too few to judge"

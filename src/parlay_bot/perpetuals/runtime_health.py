@@ -26,6 +26,13 @@ CONFIRM_AFTER = timedelta(minutes=10)
 # A challenger counts as in use if it issued a forecast this recently.
 BACKLOG_GRACE = timedelta(minutes=10)
 REGRESSION_IN_USE_WITHIN = timedelta(minutes=30)
+# A stored XMarket fit with active incumbent issuance should not silently stop
+# producing immutable shadows while generic forecasts and imports look healthy.
+# This is a host-health incident, not a model promotion or economic verdict.
+XMARKET_ISSUANCE_WINDOW = timedelta(hours=2)
+XMARKET_ISSUANCE_LAG = timedelta(minutes=10)
+XMARKET_IMPORT_GRACE = timedelta(hours=2)
+XMARKET_MIN_INCUMBENT = 8
 
 
 def _age(now: datetime, value: object) -> timedelta | None:
@@ -346,6 +353,8 @@ class RuntimeHealthMonitor:
                         "7-day challenger score check has not completed; "
                         "open regressions are carried forward unverified"
                     )
+            if import_enabled and learning_enabled and warm:
+                faults.update(self._xmarket_issuance_faults(conn, stamp))
             if import_enabled:
                 import_age = _age(stamp, import_checked_at)
                 if import_age is None and (warm or "import_unverified" in active):
@@ -355,6 +364,95 @@ class RuntimeHealthMonitor:
                 if import_status in ("drive_read_unverified", "candidate_registry_unavailable"):
                     faults["import_failed"] = import_status
         return faults
+
+    def _xmarket_issuance_faults(self, conn, stamp: datetime) -> dict[str, str]:
+        """Detect fitted scopes that went silent while incumbent cycles still issue.
+
+        One bounded, cached, read-only check per ten minutes. A rejected 5m
+        candidate has no imported fit and cannot be reported as a runtime
+        failure. New imports get two hours to produce their first forecast.
+        No native source is backfilled, no predictions are issued, and no
+        model is restarted or automatically promoted by this check.
+        """
+        cached = getattr(self, "_xmarket_issuance_cache", None)
+        if cached is not None and (
+                timedelta(0) <= stamp - cached[0] < REGRESSION_RECHECK):
+            return dict(cached[1])
+
+        required = ("rival_xmarket_models", "perp_forward_audit",
+                    "rival_model_shadow_forecasts")
+        if self.store.database.backend == "postgres":
+            rows = conn.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema=current_schema() AND table_name IN (?,?,?)",
+                required,
+            ).fetchall()
+            present = {r["table_name"] for r in rows}
+        else:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN (?,?,?)", required,
+            ).fetchall()
+            present = {r["name"] for r in rows}
+        if set(required) - present:
+            # Cold-start hosts can legitimately lack the optional model
+            # registry. Existing import watchdog owns that failure mode.
+            return {}
+
+        fits = conn.execute(
+            "SELECT asset,horizon_minutes,MAX(imported_at) AS imported_at "
+            "FROM rival_xmarket_models WHERE gates_passed=1 "
+            "AND asset IN ('BTC','ETH','SOL','XRP') "
+            "AND horizon_minutes IN (5,15,60) "
+            "GROUP BY asset,horizon_minutes"
+        ).fetchall()
+        if not fits:
+            self._xmarket_issuance_cache = (stamp, {})
+            return {}
+
+        since = (stamp - XMARKET_ISSUANCE_WINDOW).isoformat()
+        until = (stamp - XMARKET_ISSUANCE_LAG).isoformat()
+        incumbents = conn.execute(
+            "SELECT asset,horizon_minutes,COUNT(*) AS n FROM perp_forward_audit "
+            "WHERE issued_at>=? AND issued_at<? "
+            "AND asset IN ('BTC','ETH','SOL','XRP') "
+            "AND horizon_minutes IN (5,15,60) GROUP BY asset,horizon_minutes",
+            (since, until),
+        ).fetchall()
+        shadows = conn.execute(
+            "SELECT asset,horizon_minutes,COUNT(*) AS n "
+            "FROM rival_model_shadow_forecasts "
+            "WHERE family='xmarket_v1' AND issued_at>=? AND issued_at<? "
+            "AND asset IN ('BTC','ETH','SOL','XRP') "
+            "AND horizon_minutes IN (5,15,60) GROUP BY asset,horizon_minutes",
+            (since, until),
+        ).fetchall()
+        incumbent_by_scope = {
+            (r["asset"], int(r["horizon_minutes"])): int(r["n"])
+            for r in incumbents
+        }
+        shadow_by_scope = {
+            (r["asset"], int(r["horizon_minutes"])): int(r["n"])
+            for r in shadows
+        }
+        faults = {}
+        for fit in fits:
+            asset, horizon = str(fit["asset"]), int(fit["horizon_minutes"])
+            scope = (asset, horizon)
+            imported_age = _age(stamp, fit["imported_at"])
+            count = incumbent_by_scope.get(scope, 0)
+            if (imported_age is not None
+                    and imported_age >= XMARKET_IMPORT_GRACE
+                    and count >= XMARKET_MIN_INCUMBENT
+                    and shadow_by_scope.get(scope, 0) == 0):
+                faults[f"xmarket:no_shadows:{asset}:{horizon}"] = (
+                    f"{asset} {horizon}m has a stored gate-passing XMarket fit "
+                    f"and {count} recent incumbent forecasts but no XMarket "
+                    "shadow rows in the same completed window; check active "
+                    "model pin, native source timing and dispersion candles"
+                )
+        self._xmarket_issuance_cache = (stamp, faults)
+        return dict(faults)
 
     def _score_regressions(self, conn, stamp: datetime, *,
                            full_scan: bool = True) -> dict[str, str]:

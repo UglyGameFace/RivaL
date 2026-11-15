@@ -180,6 +180,86 @@ def test_host_proof_fails_closed_on_missing_and_invalid_evaluations(monkeypatch)
     assert host._future_proof(object(), stamp)["qualified_paper_scopes"] == 0
 
 
+
+def test_host_receipt_exposes_xmarket_own_cost_gates_not_top_family(monkeypatch):
+    """Source-specific XMarket proof must not inherit another model's scores."""
+    now = datetime(2026, 11, 15, 12, tzinfo=UTC)
+    other = {
+        "valid": True, "targets": 500, "days": 23,
+        "eligible_quotes": 400, "closed_quotes": 398,
+        "quote_coverage": .995,
+        "checks": {"future_outcomes": True, "beats_baselines": True,
+                   "quote_coverage": True, "after_cost_paper": True,
+                   "valid_records": True},
+    }
+    xmarket = {
+        "name": "xmarket_v1", "valid": True, "qualified_paper": False,
+        "targets": 40, "days": 1, "eligible_quotes": 27,
+        "closed_quotes": 0, "quote_coverage": 0.0,
+        "missing_quote_windows": 27,
+        "checks": {"future_outcomes": False, "beats_baselines": False,
+                   "quote_coverage": False, "after_cost_paper": False,
+                   "valid_records": True},
+    }
+
+    def fake(_store, *, asset, venue, now):
+        if asset == "BTC" and venue == "hyperliquid":
+            return {"status": "recorded", "evaluations": [{
+                "quote": "USDC", "horizon": 15, "fresh": True,
+                "candidate": other, "paper_qualified": False,
+                "xmarket_v1": xmarket,
+            }]}
+        if asset == "SOL" and venue == "binance":
+            return {"status": "recorded", "evaluations": [{
+                "quote": "USDT", "horizon": 60, "fresh": False,
+                "candidate": other, "paper_qualified": False,
+                "xmarket_v1": {"name": "xmarket_v1", "valid": False,
+                               "qualified_paper": False},
+            }]}
+        return {"status": "no_evaluations", "evaluations": []}
+
+    monkeypatch.setattr(host, "proof_progress", fake)
+    report = host._future_proof(object(), now)
+    assert report["best_exact_source"]["targets"] == 500
+    x = report["xmarket_v1"]
+    assert x["status"] == "recorded"
+    assert x["evaluated_scopes"] == 2
+    assert x["fresh_scopes"] == 1
+    assert x["qualified_paper_scopes"] == 0
+    valid, invalid = x["scopes"]
+    assert (valid["asset"], valid["venue"], valid["horizon_minutes"]) == (
+        "BTC", "hyperliquid", 15,
+    )
+    assert valid["eligible_quotes"] == 27
+    assert valid["closed_quotes"] == 0
+    assert valid["missing_quote_windows"] == 27
+    assert not valid["checks"]["quote_coverage"]
+    assert not valid["qualified_paper"]
+    assert invalid["status"] == "invalid_saved_evidence"
+    assert invalid["fresh"] is False
+    assert "targets" not in invalid
+    assert x["does_not_prove_real_fills"] is True
+    # No raw contract, weights, source price or private evidence JSON.
+    assert "evidence_json" not in json.dumps(x)
+    assert "model_sha256" not in json.dumps(x)
+
+
+def test_xmarket_source_cost_receipt_never_claims_missing_evidence(monkeypatch):
+    now = datetime(2026, 11, 15, 12, tzinfo=UTC)
+    monkeypatch.setattr(host, "proof_progress", lambda *_args, **_kw: {
+        "status": "no_evaluations", "evaluations": [],
+    })
+    empty = host._future_proof(object(), now)
+    assert empty["xmarket_v1"]["status"] == "no_evaluations"
+    assert empty["xmarket_v1"]["qualified_paper_scopes"] == 0
+    monkeypatch.setattr(host, "proof_progress", lambda *_args, **_kw: {
+        "status": "unavailable", "evaluations": [],
+    })
+    unknown = host._future_proof(object(), now)
+    assert unknown["xmarket_v1"]["status"] == "unavailable"
+    assert unknown["xmarket_v1"]["scopes"] == []
+
+
 def test_daily_forward_proof_receipt_runs_without_manual_deployment():
     """Only authenticated read-only host proof; no dummy commits to monitor."""
     workflow = (

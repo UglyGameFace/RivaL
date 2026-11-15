@@ -77,7 +77,40 @@ def test_inadequate_quotes_show_missing_coverage_not_a_win(learning_store):
     assert not sample["candidate"]["checks"]["quote_coverage"]
     assert not sample["candidate"]["checks"]["after_cost_paper"]
     assert "quote coverage" in sample["reason"]
-    assert "quotes ✗ (58 missing)" in proof_progress_text({"evaluations": [sample]})
+    assert "quotes ✗ (65.5% coverage, 110/150 closed, 58 missing)" in proof_progress_text({"evaluations": [sample]})
+
+
+def test_perfect_raw_quotes_are_not_full_qualification_without_minimum_counts(learning_store):
+    """100% of 19 observed exits does not mean 150 qualified windows."""
+    now = datetime(2026, 11, 2, 16, tzinfo=UTC)
+    winner = _seed(learning_store, now)
+    FamilyPromotion(learning_store).evaluate(
+        now=now, contract="BTC", quote="USDC", horizon=5, **_scope(),
+    )
+    with learning_store.connect() as conn:
+        saved = conn.execute(
+            "SELECT evidence_json FROM rival_family_promotion"
+        ).fetchone()["evidence_json"]
+        evidence = json.loads(saved)
+        evidence[winner].update({
+            "qualified": False, "targets": 19, "days": 1,
+            "eligible_quotes": 19, "closed_quotes": 19,
+            "quote_coverage": 1.0, "missing_quote_windows": 0,
+            "challenger_trades": 19,
+        })
+        conn.execute(
+            "UPDATE rival_family_promotion SET evidence_json=?",
+            (json.dumps(evidence),),
+        )
+    result = proof_progress(learning_store, now=now, **_scope())
+    candidate = result["evaluations"][0]["candidate"]
+    assert candidate["name"] == winner and candidate["valid"]
+    assert candidate["quote_coverage"] == 1.0
+    assert candidate["checks"]["quote_coverage"] is False
+    assert result["evaluations"][0]["paper_qualified"] is False
+    readable = proof_progress_text(result)
+    assert ("quotes ✗ (100.0% coverage, 19/150 eligible, "
+            "19/150 closed, 19/50 trades)") in readable
 
 
 def test_bad_saved_proof_never_becomes_qualified(learning_store):
@@ -221,7 +254,7 @@ def test_quote_gap_and_overlap_evidence_is_visible_and_fail_closed(learning_stor
     assert candidate["missing_quote_windows"] == 58
     assert candidate["duplicate_target_rows"] == 3
     text = proof_progress_text(progress)
-    assert "(58 missing, 3 dup)" in text
+    assert "65.5% coverage, 110/150 closed, 58 missing, 3 dup)" in text
     assert "quotes ✗" in text
     # A corrupt persisted summary is never silently shown as qualified.
     data[name]["missing_quote_windows"] = 0

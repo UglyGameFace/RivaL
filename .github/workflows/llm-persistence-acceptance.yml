@@ -1,12 +1,13 @@
 name: RivaL LFM3 persisted-research acceptance
 
 on:
-  # CI tests first, then Discloud deploys its exact passing main SHA.
+  # Discloud native Auto Deploy is independent of CI. This listens only after
+  # the read-only release observer has verified actual host source parity.
   # Never probe the host while the new commit is still being built.
   workflow_run:
     workflows: ["RivaL Production Release"]
     types: [completed]
-  # Only check after a successfully uploaded release, or on an explicit manual request.
+  # Only check after verified native source parity, or on an explicit manual request.
   # The historical proof issues are closed; hourly probes just contend with the local LLM.
   workflow_dispatch:
 
@@ -65,11 +66,11 @@ jobs:
               echo "pending=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            # A green release can merely skip deployment. Require the ACTUAL
-            # Discloud upload step to have succeeded before spending AI quota.
-            deploy_steps="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_ID/jobs" --jq '[.jobs[].steps[]? | select(.name == "Deploy tested RivaL app without replacing its host environment" and .conclusion == "success")] | length')"
-            if [[ "$deploy_steps" != "1" ]]; then
-              echo "::notice::No successful Discloud upload step for this commit."
+            # A green observer can skip host verification. Require the actual
+            # native Discloud source-parity step before spending local LFM3 CPU.
+            parity_steps="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_ID/jobs" --jq '[.jobs[].steps[]? | select(.name == "Verify native Discloud source parity" and .conclusion == "success")] | length')"
+            if [[ "$parity_steps" != "1" ]]; then
+              echo "::notice::Native Discloud host source parity not verified for this commit."
               echo "pending=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi

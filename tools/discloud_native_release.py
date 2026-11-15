@@ -28,7 +28,7 @@ REMOTE_PYTHON = (
     'files=[base/n for n in ("main.py","requirements.txt","pyproject.toml",'
     '"discloud.config")]+sorted((base/"src").rglob("*.py"));'
     "h=hashlib.sha256();"
-    '[(h.update(p.as_posix().encode()),h.update(b"\\0"),'
+    '[(h.update(p.as_posix().encode()),h.update(bytes((0,))),'
     "h.update(hashlib.sha256(p.read_bytes()).digest())) for p in files];"
     'print("RIVAL_RUNTIME_SOURCE_SHA256="+h.hexdigest())'
 )
@@ -45,7 +45,7 @@ def source_sha256(root: Path) -> str:
     digest = hashlib.sha256()
     for path in files:
         digest.update(path.relative_to(root).as_posix().encode())
-        digest.update(b"\\0")
+        digest.update(bytes((0,)))
         digest.update(hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()
 

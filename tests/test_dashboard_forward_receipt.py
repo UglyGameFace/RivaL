@@ -5,7 +5,9 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.dashboard_forward_receipt import (
-    MAX_ITEMS, _row, read_forward_calls,
+    MAX_ITEMS,
+    _row,
+    read_forward_calls,
 )
 
 NOW = datetime(2026, 11, 15, 0, 0, tzinfo=UTC)

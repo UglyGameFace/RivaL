@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import itertools
 import json
+import logging
 import statistics
 from datetime import UTC, datetime, timedelta
 
@@ -165,14 +166,83 @@ class XmarketInputs:
                                  "ON CONFLICT(asset,venue) DO UPDATE SET observed_at=excluded.observed_at",
                                  (asset, venue, now.isoformat()))
 
-    def due(self, source: str, contract: str, now: datetime) -> bool:
+    def due(self, source: str, contract: str, now: datetime, *,
+            cooldown_seconds: int = 55) -> bool:
         self._attempts = {k: v for k, v in self._attempts.items()
                           if now - v < timedelta(minutes=20)}
         key = (source, contract)
-        if key in self._attempts and now - self._attempts[key] < timedelta(seconds=55):
+        if key in self._attempts and now - self._attempts[key] < timedelta(
+                seconds=cooldown_seconds):
             return False
         self._attempts[key] = now
         return True
+
+    def _lag_pm_identity(self, asset: str, target: datetime) -> dict | None:
+        """Find the *observed* native contract covering a missing 60m lag.
+
+        Only use verified identities already persisted from the original live
+        reader. Never infer a token ID or construct one from a slug.
+        """
+        self.initialize()
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                "SELECT sample_json FROM rival_xmarket_observations "
+                "WHERE asset=? AND source='polymarket' AND at>=? AND at<=? "
+                "ORDER BY at DESC LIMIT 64",
+                (asset, (target - timedelta(minutes=16)).isoformat(),
+                 target.isoformat()),
+            ).fetchall()
+        for row in rows:
+            sample = json.loads(row["sample_json"])
+            if timestamp(sample["opens_at"]) < target <= timestamp(sample["closes_at"]):
+                validate_sample(sample)
+                return {key: sample[key] for key in
+                        ("asset", "contract_id", "token_id", "slug", "opens_at", "closes_at")}
+        return None
+
+    async def _recover_pm_60m_lag(self, *, asset: str, client, clock: datetime,
+                                  fixed_observation_time: bool = False) -> int:
+        """Repair *future* source coverage, never retroactively issue a forecast.
+
+        Live native history sometimes lacks the exact sixty-minute PM input
+        required by xmarket_v1. Re-request the already identified, historical
+        native 15m contract at most once per five minutes per asset. New points
+        receive their actual observation time, so a late repair cannot be used
+        by an earlier immutable forecast or fabricate its provenance.
+        """
+        from parlay_bot.research.xmarket_features import sampled_bars
+
+        bar = datetime.fromtimestamp(int(clock.timestamp() // 300) * 300, UTC)
+        lag = bar - timedelta(minutes=60)
+        recent = await asyncio.to_thread(self.recent, asset, at=bar, now=clock)
+        if lag in sampled_bars(recent, asset=asset, as_of=clock)["polymarket"]:
+            return 0
+        if not self.due("polymarket-lag-60", asset, clock,
+                        cooldown_seconds=300):
+            return 0
+        identity = await asyncio.to_thread(self._lag_pm_identity, asset, lag)
+        if identity is None:
+            logging.getLogger(__name__).info(
+                "RivaL XMarket PM 60m lag missing verified old contract asset=%s",
+                asset)
+            return 0
+        response = await client.get(POLY_HISTORY, params={
+            "market": identity["token_id"],
+            "startTs": int(timestamp(identity["opens_at"]).timestamp()),
+            "endTs": int(timestamp(identity["closes_at"]).timestamp()),
+            "fidelity": 1,
+        })
+        response.raise_for_status()
+        if response.is_redirect or len(response.content) > 100_000:
+            raise ValueError("unbounded PM lag history response")
+        received = clock if fixed_observation_time else datetime.now(UTC)
+        points = parse_points("polymarket", response.json(), identity=identity,
+                              observed_at=received)
+        inserted = await asyncio.to_thread(self.record, points)
+        logging.getLogger(__name__).info(
+            "RivaL XMarket PM 60m lag recovery asset=%s inserted=%d parsed=%d",
+            asset, inserted, len(points))
+        return inserted
 
     def _previous_pm(self, asset, clock):
         self.initialize()
@@ -216,6 +286,16 @@ class XmarketInputs:
                         row.update(yes_bid=getattr(notice, "up_bid", None), yes_ask=notice.up_ask,
                                    diagnostic_quote_at=notice.quote_at.isoformat())
             saved += await asyncio.to_thread(self.record, points)
+        # Isolate optional lag repair from the authoritative live capture:
+        # historical fetch/API/schema problems must not discard new native rows.
+        try:
+            saved += await self._recover_pm_60m_lag(
+                asset=notice.asset, client=client, clock=clock,
+                fixed_observation_time=now is not None)
+        except Exception:  # optional verified future-only input repair
+            logging.getLogger(__name__).warning(
+                "RivaL XMarket PM 60m lag recovery unavailable asset=%s",
+                notice.asset, exc_info=True)
         return saved
 
     async def capture_kalshi(self, *, asset, ticker, opens, closes, clock, get) -> int:

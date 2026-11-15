@@ -131,6 +131,121 @@ async def test_live_capture_reuses_clients_and_native_price_not_normalized_ask_r
     assert row["price"] != notice.up_ask / (notice.up_ask + notice.down_ask)
 
 
+@pytest.mark.asyncio
+async def test_live_lag_recovery_fills_real_60m_native_point_without_backdating(
+        learning_store):
+    from parlay_bot.research.xmarket_features import sampled_bars
+
+    inputs = XmarketInputs(learning_store)
+    opened = NOW.replace(minute=0, second=0, microsecond=0)
+    clock = opened + timedelta(minutes=6)
+    at = opened + timedelta(minutes=5)
+    lag = at - timedelta(minutes=60)
+    prior = point("polymarket", lag - timedelta(minutes=4))
+    # A genuine older contract identity exists; only its exact lag price
+    # was absent. The runtime cannot invent missing token/contract IDs.
+    inputs.record([prior])
+    current = point("polymarket", at)
+    notice = SimpleNamespace(horizon=15, issued=opened,
+        expires=opened + timedelta(minutes=15), asset="BTC",
+        slug=current["slug"], condition_id=current["contract_id"],
+        up_token_id=current["token_id"], quote_at=at, up_bid=.52, up_ask=.54)
+    requests = []
+
+    def serve(request):
+        token = request.url.params["market"]
+        requests.append(token)
+        # Fixture tokens are shared: use the immutable old-contract time range.
+        if (token == prior["token_id"]
+                and int(request.url.params["startTs"]) == int(
+                    datetime.fromisoformat(prior["opens_at"]).timestamp())):
+            return httpx.Response(200, json={"history": [
+                {"t": int(lag.timestamp()), "p": .47}
+            ]})
+        return httpx.Response(200, json={"history": [
+            {"t": int(at.timestamp()), "p": .61}
+        ]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as client:
+        assert await inputs.capture_polymarket(notice, client, now=clock) == 2
+        # At the same clock time, the existing cooldown prevents spam.
+        assert await inputs.capture_polymarket(notice, client, now=clock) == 0
+        assert len(requests) == 2
+
+    bars = sampled_bars(inputs.recent("BTC", at=at, now=clock), asset="BTC",
+                        as_of=clock)
+    assert bars["polymarket"][lag]["price"] == .47
+    with learning_store.connect() as conn:
+        row = conn.execute(
+            "SELECT observed_at FROM rival_xmarket_observations "
+            "WHERE source='polymarket' AND contract_id=? AND at=?",
+            (prior["contract_id"], lag.isoformat())).fetchone()
+    assert row is not None
+    assert row["observed_at"] == clock.isoformat()
+    # Repair happened now: it is categorically NOT evidence that the
+    # missing point was available for a forecast issued 30 seconds earlier.
+    earlier = sampled_bars(inputs.recent("BTC", at=at,
+        now=clock + timedelta(seconds=1)), asset="BTC",
+        as_of=clock - timedelta(seconds=30))
+    assert lag not in earlier["polymarket"]
+
+
+@pytest.mark.asyncio
+async def test_live_lag_recovery_without_verified_old_contract_does_not_guess(learning_store):
+    inputs = XmarketInputs(learning_store)
+    opened = NOW.replace(minute=0, second=0, microsecond=0)
+    clock = opened + timedelta(minutes=6)
+    at = opened + timedelta(minutes=5)
+    current = point("polymarket", at)
+    notice = SimpleNamespace(horizon=15, issued=opened,
+        expires=opened + timedelta(minutes=15), asset="BTC",
+        slug=current["slug"], condition_id=current["contract_id"],
+        up_token_id=current["token_id"], quote_at=at, up_bid=.52, up_ask=.54)
+    calls = []
+    def serve(request):
+        calls.append(request.url.params["startTs"])
+        return httpx.Response(200, json={"history": [
+            {"t": int(at.timestamp()), "p": .61}
+        ]})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as client:
+        assert await inputs.capture_polymarket(notice, client, now=clock) == 1
+    assert len(calls) == 1  # no hypothetical old token request
+
+
+@pytest.mark.asyncio
+async def test_lag_repair_http_failure_preserves_authoritative_current_capture(
+        learning_store, caplog):
+    inputs = XmarketInputs(learning_store)
+    opened = NOW.replace(minute=0, second=0, microsecond=0)
+    clock = opened + timedelta(minutes=6)
+    at = opened + timedelta(minutes=5)
+    lag = at - timedelta(minutes=60)
+    old = point("polymarket", lag - timedelta(minutes=4))
+    inputs.record([old])
+    current = point("polymarket", at)
+    notice = SimpleNamespace(horizon=15, issued=opened,
+        expires=opened + timedelta(minutes=15), asset="BTC",
+        slug=current["slug"], condition_id=current["contract_id"],
+        up_token_id=current["token_id"], quote_at=at, up_bid=.52, up_ask=.54)
+    def serve(request):
+        if int(request.url.params["startTs"]) != int(opened.timestamp()):
+            return httpx.Response(503)
+        return httpx.Response(200, json={"history": [
+            {"t": int(at.timestamp()), "p": .61}
+        ]})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as client:
+        assert await inputs.capture_polymarket(notice, client, now=clock) == 1
+    assert "PM 60m lag recovery unavailable" in caplog.text
+    # The strict 61-minute causal serving window excludes the older 07:01
+    # identity point; the current 08:05 capture must remain available.
+    assert len(inputs.recent("BTC", at=at, now=clock)) == 1
+    with learning_store.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM rival_xmarket_observations "
+            "WHERE source='polymarket'"
+        ).fetchone()["n"] == 2  # old identity and current point; no invented lag
+
+
 def test_bundle_cannot_mix_assets_or_substitute_normalized_hash():
     p = point("polymarket", NOW.replace(second=0, microsecond=0))
     bundle = {"schema": BUNDLE_SCHEMA, "asset": "ETH", "samples": [p]}

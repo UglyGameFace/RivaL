@@ -31,12 +31,17 @@ async function main(){
  };
  const issued=new Date(Date.now()-120000).toISOString();
  const target=new Date(Date.now()+180000).toISOString();
+ const oldTarget=new Date(Date.now()-120000).toISOString();
+ const olderIssue=new Date(Date.now()-300000).toISOString();
  const payload={schema_version:1,captured_at:now,host:{
   recent_forward_calls:{status:'observed',captured_at:now,window_hours:6,not_trading_calls:true,
    rows:[{asset:'BTC',horizon:5,venue:'okx',quote:'USDT',issued_at:issued,target_close_at:target,
     probability_up:0.62,baseline_up:0.52,direction:'UP',status:'open',outcome_up:null,
     lead_seconds:300,model_version:'prospective-logistic-persistent-v3',
     raw_contract:'PRIVATE',weights_sha256:'PRIVATE',discord_user_id:'PRIVATE'},
+    {asset:'SOL',horizon:5,venue:'okx',quote:'USDT',issued_at:olderIssue,target_close_at:oldTarget,
+     probability_up:0.51,baseline_up:0.49,direction:'UP',status:'ungraded',outcome_up:null,
+     lead_seconds:180,contract:'PRIVATE',weights_sha256:'PRIVATE'},
     {asset:'ETH',horizon:5,venue:'bad/PRIVATE',quote:'USD',issued_at:issued,target_close_at:target,
      probability_up:0.6,baseline_up:0.5,direction:'UP',status:'open',outcome_up:null,lead_seconds:300}]},
   xmarket_stage:'waiting_for_completed_day_export',
@@ -72,7 +77,10 @@ async function main(){
  const receipt=JSON.parse(records.get('latest'));
  assert.equal(receipt.provenance.verified,true);
  assert.equal(receipt.host.recent_forward_calls.status,'observed');
- assert.equal(receipt.host.recent_forward_calls.rows.length,1);
+ assert.equal(receipt.host.recent_forward_calls.rows.length,2);
+ assert.equal(receipt.host.recent_forward_calls.rows[1].asset,'SOL');
+ assert.equal(receipt.host.recent_forward_calls.rows[1].status,'ungraded');
+ assert.equal(receipt.host.recent_forward_calls.rows[1].outcome_up,null);
  assert.equal(receipt.host.recent_forward_calls.rows[0].probability_up,0.62);
  assert.equal(receipt.host.recent_forward_calls.rows[0].direction,'UP');
  assert.equal(receipt.host.recent_forward_calls.rows[0].outcome_up,null);

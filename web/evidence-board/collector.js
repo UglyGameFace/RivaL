@@ -20,7 +20,7 @@ async function verifyGithubOIDC(token) {
   const now=Math.floor(Date.now()/1000);
   if(clm.iss!=='https://token.actions.githubusercontent.com'||clm.aud!==AUD||
      clm.repository!==REPO||clm.ref!=='refs/heads/main'||clm.workflow_ref!==WORKFLOW||
-     !['schedule','workflow_dispatch','push'].includes(clm.event_name)||
+     !['schedule','workflow_dispatch','push','workflow_run'].includes(clm.event_name)||
      !Number.isInteger(clm.exp)||clm.exp<=now||clm.exp>now+1800||
      !Number.isInteger(clm.iat)||clm.iat>now+60||now-clm.iat>1800||
      !/^\d{5,18}$/.test(String(clm.run_id||'')))throw Error('claim_mismatch');

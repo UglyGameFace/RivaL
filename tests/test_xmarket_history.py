@@ -131,6 +131,91 @@ async def test_live_capture_reuses_clients_and_native_price_not_normalized_ask_r
     assert row["price"] != notice.up_ask / (notice.up_ask + notice.down_ask)
 
 
+@pytest.mark.asyncio
+async def test_live_pm_recovers_real_60m_lag_from_verified_old_contracts(learning_store):
+    from parlay_bot.research.xmarket_features import sampled_bars
+
+    inputs = XmarketInputs(learning_store)
+    opened = datetime(2026, 11, 12, 12, 30, tzinfo=UTC)
+    clock = opened + timedelta(seconds=30)
+    previous = [opened - timedelta(minutes=15 * n) for n in range(1, 6)]
+    for old_open in previous:
+        # Only an old, validated native identity is enough to ask the provider
+        # for its exact historical 15m window. No guessed condition ID.
+        inputs.record([point("polymarket", old_open + timedelta(minutes=5))])
+    active = point("polymarket", opened)
+    notice = SimpleNamespace(
+        horizon=15, issued=opened, expires=opened + timedelta(minutes=15),
+        asset="BTC", slug=active["slug"], condition_id=active["contract_id"],
+        up_token_id=active["token_id"], quote_at=opened, up_bid=.48, up_ask=.52,
+    )
+    requests = []
+
+    def handler(request):
+        start = datetime.fromtimestamp(int(request.url.params["startTs"]), UTC)
+        requests.append(start)
+        if start == opened:
+            return httpx.Response(200, json={
+                "history": [{"t": int((opened + timedelta(seconds=10)).timestamp()), "p": .51}]
+            })
+        return httpx.Response(200, json={"history": [
+            {"t": int((start + timedelta(minutes=5)).timestamp()), "p": .55},
+            {"t": int((start + timedelta(minutes=15)).timestamp()), "p": .61},
+        ]})
+
+    with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await inputs.capture_polymarket(notice, client, now=clock) == 6
+        assert requests == [opened, *previous]
+        # A causal forecast that predates the recovery MUST NOT see the old
+        # price, even though its market timestamp is an hour old.
+        lag = opened - timedelta(minutes=60)
+        before = sampled_bars(
+            inputs.recent("BTC", at=opened, now=clock - timedelta(seconds=1)),
+            asset="BTC", as_of=clock - timedelta(seconds=1),
+        )
+        assert lag not in before["polymarket"]
+        after = sampled_bars(
+            inputs.recent("BTC", at=opened, now=clock),
+            asset="BTC", as_of=clock,
+        )
+        assert after["polymarket"][lag]["price"] == .61
+        # Current source may refresh again, but already recovered old
+        # contracts are throttled for fifteen minutes.
+        assert await inputs.capture_polymarket(
+            notice, client, now=clock + timedelta(seconds=65)) == 0
+    assert requests == [opened, *previous, opened, previous[0]]
+
+
+@pytest.mark.asyncio
+async def test_unavailable_pm_lag_never_gets_synthesized_from_old_native_source(learning_store):
+    from parlay_bot.research.xmarket_features import sampled_bars
+
+    inputs = XmarketInputs(learning_store)
+    opened = datetime(2026, 11, 12, 12, 30, tzinfo=UTC)
+    clock = opened + timedelta(seconds=30)
+    past = opened - timedelta(minutes=75)
+    inputs.record([point("polymarket", past + timedelta(minutes=5))])
+    p = point("polymarket", opened)
+    notice = SimpleNamespace(
+        horizon=15, issued=opened, expires=opened + timedelta(minutes=15),
+        asset="BTC", slug=p["slug"], condition_id=p["contract_id"],
+        up_token_id=p["token_id"], quote_at=opened, up_bid=.48, up_ask=.52,
+    )
+
+    def handler(request):
+        start = int(request.url.params["startTs"])
+        # Provider did not supply a close point for the old contract.
+        return httpx.Response(200, json={"history": [
+            {"t": start + (10 if start == int(opened.timestamp()) else 300), "p": .55}
+        ]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await inputs.capture_polymarket(notice, client, now=clock)
+    bars = sampled_bars(inputs.recent("BTC", at=opened, now=clock),
+                        asset="BTC", as_of=clock)
+    assert opened - timedelta(minutes=60) not in bars["polymarket"]
+
+
 def test_bundle_cannot_mix_assets_or_substitute_normalized_hash():
     p = point("polymarket", NOW.replace(second=0, microsecond=0))
     bundle = {"schema": BUNDLE_SCHEMA, "asset": "ETH", "samples": [p]}

@@ -59,6 +59,10 @@ release. Those observations cannot by themselves establish the deployed SHA.
   the independent hourly uptime workflow. Do not restart the bot just to
   make an evidence receipt appear.
 
-The existing Discloud app environment, PostgreSQL credentials, private Drive
+Sentry's legacy `RELEASE_SHA` file was previously stamped only by the retired
+GitHub upload action. Native deployment does not recreate that file. To avoid
+attributing current errors to an old commit, runtime Sentry tagging now uses
+an explicitly configured hexadecimal `SENTRY_RELEASE` when present, otherwise\na deterministic `src-<fingerprint>` tag derived from shipped source files.
+That tag is **not** a GitHub commit SHA.\n\nThe existing Discloud app environment, PostgreSQL credentials, private Drive
 configuration, and native GitHub settings are never modified by this observer.
 No real-money orders, migrations, training, or model-gate changes occur here.

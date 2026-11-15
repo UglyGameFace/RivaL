@@ -1,85 +1,44 @@
-# RivaL Evidence Board Worker
+# RivaL Operations Dashboard
 
-This directory versions the Cloudflare `rival-evidence-board` Worker source. The last independently verified live deployment before this change was `a9111fab-5b7d-4a9c-9f34-343427537636` on November 12 at 23:52 EST (November 13 at 04:52 UTC). This source must be tested before release and the production version compared after deployment. The `RIVAL_EVIDENCE_RECEIPTS` service binding points to `rival-evidence-collector`.
+The Cloudflare `rival-evidence-board` Worker is now the **read-only RivaL operations dashboard**, not a mini GitHub. GitHub activity and research provenance remain available under **Diagnostics**, but do not form the primary product.
 
-The site uses Cloudflare's legacy **Service Worker** script format. Uploads of the source through the module-only `/versions` endpoint do not work; use the validated Service Worker `PUT /accounts/{account_id}/workers/scripts/rival-evidence-board` path and preserve the service binding, compatibility date, CSP, and GET/HEAD-only access. The source is now versioned so future edits can be compared and validated before deployment. Never upload environment secrets or bearer credentials into the public script.
+## Main screens
 
-## Real source vs display
+| Screen | What users see | Real source | Important gaps |
+| --- | --- | --- | --- |
+| **Command** | RivaL production cycles, forecast/settlement counters, XMarket data coverage, recent BTC/ETH/SOL/XRP quotes, true model qualification and top operational blockers | Signed GitHub-OIDC Discloud/DB/Drive receipt plus separate live public market API | Source health is dated; true per-call signal feed not yet published |
+| **Markets** | BTC/ETH/SOL/XRP median prices, 24-hour change/volume/open interest, supported venue status, venue quotes/spreads/funding, Polymarket 5/15/60-minute public CLOB asks and Kalshi crypto market summaries | Existing read-only `rival-public-site` Worker, through a narrowly allowlisted service binding | Indicative quotes cannot prove RivaL predictions or executable orders |
+| **Signals** | Issued/settled forecast counts, the 12 asset/horizon paired scoring scopes, four independent market-engine evidence classes, current promotion gates | Signed host and PostgreSQL performance receipt | **No individual prospective forecast direction, entry, SL/TP, model probability or contract order is claimed connected** |
+| **Models** | Per-scope model vs baseline Brier comparisons, correlated pair counts, distinct target windows, source timestamp and method, observed online weight updates | Signed PostgreSQL paired settled scoring | Neither win rate nor after-cost edge is inferred. Exact deployed model hash/lineage unavailable |
+| **XMarket** | 12 training reports and gates, exports by asset, latest import count, XMarket shadow row count, per-scope evidence drilldown | Signed host/Drive receipts; separately dated archived historical snapshots | Five reported host imports were **not** linked by artifact hash to the latest passing Drive reports. Shadow rows still zero at last receipt |
+| **Intelligence** | LFM3 container reachability versus verified private inference, unavailable CPU/RAM/TPS/fallback/restart health in explicit slots | Bounded signed Intelligence host observations | No authenticated private inference measurement yet. Container online is not model-serving proof |
+| **Diagnostics** | Source provenance, the earlier Evidence Board research, CI queue, code changes, and audit trails | Signed receipts and bounded official GitHub read-only endpoints | Never treated as primary model-readiness metrics |
 
-| Screen | Actual data | What is not verified |
-| --- | --- | --- |
-| Overview | Signed source receipt timestamp, Discloud/DB aggregates, model reports and paired Brier scores | Current live status between source observations |
-| Experiments | Actual bounded GitHub PR records, independently verified XMarket training reports and per-scope paired score observations | Full Model Lab genome inventory, active artifact SHA, a profitable model |
-| CI Queue | Signed bounded GitHub workflow runs; on-demand **public** GitHub job steps and artifact listings | Private job logs, full run history, successful production uptake |
-| Evidence | Signed Drive reports plus source-specific host/DB counters and independent historical candidate bars | Source matching where the training gate has blocked it |
-| Audit | Signed GitHub PR metadata, verification timestamps and modeled missing proof | Claims that a merge/CI success implies a live model |
+Android has five persistent bottom controls and a horizontally scrollable full section menu; the **More** control exposes XMarket, Intelligence and Diagnostics. The default route now opens **Command**, never GitHub tickets.
 
-The Worker serves only GET/HEAD and never makes write calls to Discloud, PostgreSQL or Drive. The public `/api/run` read-through calls GitHub's public API for a run already found in the signed bounded snapshot. Missing rate-limited results are not interpreted as zero jobs or zero artifacts. This is not an authenticated private GitHub log proxy.
+## Two independently timestamped read-only data pipelines
 
-The web page checks cached receipts every 60 seconds while visible. **Source collection is different**: the GitHub Actions workflow `.github/workflows/evidence-board-receipt.yml` nominally runs every 10 minutes, with GitHub OIDC signing and an independently verifying Cloudflare collector. GitHub can delay scheduled work; at the time this source was committed, real recurring `event=schedule` runs had not been proven. Track that separately in [issue #554](https://github.com/UglyGameFace/RivaL/issues/554). Do not label old receipts LIVE.
+1. **Signed production evidence**: GitHub Actions `.github/workflows/evidence-board-receipt.yml` collects bounded authenticated Discloud, PostgreSQL, private Drive and Intelligence observations, obtains short-lived GitHub OIDC identity, and publishes to the separate Cloudflare `rival-evidence-collector` Worker with signature/issuer/repository/main/ref/event validation. The collector retains only allowlisted sanitized data in KV. Website refresh checks the saved receipt at most once a minute. GitHub cron is best-effort; a successful main push or same-repository successful Production Release can trigger additional publication. Every health claim must include the capture time and source age.
+2. **Public market quotes**: the dashboard Worker binds `RIVAL_MARKET_FEED` as a Cloudflare service binding to the already deployed `rival-public-site` Worker. Only `GET /api/perps`, `GET /api/polymarket?asset=BTC|ETH|SOL|XRP`, and `GET /api/kalshi?asset=BTC|ETH|SOL|XRP` are invoked. They are exposed by the dashboard under `/api/market/perps` and `/api/market/predictions?asset=...`, respectively. The server uses an explicit per-field allowlist; strips token IDs, cookies, all private data, unexpected fields and unrecognized assets; and never forwards caller headers or arbitrary URLs. Each upstream has an independent result, unknown values remain `null`, bad sources fail closed or return partial read-only results. Public quotes update about every 30 seconds while the page is visible and are labeled separately from Discloud evidence. Source worker-side market caches avoid repeated exchange fan-out on every page paint.
 
-Model-source constraints stay strict: 12 XMarket November 12 reports had no eligible matched prospective bars; no fitted/imported XMarket model or shadow rows were shown by the last signed host receipt. A separate 8-scope paired Brier score sample and 102 observed changing-weight streams are **not after-cost, out-of-sample proof of superior model performance**.
+The dashboard never sends an order, stores credentials in its public script, issues a model prediction, initializes production tables, trains a model, publishes to private Drive, writes Discloud data or changes model promotion rules. The public site itself has trading disabled.
 
-## Regression
+### Cloudflare deployment requirements
 
-### Per-timeframe scores and the completed-day evidence chain
+This Worker intentionally remains a **legacy Service Worker** (`addEventListener('fetch',...)`), not a module upload. Deploy its exactly merged and tested `web/evidence-board/worker.js` via `PUT /accounts/{account_id}/workers/scripts/rival-evidence-board`. Preserve the existing `RIVAL_EVIDENCE_RECEIPTS -> rival-evidence-collector` service binding and compatibility date `2026-11-01`. Add **only one** additional service binding: `RIVAL_MARKET_FEED -> rival-public-site` with environment `production`. The new code returns `503` for public markets without that binding; it never substitutes fixture prices. Leave secrets on `rival-public-site`, do not duplicate them on the public dashboard.
 
-The incumbent scoring receipt reads at most 500 valid settled source pairs
-**per asset and horizon**, using the existing asset/horizon/issuance index.
-The previous shared per-asset limit could let busy 15/60-minute scopes crowd
-out a 5-minute scope. Every receipt now identifies its sampling policy,
-distinct target windows and venue count. Venue pairs remain correlated
-observations, not independent trades. Settlement must already exist at the
-capture time. The chart never joins snapshots with different sampling policies.
+Post-release checks: fetch the deployed source and compare it byte-for-byte to the merged GitHub commit; confirm both service bindings, compatibility date and fresh `/api/status`; verify `/api/market/perps` has BTC/ETH/SOL/XRP entries with source timestamps and unavailable venue statuses; verify `/api/market/predictions?asset=BTC` has separate Polymarket and Kalshi statuses with their actual quote-source metadata; reject `asset=DOGE`. Render **Command**, **Markets**, **Models**, **XMarket**, **Intelligence**, and **Diagnostics** at 390px mobile and desktop widths. Confirm stale or missing sources show unavailable, not zero/green.
 
-The outcome clock is the **close of the target five-minute candle**, at
-`target_opened_at + 5 minutes`, for every horizon. This is the same clock
-used by `ForwardAccuracyMonitor.run_once` and its settlement lookup. Using
-the opening time as a deadline incorrectly excludes normal 5-minute calls
-issued after that candle opens. Such calls are prospective only until the
-closing outcome; the score receipt shows how many were issued inside the
-target candle and their minimum remaining lead time. It rejects issuance
-at/after the close, settlement before the close, naive clocks and settlement
-after the snapshot. V3 snapshots are kept separate from the earlier V2
-pre-opening-only sample. No prediction, label, model, baseline, execution
-or promotion rule is changed by this read-only reporting correction.
+## Validation and limitations
 
-Host XMarket receipts preserve the actual capture/export/fit/import/shadow
-stage, the eligible-day cutoff, the recent pending backlog and published-day
-counts for each asset. Private Drive file IDs and raw rows are discarded.
-An old blocked training report keeps its own date; it cannot override a newer
-host export acknowledgment or prove that the trainer restored those bytes.
-Offline source/split/gate rejection reasons survive the publisher and receiver.
-Offline acceptance still does not prove import, prospective shadow issuance,
-promotion or after-cost edge.
+- `node tools/test_evidence_board_ui.js` checks the operational views plus legacy evidence semantics with no network.
+- `node tools/test_rival_operations_api.js` mocks the service binding and tests GET-only strict route allowlists, missing bindings, quote sanitization, unknown/invalid asset behavior and independent partial source failures.
+- `tests/test_evidence_board_ui_source.py` runs both Node checks and collector regressions under the normal Python full CI suite.
+- Existing `tools/test_evidence_collector.js` and `tests/test_evidence_board_receipt.py` continue verifying receipt provenance and read-only constraints.
+- No live RivaL personalized holdings, position sizing, wallet, per-contract model targets, trade P&L, live private inference metrics, or economic edge can be filled from the current available sources. The dashboard exposes clearly labeled gaps rather than performing private proxy access or generating sample statistics.
 
-`collector.js` versions the production **module Worker** receiver. Its OIDC
-issuer/signature/repository/ref/workflow checks and KV binding are preserved.
-Deploy it with `main_module: "collector.js"` and `EVIDENCE_KV` bound to the
-existing namespace; deploy the board with the original service binding and
-legacy Service Worker format. Receiver changes are backward compatible with
-older signed payloads. Deploy the receiver before the publisher emits new fields.
+## Next integration, separate from this UI release
 
-`node tools/test_evidence_collector.js` exercises the actual receiver with a
-locally generated RSA key, signed fixtures, claim/signature rejection, the
-sanitized KV round trip and private-field removal. It makes no network calls
-and creates no production evidence. PostgreSQL CI also executes the actual
-bounded scoring query against busy mixed-horizon fixtures.
+Publish an allowlisted **immutable prospective per-call ledger summary** (model family/version, market/provider, asset/horizon, prediction direction, probability, created/target times, quote quality, issued/settled/status) using the same private signed read-only collector. That must be built with source-level privacy/identity checks and must never publish raw credentials, prompts, private trades or unverified model weights. Separately add authenticated non-sensitive LFM3 latency/TPS/memory/fallback summaries. Those are evidence-source enhancements, not a reason to leave GitHub ticket lists on the home screen.
 
-Run `node tools/test_evidence_board_ui.js`. The normal Python test suite also runs this via `tests/test_evidence_board_ui_source.py` when Node is available. The test parses and compiles the **real** Worker-served browser script, populates synthetic signed-source fixtures without network or secrets, and exercises all research queues, Experiments, CI, Audit, report/PR drill-downs, and read-only route invariants.
-
-This source snapshot and Cloudflare's previous Worker versions provide rollback evidence; any later production change must update this source and tests in the same cohesive change. The test's synthetic fixtures prove UI behavior only, not source-model accuracy.
-
-## November 14, 2026 source-fidelity audit
-
-Cloudflare Browser Rendering independently loaded the mobile website, but the most recent verified signed receipt was captured at `2026-11-14T20:27:33Z`, over two and a half hours before the audit. GitHub Actions run [43637558551](https://github.com/UglyGameFace/RivaL/actions/runs/43637558551) succeeded as a scheduled publication. The workflow has a nominal ten-minute GitHub cron, not an SLA; browser polling can never create a new authenticated Discloud/PostgreSQL/Drive receipt. Confirm multiple subsequent `event=schedule` runs and KV provenance before claiming that automatic collection is reliable. Issue #554 remains unresolved until evidence establishes recurring consistency.
-
-The previously labeled `Matched historical scopes` number only counted asset/horizon reports with nonzero *separate provider comparison pairs*. It did **not** verify aligned historical training examples. It is now labeled `Provider comparison scopes` and explicitly excludes eligibility claims. All blocked-fit labels remain attached to dated reports and cannot override more recent recovery evidence. A source-health endpoint `/api/status` returns HTTP 503 when the signed capture is older than 25 minutes or unavailable (and 200 only for a recent verified receipt). `/health` remains a separate liveness-only check and **never** represents source/model health. Neither endpoint trains, publishes, trades, or changes the collector's OIDC trust boundary. Source proof, import hashes and prospective model-edge gates are unchanged.
-
-## Independent publication triggers (November 14)
-
-To mitigate GitHub's best-effort scheduled delivery, the signed publisher keeps its ten-minute cron and also runs on scoped `main` changes affecting the bot or Evidence Board, and **after successful same-repository `main` Production Release workflow completions**. The additional `workflow_run` gate explicitly requires conclusion=success, head_branch=main and the same source repository, and always checks out trusted `main`. It consumes no release artifacts or untrusted code, and preserves GitHub OIDC validation and provider secrets in Actions. This is not a guarantee that idle periods will receive a receipt within ten minutes: check actual source timestamps and repeated independently observed publications, and keep issue #554 open until the source cadence is reliable. A GitHub release is not proof Discloud runs the same SHA; the live receipt's host observations remain separate.
-
-## Mixed XMarket training verdicts in the November 14 receipt
-
-The signed source captured at 2026-11-14T23:54:42.516Z reports **five XMarket imported scopes but zero issued XMarket shadow rows** in the 24h window. The twelve newer/mixed-age Drive reports include **seven offline-gate rejections with positive report-reported eligible rows** and **five blocks with insufficient labeled rows**; none of the twelve reports is marked as a passing fit. The two categories are different evidence types: the host import counter has no artifact-hash correspondence to each latest report. The board must not describe all twelve as missing prospective history, claim their provider comparison pairs prove fit, or infer these five imports are newly qualified models. The historical Nov 12 candidate chart remains explicitly dated.
+The current confirmed research status at the November 14, 2026 7:05 PM EST receipt was 5 imported XMarket scopes, 0 issued XMarket shadow rows in the host window, 7 offline-gate-rejected and 5 insufficient-label-blocked reports among the 12 latest/mixed-age reports, and no qualifying after-cost paper scope. That snapshot is illustrative; the deployed UI reads later signed records and never hardcodes these counts.

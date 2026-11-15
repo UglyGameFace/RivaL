@@ -30,6 +30,8 @@ def _finite(value):
 
 def _candidate_summary(name: str, row: dict, *, selected: bool) -> dict:
     """Do not turn a stale/corrupt saved summary into a passing model."""
+    if row.get("input_complete", True) is not True:
+        return {"name": name, "valid": False, "reason": "Evaluation input is incomplete"}
     try:
         targets = int(row["targets"])
         days = int(row["days"])
@@ -163,6 +165,8 @@ def proof_progress(store, *, asset: str, venue: str,
             evaluations.append({
                 "horizon": horizon, "venue": str(record["venue"]),
                 "contract": str(record["contract"]), "quote": str(record["quote"]),
+                "evaluated_at": evaluated.astimezone(UTC).isoformat(),
+                "age_seconds": int(age.total_seconds()),
                 "fresh": current, "candidate": candidate, "reason": reason,
                 "paper_qualified": bool(candidate and candidate.get("qualified_paper")),
                 "xmarket_v1": xmarket,

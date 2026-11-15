@@ -14,6 +14,7 @@ from parlay_bot.discord_app.home import _performance_cycles
 from parlay_bot.perpetuals.dashboard_forward_receipt import read_forward_calls
 from parlay_bot.perpetuals.family_quotes import SUPPORTED_QUOTE_SOURCES
 from parlay_bot.perpetuals.proof_progress import proof_progress
+from parlay_bot.perpetuals.xmarket_quote_receipt import read_xmarket_quotes
 from parlay_bot.perpetuals.xmarket_watchdog_receipt import read_xmarket_watchdog
 from parlay_bot.storage.hot import PostgresHotStore
 
@@ -66,6 +67,8 @@ def _future_proof(store, now: datetime) -> dict:
                         scoped = {
                             "asset": asset, "venue": venue, "quote": currency,
                             "horizon_minutes": item["horizon"],
+                            "evaluated_at": item.get("evaluated_at"),
+                            "evaluation_age_seconds": item.get("age_seconds"),
                             "fresh": bool(item["fresh"]),
                             "status": ("recorded" if xmarket.get("valid") is True
                                        else "invalid_saved_evidence"),
@@ -335,6 +338,7 @@ def read_receipt() -> dict:
             "polymarket_contest": _contest_progress(store, now),
             "xmarket": xmarket,
             "xmarket_watchdog": read_xmarket_watchdog(store, now),
+            "xmarket_quote_progress": read_xmarket_quotes(store, now, xmarket),
             "research_loop": _research_progress(store, settings),
             "runtime_diagnostics": _runtime_diagnostics(store, now),
             "does_not_prove_prediction_edge": True,

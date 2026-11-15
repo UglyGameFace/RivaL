@@ -27,7 +27,7 @@ def _utc(value: object) -> datetime | None:
 def _prob(value: object) -> float | None:
     try:
         n = float(value)
-        if 0 <= n <= 1 and n == n and n != float("inf"):
+        if 0 <= n <= 1:
             return round(n, 6)
     except (TypeError, ValueError, OverflowError):
         pass

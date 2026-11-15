@@ -114,9 +114,11 @@ class FamilyQuoteShadow:
                 """SELECT * FROM rival_family_quote_shadow
                    WHERE venue=? AND contract=? AND quote=? AND asset=?
                     AND state='OPEN' AND target_close_at<=?
-                    AND target_close_at>=? ORDER BY target_close_at LIMIT ?""",
+                    AND target_close_at>=? AND entry_at<? AND quantity<=?
+                   ORDER BY target_close_at,family,reference_opened_at LIMIT ?""",
                 (venue,contract,currency,quote.asset,quote.exchange_at.isoformat(),
-                 (quote.exchange_at-EXIT_GRACE).isoformat(),MAX_ROWS),
+                 (quote.exchange_at-EXIT_GRACE).isoformat(),quote.exchange_at.isoformat(),
+                 min(float(quote.bid_quantity),float(quote.ask_quantity)),MAX_ROWS),
             ).fetchall()
             for row in exits:
                 entry=datetime.fromisoformat(row["entry_at"])
@@ -138,24 +140,42 @@ class FamilyQuoteShadow:
                      challenger,incumbent,venue,contract,currency,
                      row["horizon_minutes"],row["family"],row["reference_opened_at"]),
                 ).rowcount
+            # Apply the existing eligibility rules BEFORE the batch limit.
+            # Re-reading an already captured/cash/unsupported/closed first
+            # batch otherwise starves later families for the entire 90s window.
+            family_sql = "s.family IN (" + ",".join("?" for _ in FAMILIES) + ")"
+            family_sql += " OR " + " OR ".join(
+                "substr(s.family,1,?)=?" for _ in CHALLENGER_PREFIXES
+            )
+            family_params = (*FAMILIES, *(
+                value for prefix in CHALLENGER_PREFIXES for value in (len(prefix),prefix)
+            ))
             issued = conn.execute(
-                """SELECT venue,contract,quote,asset,horizon_minutes,family,
-                          reference_opened_at,issued_at,target_opened_at,
-                          training_sha256,probability_up,incumbent_up
-                   FROM rival_model_shadow_forecasts
-                   WHERE venue=? AND contract=? AND quote=? AND asset=?
-                    AND issued_at>=? AND issued_at<=?
-                   ORDER BY issued_at LIMIT ?""",
+                """SELECT s.venue,s.contract,s.quote,s.asset,s.horizon_minutes,s.family,
+                          s.reference_opened_at,s.issued_at,s.target_opened_at,
+                          s.training_sha256,s.probability_up,s.incumbent_up
+                   FROM rival_model_shadow_forecasts s
+                   WHERE s.venue=? AND s.contract=? AND s.quote=? AND s.asset=?
+                    AND s.issued_at>=? AND s.issued_at<=?
+                    AND s.target_opened_at>?
+                    AND (s.probability_up>=? OR s.probability_up<=?
+                         OR s.incumbent_up>=? OR s.incumbent_up<=?)
+                    AND length(s.family)<=64 AND (""" + family_sql + """ )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM rival_family_quote_shadow q
+                        WHERE q.venue=s.venue AND q.contract=s.contract AND q.quote=s.quote
+                          AND q.horizon_minutes=s.horizon_minutes AND q.family=s.family
+                          AND q.reference_opened_at=s.reference_opened_at)
+                   ORDER BY s.issued_at,s.horizon_minutes,s.family,s.reference_opened_at
+                   LIMIT ?""",
                 (venue,contract,currency,quote.asset,
                  (quote.exchange_at-ENTRY_GRACE).isoformat(),
-                 quote.exchange_at.isoformat(),MAX_ROWS),
+                 quote.exchange_at.isoformat(),
+                 (quote.exchange_at-timedelta(minutes=5)).isoformat(),
+                 SCORE_THRESHOLD,1-SCORE_THRESHOLD,SCORE_THRESHOLD,1-SCORE_THRESHOLD,
+                 *family_params,MAX_ROWS),
             ).fetchall()
             for row in issued:
-                if (row["family"] not in FAMILIES
-                        and not (str(row["family"]).startswith(
-                            CHALLENGER_PREFIXES
-                        ) and len(str(row["family"])) <= 64)):
-                    continue
                 at=datetime.fromisoformat(row["issued_at"])
                 target=datetime.fromisoformat(row["target_opened_at"])+timedelta(minutes=5)
                 if (at > quote.exchange_at or

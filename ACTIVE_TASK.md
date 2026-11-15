@@ -1,23 +1,22 @@
 # RivaL active bot work — November 15, 2026
 
 ## Objective
-Finish source-exact XMarket quote/settlement evidence and complete, attributable family evaluation. No real-money orders, fabricated historical inputs, duplicate training, weakened gates or parallel deployment path.
+Progress the [complete backlog](docs/RIVAL_REMAINING_BACKLOG.md), keeping website work paused. Current cohesive outcome: unblock source-exact paper path settlement and distinguish missing issuance from missing outcomes. No model qualification or profitable prediction skill is inferred from engineering checks.
 
-## Verified baseline
-- Main: `fe6c2cf5ab0c9f0ed323d67f6b4e44c9f06a9709`; #603/#604 merged, full PostgreSQL CI/native parity/deployed panels passed; both owned branches retired.
-- Fresh authenticated host read, [run 43742464840](https://github.com/UglyGameFace/RivaL/actions/runs/43742464840): current boot began 17:32:44 UTC; completed scope census at 18:00:52 UTC; five fitted scopes issuing, zero silent scopes/open silence incidents, fresh heartbeat at 18:08:54 UTC; 2,447 immutable XMarket shadow rows over 24h.
-- Five source-specific evaluations exist; none qualifies after costs. These saved evaluations are not a real-time quote counter, and raw forecast rows are not independent targets. Real live alert/recovery transitions have not been induced or verified.
+## Baseline and findings
+- Inspected `main@dc692ef7994991cba53f85b24a24aa8fc7c5b0e7`, live branches, all open PRs (none), callers, source candle persistence, path ledgers and existing regression tests before editing. No overlap found.
+- #605 is merged. Authenticated host [receipt 43748283578](https://github.com/UglyGameFace/RivaL/actions/runs/43748283578) at 18:42 UTC reports five issuing XMarket scopes, 2,524 immutable shadow rows over 24h, zero qualified paper scopes, and **zero settled close-only path targets**. Its old target receipt cannot distinguish absent issuance from settlement starvation.
+- Reproduced unchanged-main defect: 102 older pending paths with missing source candles occupy the oldest LIMIT 100 on every pass; two newer complete future paths never settle. The same failure occurs with pre-issuance or future first-observation timestamps. A second code defect caps settlement at 100 side records despite a normal maximum issuance cycle producing 160 (40 streams × two horizons × two sides). These prove code defects, not yet that they explain every production zero.
 
-## Current implementation
-- Branch: `fix/source-proof-complete-family-inputs-20261115`; no overlapping open PR at discovery.
-- Reproduced on unchanged main: three 8,000-row boosted-family histories consume the evaluator's globally sorted LIMIT 24,000; a real pinned XMarket family disappears from the evaluation entirely.
-- Repair: discover eligible family names independently; read each source-exact family using the existing indexes and a 24,000-row memory bound. Filter the active artifact before the bound. Detect overflow with one extra row; incomplete input cannot promote or appear as verified proof. Preserve earliest-target deduplication, costs, calibration, source identity and all numerical gates.
-- Extend the existing authenticated receipt with SELECT-only recent exact-source forecast/quote entry/exit counts and timestamps, matched by original forecast key, artifact hash and issuance time. Label raw rows as operational evidence; expose saved evaluation timestamps separately. No new worker, schema or price replay.
+## Implementation
+- Branch: `fix/path-settlement-progress-20261115`.
+- Apply complete, already-observed same-source candle eligibility before a bounded 100-source-path batch, using the candle primary key. Settle both sides together and reuse their candle read, allowing a normal 80-path / 160-side-record cycle to clear without a permanent capacity deficit. Preserve exact grid/time checks, original probabilities, immutable source provenance, ambiguous TP/stop treatment, companion close-target scoring and all research/after-cost gates.
+- Incomplete paths remain pending for later valid source evidence. Newly complete paths progress without a process-local cursor or skipping unpreserved work, including across worker restarts.
+- Extend the existing SELECT-only host receipt with issued, pending and due counts, oldest due target and horizon breakdown. Distinguish `no_recent_issuance`, future targets, backlog and observed settlements. Correlated side rows are explicitly not independent targets or executable-cost proof.
 
-## Validation and handoff
-- Baseline saturation reproducer fails before the repair. Targeted regressions cover the global-cap loss, queued-artifact crowding, incomplete-input non-promotion, earliest targets, original quote windows, actual stream caller, source/hash isolation, timestamps and SELECT-only observation.
-- Final targeted local run passes 54 tests with 35 PostgreSQL fixtures skipped; repository Ruff and diff checks pass. PostgreSQL CI, merge/native parity and fresh production quote progress remain required.
-- Keep #299/#6/#138 open for genuine independent outcomes and after-cost superiority; keep #347 open for missing production deadlock lock-graph evidence. Do not claim profitable skill from imports, new capture rows or weight updates.
-- Next: finish validation, integrate this cohesive repair, verify actual recent source-matched quote entries/exits and full source evaluations on Discloud, reconcile issue #299 and safely retire only the owned branch.
+## Validation and production acceptance
+- Baseline reproducer failed before repair. Focused SQLite regressions pass; PostgreSQL fixtures run in repository CI. Tests cover full-batch starvation, source/time exclusions, restart, later-arriving valid source data, bounded multi-pass progress, full 160-record cycle capacity, frozen forecast values, source-isolated 15m/60m settlement and read-only lifecycle counts.
+- Require exact-head and merged-main PostgreSQL CI, non-skipped native Discloud source parity, and a fresh authenticated path lifecycle receipt. If issuance is absent, investigate the empirical training/caller path next; if complete paths remain due, inspect their exact source evidence. Do not call the target feature production-complete from a merged selector repair.
+- Keep #151/#6/#299/#138 open for calibrated probability/target and after-cost proof; #347 remains open for missing actual deadlock lock-graph evidence. Only retire this task's branch after validated integration; preserve unrelated work.
 
-[Earlier task and production evidence](docs/archive/ACTIVE_TASK_THROUGH_20261115.md) is preserved as history, not an active work lock.
+The prior [source-evaluation task record](docs/archive/ACTIVE_TASK_SOURCE_EVALUATION_20261115.md) is preserved byte-for-byte. It is history, not an active task lock. The PR and linked issue carry exact CI, integration and post-release acceptance results.

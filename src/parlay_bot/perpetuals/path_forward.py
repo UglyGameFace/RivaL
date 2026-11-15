@@ -25,6 +25,9 @@ SIDES = ("long", "short")
 LOOKBACK = 24
 MIN_TRAIN = 25
 MAX_TRAIN = 280
+# Source paths, each with at most the two declared sides. A normal cycle
+# selects at most 40 streams x 2 horizons: 80 paths / 160 side records.
+# Batching 100 side records cannot keep up even without missing evidence.
 MAX_SETTLE = 100
 
 
@@ -353,15 +356,46 @@ class ProspectivePathLedger:
         stamp=utc(now)
         self.initialize()
         with self.store.connect() as conn:
+            # Missing or invalid source candles must not occupy the oldest
+            # batch forever. Use the existing candle primary key to require
+            # a complete, already-observed future path BEFORE the work bound.
+            # The exact grid/source/time checks below remain authoritative.
             waiting=conn.execute(
-                """SELECT * FROM rival_forward_paths
-                   WHERE state='pending' AND target_opened_at<=?
-                    AND target_opened_at>=?
-                   ORDER BY target_opened_at LIMIT ?""",
+                """WITH ready AS (
+                       SELECT p.venue,p.contract,p.quote,p.horizon_minutes,
+                              p.reference_opened_at,p.issued_at,p.target_opened_at
+                       FROM rival_forward_paths p
+                       WHERE p.state='pending' AND p.target_opened_at<=?
+                        AND p.target_opened_at>=? AND p.horizon_minutes IN (15,60)
+                        AND p.side IN ('long','short')
+                        AND (SELECT COUNT(*) FROM perp_market_candles c
+                             WHERE c.venue=p.venue AND c.contract=p.contract
+                               AND c.quote=p.quote AND c.interval_minutes=5
+                               AND c.opened_at>p.issued_at
+                               AND c.opened_at<=p.target_opened_at
+                               AND c.first_observed_at>p.issued_at
+                               AND c.first_observed_at<=? AND c.closed_at<?
+                               AND c.closed_at<=c.first_observed_at
+                            )=p.horizon_minutes/5
+                       GROUP BY p.venue,p.contract,p.quote,p.horizon_minutes,
+                                p.reference_opened_at,p.issued_at,p.target_opened_at
+                       ORDER BY p.target_opened_at,p.venue,p.contract,p.quote,
+                                p.horizon_minutes,p.reference_opened_at,p.issued_at
+                       LIMIT ?
+                   ) SELECT p.* FROM rival_forward_paths p JOIN ready r
+                     ON p.venue=r.venue AND p.contract=r.contract AND p.quote=r.quote
+                      AND p.horizon_minutes=r.horizon_minutes
+                      AND p.reference_opened_at=r.reference_opened_at
+                      AND p.issued_at=r.issued_at AND p.target_opened_at=r.target_opened_at
+                   WHERE p.state='pending' AND p.side IN ('long','short')
+                   ORDER BY p.target_opened_at,p.venue,p.contract,p.quote,
+                            p.horizon_minutes,p.reference_opened_at,p.issued_at,p.side""",
                 ((stamp-timedelta(minutes=5)).isoformat(),
-                 (stamp-timedelta(days=14)).isoformat(),MAX_SETTLE),
+                 (stamp-timedelta(days=14)).isoformat(),
+                 stamp.isoformat(),stamp.isoformat(),MAX_SETTLE),
             ).fetchall()
             scored=ambiguous=0
+            paths={}
             for p in waiting:
                 target=utc(datetime.fromisoformat(p["target_opened_at"]))
                 reference=utc(datetime.fromisoformat(p["reference_opened_at"]))
@@ -370,16 +404,20 @@ class ProspectivePathLedger:
                 if not (issued < reference+timedelta(minutes=10) and issued<=stamp
                         and target==reference+timedelta(minutes=5*(steps+1))):
                     continue
-                bars=conn.execute(
-                    """SELECT opened_at,closed_at,first_observed_at,high_price,
-                              low_price,close_price FROM perp_market_candles
-                       WHERE venue=? AND contract=? AND quote=?
-                         AND interval_minutes=5 AND opened_at>?
-                         AND opened_at<=? ORDER BY opened_at""",
-                    (p["venue"],p["contract"],p["quote"],
-                     (reference+timedelta(minutes=5)).isoformat(),
-                     target.isoformat()),
-                ).fetchall()
+                key=(p["venue"],p["contract"],p["quote"],p["horizon_minutes"],
+                     p["reference_opened_at"],p["issued_at"],p["target_opened_at"])
+                if key not in paths:
+                    paths[key]=conn.execute(
+                        """SELECT opened_at,closed_at,first_observed_at,high_price,
+                                  low_price,close_price FROM perp_market_candles
+                           WHERE venue=? AND contract=? AND quote=?
+                             AND interval_minutes=5 AND opened_at>?
+                             AND opened_at<=? ORDER BY opened_at""",
+                        (p["venue"],p["contract"],p["quote"],
+                         (reference+timedelta(minutes=5)).isoformat(),
+                         target.isoformat()),
+                    ).fetchall()
+                bars=paths[key]
                 if len(bars)!=steps:
                     continue
                 try:

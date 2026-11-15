@@ -356,8 +356,8 @@ def _path_settlement_sample(store, now: datetime) -> dict:
     whole backlog. One long/short pair is ONE source path. These observations
     are deliberately not a replacement for the worker's full causal checks.
     """
-    from collections import Counter
     import math
+    from collections import Counter
 
     stamp = now.astimezone(UTC)
     reasons: Counter[str] = Counter()

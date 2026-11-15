@@ -20,6 +20,6 @@ Verified checkpoint: `main@dc692ef` includes #603–#605. Authenticated [host re
 
 ## Current implementation outcome
 
-Repair the demonstrated path-settlement starvation defect and expose actual path lifecycle counts in the existing authenticated host receipt. This advances area 7 and backlog handling in area 8. It does not establish path-model calibration, executable fills, profitable targets, additional fitted XMarket scopes, or completion of the other markets.
+Repair the demonstrated path-settlement starvation and normal-cycle capacity defects and expose actual path lifecycle counts in the existing authenticated host receipt. This advances area 7 and backlog handling in area 8. It does not establish path-model calibration, executable fills, profitable targets, additional fitted XMarket scopes, or completion of the other markets.
 
 See [ACTIVE_TASK.md](../ACTIVE_TASK.md) and the implementing PR for exact test and hosted acceptance. Preserve this complete backlog when changing priorities; other conversations may work on independent areas after checking current repository overlap.

@@ -138,13 +138,48 @@ def test_ready_path_batch_remains_bounded_and_drains_across_worker_restarts(lear
             for bar in _future_path(source):
                 conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                              _row(bar))
-    for _ in range(3):
+    for expected in (4,2):
         assert ProspectivePathLedger(learning_store).settle(now=now)=={
-            "settled":2,"ambiguous":0,
+            "settled":expected,"ambiguous":0,
         }
     assert ledger.settle(now=now)=={"settled":0,"ambiguous":0}
     progress=_path_target_progress(learning_store,now)
     assert progress["settled_close_targets_24h"]==6
+    assert progress["pending_paths_14d"]==progress["due_pending_paths_14d"]==0
+
+
+def test_one_full_issuance_cycle_settles_without_accumulating_a_capacity_backlog(learning_store):
+    """40 streams x 2 horizons x 2 sides exceed the former 100-row ceiling."""
+    from parlay_bot.perpetuals.forward_audit import MAX_STREAMS_PER_CYCLE
+
+    PerpetualMarketStore(learning_store).initialize()
+    ledger=ProspectivePathLedger(learning_store)
+    ledger.initialize()
+    candles=_candles()
+    last=candles[-1]
+    issued=last.observed_at+timedelta(seconds=1)
+    options={h:empirical_paths(candles,horizon=h,now=issued) for h in HORIZONS}
+    future=_future_path(last,steps=12)
+    now=future[-1].observed_at+timedelta(minutes=1)
+    venues=("hyperliquid","binance","dydx","bitget","gate","okx",
+            "kucoin","deribit","lighter","phemex")
+    streams=0
+    with learning_store.connect() as conn:
+        for venue in venues:
+            for asset in ("BTC","ETH","SOL","XRP"):
+                source=replace(last,venue=venue,contract=asset)
+                streams+=1
+                for horizon in HORIZONS:
+                    assert ledger.issue(conn,candles=[source],asset=asset,horizon=horizon,
+                                        now=issued,issued_at=issued,options=options[horizon])==2
+                for bar in _future_path(source,steps=12):
+                    conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                 _row(bar))
+    assert streams==MAX_STREAMS_PER_CYCLE
+    assert ledger.settle(now=now)=={"settled":160,"ambiguous":0}
+    assert ProspectivePathLedger(learning_store).settle(now=now)=={"settled":0,"ambiguous":0}
+    progress=_path_target_progress(learning_store,now)
+    assert progress["settled_close_targets_24h"]==160
     assert progress["pending_paths_14d"]==progress["due_pending_paths_14d"]==0
 
 

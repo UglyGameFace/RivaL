@@ -56,6 +56,14 @@ async function main(){
  assert.equal((await cx.worker.fetch(make(null),env)).status,401);
  assert.equal((await cx.worker.fetch(make(await sign({...claims,ref:'refs/heads/other'})),env)).status,403);
  const valid=await sign(claims);
+ const trustedRelease=await cx.verifyGithubOIDC(await sign({
+  ...claims,event_name:'workflow_run',run_id:'123456790'}));
+ assert.equal(trustedRelease.runId,'123456790',
+  'Trusted main post-release publisher should be eligible for signed receipt');
+ await assert.rejects(cx.verifyGithubOIDC(await sign({
+  ...claims,event_name:'pull_request',run_id:'123456791'})),/claim_mismatch/,
+  'Untrusted PR event must not bypass signed collector');
+
  const parts=valid.split('.');
  const corrupted=Buffer.from(parts[2],'base64url');corrupted[0]^=1;parts[2]=corrupted.toString('base64url');
  assert.equal((await cx.worker.fetch(make(parts.join('.')),env)).status,403);

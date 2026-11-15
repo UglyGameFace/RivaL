@@ -71,6 +71,9 @@ class RuntimeHealthMonitor:
         # The same aggregate per stream and horizon, for the early-stop rule.
         self._paired_scores: tuple[dict, ...] = ()
         self._paired_in_use_since: str | None = None
+        # A successful scope census must be observable even when it raises
+        # no incident. Persist it only with the completed watchdog publish.
+        self._xmarket_issuance_evidence: dict | None = None
 
     def initialize(self) -> None:
         if self._initialized:
@@ -397,6 +400,10 @@ class RuntimeHealthMonitor:
         if set(required) - present:
             # Cold-start hosts can legitimately lack the optional model
             # registry. Existing import watchdog owns that failure mode.
+            self._xmarket_issuance_evidence = {
+                "status": "not_initialized", "checked_at": stamp.isoformat(),
+                "scopes": [],
+            }
             return {}
 
         fits = conn.execute(
@@ -408,6 +415,9 @@ class RuntimeHealthMonitor:
         ).fetchall()
         if not fits:
             self._xmarket_issuance_cache = (stamp, {})
+            self._xmarket_issuance_evidence = {
+                "status": "recorded", "checked_at": stamp.isoformat(), "scopes": [],
+            }
             return {}
 
         since = (stamp - XMARKET_ISSUANCE_WINDOW).isoformat()
@@ -435,22 +445,38 @@ class RuntimeHealthMonitor:
             (r["asset"], int(r["horizon_minutes"])): int(r["n"])
             for r in shadows
         }
-        faults = {}
+        faults, scope_evidence = {}, []
         for fit in fits:
             asset, horizon = str(fit["asset"]), int(fit["horizon_minutes"])
             scope = (asset, horizon)
             imported_age = _age(stamp, fit["imported_at"])
             count = incumbent_by_scope.get(scope, 0)
-            if (imported_age is not None
-                    and imported_age >= XMARKET_IMPORT_GRACE
-                    and count >= XMARKET_MIN_INCUMBENT
-                    and shadow_by_scope.get(scope, 0) == 0):
+            shadow_count = shadow_by_scope.get(scope, 0)
+            if imported_age is None:
+                status = "invalid_import_clock"
+            elif imported_age < XMARKET_IMPORT_GRACE:
+                status = "import_grace"
+            elif count < XMARKET_MIN_INCUMBENT:
+                status = "insufficient_incumbents"
+            elif shadow_count:
+                status = "issuing"
+            else:
+                status = "silent"
                 faults[f"xmarket:no_shadows:{asset}:{horizon}"] = (
                     f"{asset} {horizon}m has a stored gate-passing XMarket fit "
                     f"and {count} recent incumbent forecasts but no XMarket "
                     "shadow rows in the same completed window; check active "
                     "model pin, native source timing and dispersion candles"
                 )
+            scope_evidence.append({
+                "asset": asset, "horizon_minutes": horizon, "status": status,
+                "incumbent_rows": count, "shadow_rows": shadow_count,
+            })
+        self._xmarket_issuance_evidence = {
+            "status": "recorded", "checked_at": stamp.isoformat(),
+            "window_start": since, "window_end": until,
+            "scopes": sorted(scope_evidence, key=lambda r: (r["asset"], r["horizon_minutes"])),
+        }
         self._xmarket_issuance_cache = (stamp, faults)
         return dict(faults)
 
@@ -622,6 +648,19 @@ class RuntimeHealthMonitor:
                    ON CONFLICT(component) DO UPDATE SET checked_at=excluded.checked_at""",
                 (clock,),
             )
+            if self._xmarket_issuance_evidence is not None:
+                evidence = {
+                    **self._xmarket_issuance_evidence, "boot_id": self.boot_id,
+                    "policy": "xmarket-issuance-v1",
+                }
+                conn.execute(
+                    """INSERT INTO rival_runtime_diagnostics(component,checked_at,payload_json)
+                       VALUES ('xmarket_issuance',?,?)
+                       ON CONFLICT(component) DO UPDATE SET
+                         checked_at=excluded.checked_at,payload_json=excluded.payload_json
+                       WHERE rival_runtime_diagnostics.checked_at<>excluded.checked_at""",
+                    (evidence["checked_at"], json.dumps(evidence, sort_keys=True)),
+                )
         # A price feed that misses one check usually catches up on the next
         # (RIVAL-13/14: okx/gate BTC, one pass each). Such a fault is logged
         # as a warning when it opens and escalated to an error (a Sentry

@@ -29,7 +29,22 @@ async function main(){
   const signature=await webcrypto.subtle.sign('RSASSA-PKCS1-v1_5',keys.privateKey,new TextEncoder().encode(message));
   return message+'.'+Buffer.from(signature).toString('base64url');
  };
- const payload={schema_version:1,captured_at:now,host:{xmarket_stage:'waiting_for_completed_day_export',
+ const issued=new Date(Date.now()-120000).toISOString();
+ const target=new Date(Date.now()+180000).toISOString();
+ const oldTarget=new Date(Date.now()-120000).toISOString();
+ const olderIssue=new Date(Date.now()-300000).toISOString();
+ const payload={schema_version:1,captured_at:now,host:{
+  recent_forward_calls:{status:'observed',captured_at:now,window_hours:6,not_trading_calls:true,
+   rows:[{asset:'BTC',horizon:5,venue:'okx',quote:'USDT',issued_at:issued,target_close_at:target,
+    probability_up:0.62,baseline_up:0.52,direction:'UP',status:'open',outcome_up:null,
+    lead_seconds:300,model_version:'prospective-logistic-persistent-v3',
+    raw_contract:'PRIVATE',weights_sha256:'PRIVATE',discord_user_id:'PRIVATE'},
+    {asset:'SOL',horizon:5,venue:'okx',quote:'USDT',issued_at:olderIssue,target_close_at:oldTarget,
+     probability_up:0.51,baseline_up:0.49,direction:'UP',status:'ungraded',outcome_up:null,
+     lead_seconds:180,contract:'PRIVATE',weights_sha256:'PRIVATE'},
+    {asset:'ETH',horizon:5,venue:'bad/PRIVATE',quote:'USD',issued_at:issued,target_close_at:target,
+     probability_up:0.6,baseline_up:0.5,direction:'UP',status:'open',outcome_up:null,lead_seconds:300}]},
+  xmarket_stage:'waiting_for_completed_day_export',
   xmarket_exports:{recent_completed_days_pending:4,eligible_before:now,
    published:[{asset:'BTC',exported_days:1,latest_exported_day:'2026-11-12',drive_file_id:'PRIVATE'}],
    pending_by_asset:[{asset:'ETH',days:1}],password:'PRIVATE'}},
@@ -46,6 +61,14 @@ async function main(){
  assert.equal((await cx.worker.fetch(make(null),env)).status,401);
  assert.equal((await cx.worker.fetch(make(await sign({...claims,ref:'refs/heads/other'})),env)).status,403);
  const valid=await sign(claims);
+ const trustedRelease=await cx.verifyGithubOIDC(await sign({
+  ...claims,event_name:'workflow_run',run_id:'123456790'}));
+ assert.equal(trustedRelease.runId,'123456790',
+  'Trusted main post-release publisher should be eligible for signed receipt');
+ await assert.rejects(cx.verifyGithubOIDC(await sign({
+  ...claims,event_name:'pull_request',run_id:'123456791'})),/claim_mismatch/,
+  'Untrusted PR event must not bypass signed collector');
+
  const parts=valid.split('.');
  const corrupted=Buffer.from(parts[2],'base64url');corrupted[0]^=1;parts[2]=corrupted.toString('base64url');
  assert.equal((await cx.worker.fetch(make(parts.join('.')),env)).status,403);
@@ -53,6 +76,16 @@ async function main(){
  assert.equal((await cx.worker.fetch(make(valid),env)).status,202);
  const receipt=JSON.parse(records.get('latest'));
  assert.equal(receipt.provenance.verified,true);
+ assert.equal(receipt.host.recent_forward_calls.status,'observed');
+ assert.equal(receipt.host.recent_forward_calls.rows.length,2);
+ assert.equal(receipt.host.recent_forward_calls.rows[1].asset,'SOL');
+ assert.equal(receipt.host.recent_forward_calls.rows[1].status,'ungraded');
+ assert.equal(receipt.host.recent_forward_calls.rows[1].outcome_up,null);
+ assert.equal(receipt.host.recent_forward_calls.rows[0].probability_up,0.62);
+ assert.equal(receipt.host.recent_forward_calls.rows[0].direction,'UP');
+ assert.equal(receipt.host.recent_forward_calls.rows[0].outcome_up,null);
+ assert.ok(!Object.hasOwn(receipt.host.recent_forward_calls.rows[0],'raw_contract'));
+
  assert.equal(receipt.host.xmarket_exports.recent_completed_days_pending,4);
  assert.equal(receipt.host.xmarket_stage,'waiting_for_completed_day_export');
  assert.equal(receipt.host.xmarket_exports.published[0].latest_exported_day,'2026-11-12');
@@ -67,6 +100,7 @@ async function main(){
  assert.equal(records.get('run:'+claims.run_id),records.get('latest'));
  const unavailable=cx.build({schema_version:1,captured_at:now},{runId:'123456789'});
  assert.equal(unavailable.host.xmarket_exports,null);
+ assert.equal(unavailable.host.recent_forward_calls.status,'read_unavailable');
  assert.equal(unavailable.host.xmarket_imported_scopes,null);
  assert.equal(unavailable.performance.status,'unavailable');
  console.log('Evidence collector signed round-trip, redaction and rejection regressions passed');

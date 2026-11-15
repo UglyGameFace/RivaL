@@ -20,7 +20,7 @@ async function verifyGithubOIDC(token) {
   const now=Math.floor(Date.now()/1000);
   if(clm.iss!=='https://token.actions.githubusercontent.com'||clm.aud!==AUD||
      clm.repository!==REPO||clm.ref!=='refs/heads/main'||clm.workflow_ref!==WORKFLOW||
-     !['schedule','workflow_dispatch','push'].includes(clm.event_name)||
+     !['schedule','workflow_dispatch','push','workflow_run'].includes(clm.event_name)||
      !Number.isInteger(clm.exp)||clm.exp<=now||clm.exp>now+1800||
      !Number.isInteger(clm.iat)||clm.iat>now+60||now-clm.iat>1800||
      !/^\d{5,18}$/.test(String(clm.run_id||'')))throw Error('claim_mismatch');
@@ -147,6 +147,49 @@ function cleanPerformance(p) {
   return out;
 }
 
+
+function cleanForwardCalls(value){
+ const empty={status:'read_unavailable',captured_at:null,window_hours:6,rows:[],not_trading_calls:true};
+ if(!value||!['observed','no_recent_forecasts'].includes(value.status))return empty;
+ const captured=isoOrNull(value.captured_at);
+ if(!captured||value.window_hours!==6||!Array.isArray(value.rows))return empty;
+ const seen=new Set(),rows=[];
+ for(const x of value.rows.slice(0,12)){
+   if(!x||!['BTC','ETH','SOL','XRP'].includes(x.asset)||![5,15,60].includes(x.horizon))continue;
+   const key=x.asset+':'+x.horizon;
+   if(seen.has(key)||typeof x.venue!=='string'||!/^[a-z0-9_-]{2,28}$/.test(x.venue)
+     ||typeof x.quote!=='string'||!/^[A-Z]{2,8}$/.test(x.quote))continue;
+   const issued=isoOrNull(x.issued_at),target=isoOrNull(x.target_close_at);
+   if(!issued||!target||Date.parse(target)<=Date.parse(issued)
+      ||Date.parse(issued)>Date.parse(captured)+120000
+      ||Date.parse(captured)-Date.parse(issued)>7*3600000)continue;
+   if(typeof x.probability_up!=='number'||typeof x.baseline_up!=='number'
+      ||!Number.isFinite(x.probability_up)||!Number.isFinite(x.baseline_up)
+      ||x.probability_up<0||x.probability_up>1||x.baseline_up<0||x.baseline_up>1)continue;
+   const direction=x.probability_up>0.5?'UP':x.probability_up<0.5?'DOWN':'NEUTRAL';
+   if(x.direction!==direction||!['open','awaiting_settlement','settled','ungraded'].includes(x.status))continue;
+   // Preserve original host event clock: an open target cannot have closed yet,
+   // and a settled/ungraded/awaiting target cannot claim a future close.
+   const closeTime=Date.parse(target),captureTime=Date.parse(captured);
+   if((x.status==='open'&&closeTime<=captureTime)||
+      (x.status!=='open'&&closeTime>captureTime))continue;
+   if(typeof x.lead_seconds!=='number'||!Number.isFinite(x.lead_seconds)
+      ||x.lead_seconds<=0||x.lead_seconds>7200)continue;
+   if(x.status==='settled' && !(x.outcome_up===0||x.outcome_up===1))continue;
+   if(x.status!=='settled'&&x.outcome_up!==null)continue;
+   seen.add(key);rows.push({
+     asset:x.asset,horizon:x.horizon,venue:x.venue,quote:x.quote,
+     issued_at:issued,target_close_at:target,
+     probability_up:+x.probability_up.toFixed(6),baseline_up:+x.baseline_up.toFixed(6),
+     direction,status:x.status,lead_seconds:+x.lead_seconds.toFixed(2),
+     outcome_up:x.status==='settled'?x.outcome_up:null,
+     model_version:'prospective-logistic-persistent-v3'
+   });
+ }
+ return {status:rows.length?'observed':value.status==='no_recent_forecasts'?'no_recent_forecasts':'read_unavailable',
+   captured_at:captured,window_hours:6,rows,not_trading_calls:true};
+}
+
 function build(payload,identity){
   if(!payload||payload.schema_version!==1||typeof payload!=='object')throw Error('invalid_schema');
   const received=new Date().toISOString(),at=isoOrNull(payload.captured_at);
@@ -189,7 +232,8 @@ function build(payload,identity){
       xmarket_stage:oneOf(h.xmarket_stage,['not_initialized','waiting_for_inputs',
         'waiting_for_completed_day_export','waiting_for_fit','imported_no_shadow_rows',
         'shadow_issuing','read_unavailable']),
-      xmarket_exports:cleanXmarketExports(h.xmarket_exports)
+      xmarket_exports:cleanXmarketExports(h.xmarket_exports),
+      recent_forward_calls:cleanForwardCalls(h.recent_forward_calls)
     },
     database:{
       status:oneOf(db.status,['verified_read','unavailable']),

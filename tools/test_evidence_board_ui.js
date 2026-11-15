@@ -170,7 +170,29 @@ assert.doesNotMatch(source,/signed auto-updates/);
 assert.deepEqual(Array.from(cx.NAV),['Command','Markets','Signals','Models','XMarket','Intelligence','Diagnostics']);
 assert.match(cx.opsCommand(),/See what the bot is actually doing/);
 assert.doesNotMatch(cx.opsCommand(),/Tracked changes|Pending workflows|Work queues/);
-assert.match(cx.opsSignals(),/Per-call signal feed not yet published/);
+assert.match(cx.opsSignals(),/Recently issued research forecasts/);
+assert.match(cx.opsSignals(),/Per-call research forecasts not in the latest signed receipt/);
+cx.state.evidence.host.recent_forward_calls={
+ status:'observed',captured_at:at,window_hours:6,not_trading_calls:true,
+ rows:[{asset:'BTC',horizon:5,venue:'okx',quote:'USDT',
+  issued_at:new Date(Date.now()-120000).toISOString(),
+  target_close_at:new Date(Date.now()+180000).toISOString(),
+  probability_up:0.62,baseline_up:0.52,direction:'UP',
+  status:'open',outcome_up:null,lead_seconds:300}]
+};
+assert.match(cx.opsSignals(),/62.0%/);
+assert.match(cx.opsSignals(),/52.0% UP/);
+assert.match(cx.opsSignals(),/Target pending/);
+assert.match(cx.opsSignals(),/Target closes \(5m candle\)/);
+assert.match(cx.opsSignals(),/not a guarantee of a 60-minute-ahead forecast/);
+assert.match(cx.opsCommand(),/Latest research forecasts/);
+assert.match(cx.opsCommand(),/62.0%/);
+cx.state.evidence.host.recent_forward_calls.rows[0].status='settled';
+cx.state.evidence.host.recent_forward_calls.rows[0].outcome_up=1;
+assert.match(cx.opsSignals(),/Actual UP/);
+cx.state.evidence.host.recent_forward_calls={status:'read_unavailable',captured_at:at,window_hours:6,rows:[]};
+assert.match(cx.opsSignals(),/not in the latest signed receipt/);
+
 assert.match(cx.opsSignals(),/Coverage is not an 80% prediction-accuracy rule/);
 assert.match(cx.opsModels(),/Are RivaL predictions improving/);
 assert.match(cx.opsXMarket(),/From market inputs to usable shadow predictions/);

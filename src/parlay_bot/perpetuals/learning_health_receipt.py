@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.home import _performance_cycles
+from parlay_bot.perpetuals.dashboard_forward_receipt import read_forward_calls
 from parlay_bot.perpetuals.family_quotes import SUPPORTED_QUOTE_SOURCES
 from parlay_bot.perpetuals.proof_progress import proof_progress
 from parlay_bot.storage.hot import PostgresHotStore
@@ -198,6 +199,7 @@ def read_receipt() -> dict:
             "forecast": forecast,
             "learning": learning,
             "actual_learning": _actual_learning_progress(store, now),
+            "recent_forward_calls": read_forward_calls(store, now),
             "forward_proof": _future_proof(store, now),
             "path_targets": _path_target_progress(store, now),
             "polymarket_contest": _contest_progress(store, now),

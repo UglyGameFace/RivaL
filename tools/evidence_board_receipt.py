@@ -89,6 +89,83 @@ def _export_summary(value: object) -> dict | None:
         "does_not_prove_independent_drive_restore": True}
 
 
+
+def _recent_forecast_summary(source: object) -> dict:
+    """Second allowlist before the signed Cloudflare receiver checks fields.
+
+    Up to one research forecast per supported asset/horizon, no raw contracts,
+    weights, lineages, account IDs, passwords or broker order identifiers.
+    """
+    unavailable = {"status": "read_unavailable", "captured_at": None,
+                   "window_hours": 6, "rows": [], "not_trading_calls": True}
+    if not isinstance(source, dict) or source.get("status") not in (
+        "observed", "no_recent_forecasts",
+    ):
+        return unavailable
+    at = _iso_timestamp(source.get("captured_at"))
+    if not at:
+        return unavailable
+    rows, scopes = [], set()
+    raw = source.get("rows")
+    if not isinstance(raw, list):
+        return unavailable
+    for row in raw[:12]:
+        if not isinstance(row, dict):
+            continue
+        asset, horizon = row.get("asset"), row.get("horizon")
+        if asset not in ASSETS or horizon not in HORIZONS or (asset, horizon) in scopes:
+            continue
+        venue, quote = row.get("venue"), row.get("quote")
+        if (not isinstance(venue, str)
+                or re.fullmatch(r"[a-z0-9_-]{2,28}", venue) is None
+                or not isinstance(quote, str)
+                or re.fullmatch(r"[A-Z]{2,8}", quote) is None):
+            continue
+        issued, target = _iso_timestamp(row.get("issued_at")), _iso_timestamp(
+            row.get("target_close_at")
+        )
+        if issued is None or target is None:
+            continue
+        prob, baseline, lead = (row.get("probability_up"),
+                                row.get("baseline_up"), row.get("lead_seconds"))
+        if not (type(prob) in (int, float) and type(baseline) in (int, float)
+                and 0 <= prob <= 1 and 0 <= baseline <= 1
+                and type(lead) in (int, float) and 0 < lead <= 7200):
+            continue
+        direction, status, outcome = (
+            row.get("direction"), row.get("status"), row.get("outcome_up")
+        )
+        if direction not in ("UP", "DOWN", "NEUTRAL") or status not in (
+            "open", "awaiting_settlement", "settled", "ungraded",
+        ):
+            continue
+        if (prob > 0.5 and direction != "UP" or
+                prob < 0.5 and direction != "DOWN" or
+                prob == 0.5 and direction != "NEUTRAL"):
+            continue
+        if status == "settled" and type(outcome) is not int or (
+            status == "settled" and outcome not in (0, 1)
+        ) or (status != "settled" and outcome is not None):
+            continue
+        scopes.add((asset, horizon))
+        rows.append({
+            "asset": asset, "horizon": horizon, "venue": venue,
+            "quote": quote, "issued_at": issued, "target_close_at": target,
+            "probability_up": round(float(prob), 6),
+            "baseline_up": round(float(baseline), 6),
+            "direction": direction, "status": status,
+            "lead_seconds": round(float(lead), 2),
+            "outcome_up": outcome if status == "settled" else None,
+            "model_version": "prospective-logistic-persistent-v3",
+        })
+    status = "observed" if rows else (
+        "no_recent_forecasts" if source["status"] == "no_recent_forecasts"
+        else "read_unavailable"
+    )
+    return {"status": status, "captured_at": at, "window_hours": 6,
+            "rows": rows, "not_trading_calls": True}
+
+
 def summarize_host(report: dict | None) -> tuple[dict, dict]:
     """Only persisted, bounded host aggregates, with unknown distinct from 0."""
     host = {
@@ -98,6 +175,7 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
         "xmarket_expected_inputs": None, "xmarket_shadow_rows": None,
         "xmarket_imported_scopes": None,
         "xmarket_stage": "read_unavailable", "xmarket_exports": None,
+        "recent_forward_calls": _recent_forecast_summary(None),
     }
     db = {
         "status": "unavailable", "weight_updates_observed": None,
@@ -134,6 +212,9 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
         if isinstance(xmarket.get("imported_scopes"), list):
             host["xmarket_imported_scopes"] = len(xmarket["imported_scopes"])
 
+    host["recent_forward_calls"] = _recent_forecast_summary(
+        report.get("recent_forward_calls")
+    )
     lineage = report.get("actual_learning")
     if isinstance(lineage, dict) and lineage.get("status") not in (
         "read_unavailable", "unavailable", None

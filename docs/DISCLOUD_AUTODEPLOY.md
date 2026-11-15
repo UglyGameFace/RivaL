@@ -37,7 +37,8 @@ workflow without its parity step as confirmation of a production deploy.
 Source parity proves selected files **on disk**, not the running Python process
 has reloaded them, Discord is connected, PostgreSQL can be read, five XMarket
 models were imported, shadows are issuing, or any predicted edge is profitable.
-The independently authenticated host learning receipt remains responsible for
+The separate LFM3 persisted-research acceptance workflow also gates its host
+probe on this verified parity step, not on a GitHub upload.\n\nThe independently authenticated host learning receipt remains responsible for
 actual PostgreSQL/worker observations, and downstream `workflow_run` events
 check the observer's verified parity step rather than a nonexistent upload.
 

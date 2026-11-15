@@ -236,7 +236,14 @@ async def test_lag_repair_http_failure_preserves_authoritative_current_capture(
     async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as client:
         assert await inputs.capture_polymarket(notice, client, now=clock) == 1
     assert "PM 60m lag recovery unavailable" in caplog.text
-    assert len(inputs.recent("BTC", at=at, now=clock)) == 2
+    # The strict 61-minute causal serving window excludes the older 07:01
+    # identity point; the current 08:05 capture must remain available.
+    assert len(inputs.recent("BTC", at=at, now=clock)) == 1
+    with learning_store.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM rival_xmarket_observations "
+            "WHERE source='polymarket'"
+        ).fetchone()["n"] == 2  # old identity and current point; no invented lag
 
 
 def test_bundle_cannot_mix_assets_or_substitute_normalized_hash():

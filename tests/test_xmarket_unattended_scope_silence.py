@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
-from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor, REGRESSION_RECHECK
+from parlay_bot.perpetuals.runtime_health import REGRESSION_RECHECK, RuntimeHealthMonitor
 from parlay_bot.perpetuals.xmarket_model import XmarketModelSet
 from parlay_bot.storage.hot import SQLiteHotStore
 

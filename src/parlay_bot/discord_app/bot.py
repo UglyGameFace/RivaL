@@ -1237,6 +1237,7 @@ class RivalDiscordClient(discord.Client):
                 auto_hunt=self.auto_hunt,
                 targets=self.direction_targets,
                 tracker=self.polymarket_board,
+                calls=self.call_board,
             )
             await interaction.edit_original_response(content=message)
 

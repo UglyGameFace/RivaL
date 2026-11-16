@@ -159,6 +159,27 @@ VENUE_BOOK_BASE_URLS: dict[str, str] = {
     "okx": "https://www.okx.com",
     "bitget": "https://api.bitget.com",
 }
+# Official USDT-SWAP face values, shared with the existing liquidity decoder.
+# Rechecked against GET /api/v5/public/instruments on 2026-11-15. Book/ticker
+# sizes are contracts on OKX; all proof ledgers consume base-coin quantities.
+OKX_CONTRACT_SIZE = {"BTC": 0.01, "ETH": 0.1, "SOL": 1.0, "XRP": 100.0}
+SOURCE_QUOTE_CURRENCIES = {
+    "hyperliquid": "USDC", "binance": "USDT", "okx": "USDT", "bitget": "USDT",
+}
+SUPPORTED_QUOTE_SOURCES = frozenset(SOURCE_QUOTE_CURRENCIES.items())
+
+
+def source_contract(venue: str, asset: str) -> str:
+    """The exact instrument used by this venue's verified book adapter."""
+    if asset not in ASSETS:
+        raise ValueError("unsupported quote asset")
+    if venue == "hyperliquid":
+        return asset
+    if venue == "binance":
+        return ASSETS[asset]
+    if venue in VENUE_BOOK_SYMBOLS:
+        return VENUE_BOOK_SYMBOLS[venue][asset]
+    raise ValueError("unsupported quote venue")
 
 
 @dataclass(frozen=True)
@@ -201,6 +222,21 @@ class VenueBookQuote:
             raise QuoteUnavailable("Local quote receipt is stale or from the future.")
 
 
+def quote_identity(quote: BookQuote | PerpReferenceBook | VenueBookQuote) -> tuple[str, str, str]:
+    """One source-identity contract for all paired quote ledgers."""
+    if isinstance(quote, PerpReferenceBook) and quote.venue == "hyperliquid":
+        venue, contract = "hyperliquid", quote.asset
+    elif isinstance(quote, BookQuote) and quote.venue == "binance_usdm":
+        venue, contract = "binance", quote.symbol
+    elif isinstance(quote, VenueBookQuote) and quote.venue in VENUE_BOOK_SYMBOLS:
+        venue, contract = quote.venue, quote.symbol
+    else:
+        raise ValueError("unsupported source quote")
+    if contract != source_contract(venue, quote.asset):
+        raise ValueError("unmatched quote instrument")
+    return venue, contract, SOURCE_QUOTE_CURRENCIES[venue]
+
+
 def _parse_venue_ticker(
     payload: Any, *, asset: str, venue: str, received_at: datetime,
 ) -> VenueBookQuote:
@@ -223,10 +259,12 @@ def _parse_venue_ticker(
             milliseconds = int(milliseconds)
         if type(milliseconds) is not int or milliseconds <= 0:
             raise ValueError("invalid timestamp")
+        bid_key, ask_key = ("bidPx", "askPx") if venue == "okx" else ("bidPr", "askPr")
+        base_per_unit = OKX_CONTRACT_SIZE[asset] if venue == "okx" else 1.0
         quote = VenueBookQuote(
             asset=asset, venue=venue, symbol=str(row[symbol_key]),
-            bid=float(row["bidPx"]), bid_quantity=float(row["bidSz"]),
-            ask=float(row["askPx"]), ask_quantity=float(row["askSz"]),
+            bid=float(row[bid_key]), bid_quantity=float(row["bidSz"])*base_per_unit,
+            ask=float(row[ask_key]), ask_quantity=float(row["askSz"])*base_per_unit,
             exchange_at=datetime.fromtimestamp(milliseconds / 1000, tz=UTC),
             received_at=received_at,
         )
@@ -404,6 +442,10 @@ class PublicBestQuoteClient:
             raise QuoteUnavailable("Only BTC, ETH, SOL and XRP venue books supported.")
         symbol = VENUE_BOOK_SYMBOLS[venue][asset]
         async with self._venue_asset_locks[(venue, asset)]:
+            if self.stream_hub is not None:
+                streamed = self.stream_hub.snapshot(venue, asset)
+                if isinstance(streamed, VenueBookQuote):
+                    return streamed
             clock = time.monotonic()
             if clock < self._venue_blocked_until.get(venue, 0.0):
                 raise QuoteUnavailable("Venue temporarily blocked or rate limited.")

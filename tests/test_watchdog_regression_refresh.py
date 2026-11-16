@@ -174,7 +174,7 @@ async def test_a_slow_aggregate_no_longer_costs_the_watchdog_its_pass(tmp_path):
         release_refresh.wait(timeout=10)  # still running when the pass publishes
         return {}
 
-    def fake_publish(faults, now=None):
+    def fake_publish(faults, now=None, quote_streams=None):
         seen["publish"].append(release_refresh.is_set())
         loop.call_soon_threadsafe(published.set)
         return []
@@ -221,7 +221,7 @@ async def test_the_aggregate_waits_out_the_startup_burst(tmp_path):
     client.health_monitor.refresh_regressions = (  # type: ignore[method-assign]
         lambda now=None: refreshed.append(1) or {})
 
-    def fake_publish(faults, now=None):
+    def fake_publish(faults, now=None, quote_streams=None):
         loop.call_soon_threadsafe(published.set)
         return []
 

@@ -12,7 +12,14 @@ from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
 from parlay_bot.perpetuals.forward_audit import MODEL
-from parlay_bot.perpetuals.live_quotes import BookQuote, PerpReferenceBook
+from parlay_bot.perpetuals.live_quotes import (
+    SOURCE_QUOTE_CURRENCIES,
+    BookQuote,
+    PerpReferenceBook,
+    VenueBookQuote,
+    quote_identity,
+    source_contract,
+)
 from parlay_bot.perpetuals.profit_proof import (
     COST_SCENARIOS,
     ENTRY_GRACE,
@@ -22,21 +29,16 @@ from parlay_bot.perpetuals.profit_proof import (
     MIN_OBSERVED_COVERAGE,
     NOTIONAL_USDT,
     _stamp,
+    fee_premium_sql,
 )
 from parlay_bot.storage.hot import RelationalHotStore
 
-SUPPORTED_VENUES = ("hyperliquid", "binance")
+SUPPORTED_VENUES = tuple(SOURCE_QUOTE_CURRENCIES)
 MIN_SIGNAL_SCORE = 0.56
 
 
-def _identity(quote: BookQuote | PerpReferenceBook) -> tuple[str, str, str]:
-    if isinstance(quote, PerpReferenceBook):
-        if quote.venue != "hyperliquid":
-            raise ValueError("Invalid perp reference venue")
-        return ("hyperliquid", quote.asset, "USDC")
-    if isinstance(quote, BookQuote) and quote.venue == "binance_usdm":
-        return ("binance", quote.symbol, "USDT")
-    raise ValueError("Unsupported strict shadow market")
+def _identity(quote: BookQuote | PerpReferenceBook | VenueBookQuote) -> tuple[str, str, str]:
+    return quote_identity(quote)
 
 
 class StreamShadowLedger:
@@ -84,7 +86,7 @@ class StreamShadowLedger:
             return updated.rowcount
 
     def observe(
-        self, quote: BookQuote | PerpReferenceBook, *, now: datetime | None = None,
+        self, quote: BookQuote | PerpReferenceBook | VenueBookQuote, *, now: datetime | None = None,
     ) -> dict[str, int]:
         instant = now or datetime.now(UTC)
         if instant.utcoffset() is None:
@@ -180,7 +182,7 @@ class StreamShadowLedger:
         # called by bot._stream_shadow_loop (bot.py, every
         # rival_stream_shadow_seconds, default 30 s) via
         # StreamShadowLedger.observe(book) for each venue in
-        # ("hyperliquid", "binance") x live asset, sampling the live WS
+        # SUPPORTED_VENUES x live asset, sampling the live WS
         # book snapshot. FamilyQuoteShadow.observe() then opens/closes
         # rival_family_quote_shadow rows generically for any
         # rival_model_shadow_forecasts row whose family is in FAMILIES or
@@ -207,11 +209,15 @@ class StreamShadowLedger:
         start = stamp - timedelta(days=30)
         cutoff = stamp - EXIT_GRACE
         self.initialize()
+        source_filter = " OR ".join(
+            "(venue=? AND contract=? AND quote=?)" for _ in SUPPORTED_VENUES)
+        source_params = tuple(value for venue in SUPPORTED_VENUES for value in (
+            venue, source_contract(venue, asset), SOURCE_QUOTE_CURRENCIES[venue]))
         with self.store.connect() as conn:
             # Only exact paired instruments count, and distinguish weak
             # forecasts from missing market data.
             denominator = conn.execute(
-                """SELECT COUNT(*) AS issued_windows,
+                f"""SELECT COUNT(*) AS issued_windows,
                           SUM(strong) AS n,
                           MIN(first_issued) AS first_issued_at,
                           MAX(first_issued) AS last_issued_at
@@ -222,15 +228,13 @@ class StreamShadowLedger:
                                           OR probability_up>=?
                                      THEN 1 ELSE 0 END) AS strong
                      FROM perp_forward_audit
-                     WHERE asset=? AND venue IN ('binance','hyperliquid')
-                       AND ((venue='hyperliquid' AND contract=? AND quote='USDC')
-                         OR (venue='binance' AND contract=? AND quote='USDT'))
+                     WHERE asset=? AND ({source_filter})
                        AND horizon_minutes=? AND model_version=?
                        AND issued_at>=? AND target_opened_at<?
                      GROUP BY venue,target_opened_at
                    ) AS eligible""",
                 (1 - MIN_SIGNAL_SCORE, MIN_SIGNAL_SCORE, asset,
-                 asset, asset + "USDT", horizon_minutes, MODEL,
+                 *source_params, horizon_minutes, MODEL,
                  start.isoformat(), (cutoff - timedelta(minutes=5)).isoformat()),
             ).fetchone()
             counts = conn.execute(
@@ -246,8 +250,9 @@ class StreamShadowLedger:
                 (asset, horizon_minutes, start.isoformat(), cutoff.isoformat()),
             ).fetchone()
             daily = conn.execute(
-                """SELECT substr(target_close_at,1,10) AS day,
-                          COUNT(*) AS n, SUM(gross_bps) AS gross_total
+                f"""SELECT substr(target_close_at,1,10) AS day,
+                          COUNT(*) AS n, SUM(gross_bps) AS gross_total,
+                          SUM({fee_premium_sql('venue')}) AS fee_premium_total
                    FROM rival_stream_shadow
                    WHERE asset=? AND horizon_minutes=? AND target_close_at>=?
                      AND target_close_at<=? AND state='EXIT_QUOTED'
@@ -268,11 +273,13 @@ class StreamShadowLedger:
         # of complete forward records every time a Discord button is pressed.
         for label, assumed in COST_SCENARIOS:
             daily_means = [
-                float(row["gross_total"]) / int(row["n"]) - assumed
+                (float(row["gross_total"])-float(row["fee_premium_total"]))
+                / int(row["n"]) - assumed
                 for row in daily
             ]
             mean = (
-                sum(float(row["gross_total"]) for row in daily) / completed - assumed
+                sum(float(row["gross_total"])-float(row["fee_premium_total"])
+                    for row in daily) / completed - assumed
                 if completed else None
             )
             daily_mean = sum(daily_means) / days if days else None
@@ -285,7 +292,10 @@ class StreamShadowLedger:
                 if days >= 2 else None
             )
             metrics[label] = {
-                "assumed_extra_cost_bps": assumed, "mean_net_bps": mean,
+                "assumed_extra_cost_bps": assumed + (
+                    sum(float(row["fee_premium_total"]) for row in daily)/completed
+                    if completed else 0),
+                "mean_net_bps": mean,
                 "daily_lower_bps": lower,
                 "positive_days": sum(x > 0 for x in daily_means),
             }

@@ -597,6 +597,7 @@ class RuntimeHealthMonitor:
 
     def publish(
         self, faults: dict[str, str], *, now: datetime | None = None,
+        quote_streams: dict | None = None,
     ) -> list[tuple[str, str, str]]:
         """Persist incident transitions; return only new/cleared events for alerting."""
         stamp = now or datetime.now(UTC)
@@ -648,6 +649,16 @@ class RuntimeHealthMonitor:
                    ON CONFLICT(component) DO UPDATE SET checked_at=excluded.checked_at""",
                 (clock,),
             )
+            if quote_streams is not None:
+                conn.execute(
+                    """INSERT INTO rival_runtime_diagnostics(component,checked_at,payload_json)
+                       VALUES ('quote_streams',?,?)
+                       ON CONFLICT(component) DO UPDATE SET
+                         checked_at=excluded.checked_at,payload_json=excluded.payload_json""",
+                    (clock, json.dumps({"sources": quote_streams, "boot_id": self.boot_id,
+                                        "does_not_prove_prediction_edge": True},
+                                       sort_keys=True, allow_nan=False)),
+                )
             if self._xmarket_issuance_evidence is not None:
                 evidence = {
                     **self._xmarket_issuance_evidence, "boot_id": self.boot_id,

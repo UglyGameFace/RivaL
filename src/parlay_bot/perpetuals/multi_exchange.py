@@ -19,7 +19,14 @@ from parlay_bot.perpetuals.fusion import (
     fuse_forecasts,
     utc,
 )
-from parlay_bot.perpetuals.live_quotes import BookQuote, PerpReferenceBook
+from parlay_bot.perpetuals.live_quotes import (
+    SOURCE_QUOTE_CURRENCIES,
+    BookQuote,
+    PerpReferenceBook,
+    VenueBookQuote,
+    quote_identity,
+    source_contract,
+)
 from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.perpetuals.profit_proof import (
@@ -27,6 +34,7 @@ from parlay_bot.perpetuals.profit_proof import (
     ENTRY_GRACE,
     EXIT_GRACE,
     NOTIONAL_USDT,
+    fee_premium_sql,
 )
 from parlay_bot.storage import maintenance
 from parlay_bot.storage.hot import RelationalHotStore
@@ -61,11 +69,9 @@ def _asset_contract(asset: str, contract: str) -> bool:
 def _can_reference(venue: str, asset: str, contract: str, quote: str) -> bool:
     # Strict quote identity is required only for shadow execution. Other
     # venues can contribute *directional probabilities*, not executable prices.
-    if venue == "hyperliquid":
-        return contract == asset and quote == "USDC"
-    if venue == "binance":
-        return contract == asset + "USDT" and quote == "USDT"
-    return False
+    return (venue in SOURCE_QUOTE_CURRENCIES and asset in ASSETS
+            and contract == source_contract(venue, asset)
+            and quote == SOURCE_QUOTE_CURRENCIES[venue])
 
 
 class MultiExchangeResearch:
@@ -290,7 +296,7 @@ class MultiExchangeResearch:
             # A conventional venue provides the reference outcome and optional
             # same-venue live bid/ask evidence, never another venue's quote.
             ref_venue = next(
-                (v for v in ("hyperliquid", "binance")
+                (v for v in SOURCE_QUOTE_CURRENCIES
                  if v in grouped and _can_reference(
                      v, asset, str(grouped[v]["contract"]), str(grouped[v]["quote"])
                  )), min(grouped),
@@ -367,17 +373,14 @@ class MultiExchangeResearch:
         return settled
 
     def observe(
-        self, quote: BookQuote | PerpReferenceBook, *, now: datetime | None = None,
+        self, quote: BookQuote | PerpReferenceBook | VenueBookQuote, *, now: datetime | None = None,
     ) -> dict[str, int]:
         """Observe genuinely later same-market books, never inferred fills."""
         stamp = utc(now or datetime.now(UTC))
         quote.validate(now=stamp)
-        venue = (
-            "hyperliquid" if isinstance(quote, PerpReferenceBook)
-            else "binance" if isinstance(quote, BookQuote)
-            and quote.venue == "binance_usdm" else None
-        )
-        if venue is None:
+        try:
+            venue, _contract, _currency = quote_identity(quote)
+        except ValueError:
             return {"opened": 0, "closed": 0}
         self.initialize()
         with self.store.connect() as conn:
@@ -508,7 +511,13 @@ class MultiExchangeResearch:
                 (asset, horizon_minutes, start),
             ).fetchall()
             quotes = conn.execute(
-                """SELECT COUNT(*) AS n,
+                f"""SELECT COUNT(*) AS n,
+                    SUM(CASE WHEN q.state='EXIT_QUOTED' AND
+                        (e.probability_up>=0.56 OR e.probability_up<=0.44)
+                        THEN {fee_premium_sql('q.venue')} ELSE 0 END) AS challenger_premium,
+                    SUM(CASE WHEN q.state='EXIT_QUOTED' AND
+                        (e.reference_probability_up>=0.56 OR e.reference_probability_up<=0.44)
+                        THEN {fee_premium_sql('q.venue')} ELSE 0 END) AS incumbent_premium,
                     SUM(CASE WHEN q.state='EXIT_QUOTED' THEN 1 ELSE 0 END)
                         AS paired,
                     SUM(CASE WHEN q.state='MISSED_EXIT' THEN 1 ELSE 0 END)
@@ -536,8 +545,13 @@ class MultiExchangeResearch:
                 (asset,horizon_minutes,start),
             ).fetchone()
             daily_rows = conn.execute(
-                """SELECT substr(e.target_opened_at,1,10) AS day,
+                f"""SELECT substr(e.target_opened_at,1,10) AS day,
                           COUNT(*) AS n,
+                          SUM(CASE WHEN e.probability_up>=0.56 OR e.probability_up<=0.44
+                              THEN {fee_premium_sql('q.venue')} ELSE 0 END) AS challenger_premium,
+                          SUM(CASE WHEN e.reference_probability_up>=0.56
+                                    OR e.reference_probability_up<=0.44
+                              THEN {fee_premium_sql('q.venue')} ELSE 0 END) AS incumbent_premium,
                           SUM(q.challenger_gross_bps) AS challenger_sum,
                           SUM(q.incumbent_gross_bps) AS incumbent_sum,
                           SUM(CASE WHEN e.probability_up>=0.56
@@ -572,12 +586,14 @@ class MultiExchangeResearch:
         daily_stats = {}
         for label,bps in COST_SCENARIOS:
             challenger_days = [
-                (float(x["challenger_sum"]) - bps*int(x["challenger_trades"]))
+                (float(x["challenger_sum"]) - float(x["challenger_premium"] or 0)
+                 - bps*int(x["challenger_trades"]))
                 / int(x["n"])
                 for x in daily_rows
             ]
             incumbent_days = [
-                (float(x["incumbent_sum"]) - bps*int(x["incumbent_trades"]))
+                (float(x["incumbent_sum"]) - float(x["incumbent_premium"] or 0)
+                 - bps*int(x["incumbent_trades"]))
                 / int(x["n"])
                 for x in daily_rows
             ]
@@ -600,11 +616,13 @@ class MultiExchangeResearch:
             cost_results[label] = {
                 "challenger_mean_net_bps": (
                     (float(quotes["challenger_sum"] or 0) -
+                     float(quotes["challenger_premium"] or 0) -
                      int(quotes["challenger_trades"] or 0)*bps)/paired
                     if paired else None
                 ),
                 "incumbent_mean_net_bps": (
                     (float(quotes["incumbent_sum"] or 0) -
+                     float(quotes["incumbent_premium"] or 0) -
                      int(quotes["incumbent_trades"] or 0)*bps)/paired
                     if paired else None
                 ),

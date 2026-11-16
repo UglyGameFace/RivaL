@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime, timedelta
 
-from parlay_bot.perpetuals.live_quotes import BookQuote, PerpReferenceBook
+from parlay_bot.perpetuals.live_quotes import SUPPORTED_QUOTE_SOURCES, quote_identity
 from parlay_bot.perpetuals.model_competition import CHALLENGER_PREFIXES, FAMILIES
 from parlay_bot.perpetuals.profit_proof import (
     ENTRY_GRACE,
@@ -21,23 +21,13 @@ SCORE_THRESHOLD = .56
 MAX_ROWS = 60
 
 
-SUPPORTED_QUOTE_SOURCES = frozenset({
-    ("hyperliquid", "USDC"),
-    ("binance", "USDT"),
-})
-
-
 def supports_quote_source(venue: str, currency: str) -> bool:
     """Only sources with genuine on-host bid/ask observation support."""
     return (venue, currency) in SUPPORTED_QUOTE_SOURCES
 
 
 def identity(quote):
-    if isinstance(quote, PerpReferenceBook) and quote.venue == "hyperliquid":
-        return "hyperliquid", quote.asset, "USDC"
-    if isinstance(quote, BookQuote) and quote.venue == "binance_usdm":
-        return "binance", quote.symbol, "USDT"
-    raise ValueError("unmatched provider quote")
+    return quote_identity(quote)
 
 
 def side(probability: float) -> str:

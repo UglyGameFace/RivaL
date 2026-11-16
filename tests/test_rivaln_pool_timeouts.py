@@ -145,7 +145,7 @@ async def test_watchdog_health_check_runs_under_twelve_seconds(tmp_path):
         record("reconcile")
         return 0
 
-    def fake_publish(faults, now=None):
+    def fake_publish(faults, now=None, quote_streams=None):
         record("publish")
         loop.call_soon_threadsafe(publish_seen.set)
         return []

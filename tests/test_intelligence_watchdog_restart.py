@@ -49,7 +49,7 @@ async def _run_one_watchdog_pass(client, *, stub, publish_seen):
     published: list[dict] = []
     loop = asyncio.get_running_loop()
 
-    def fake_publish(faults, now=None):
+    def fake_publish(faults, now=None, quote_streams=None):
         # Runs in a worker thread (asyncio.to_thread): wake the loop safely.
         published.append(dict(faults))
         loop.call_soon_threadsafe(publish_seen.set)

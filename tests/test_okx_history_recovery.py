@@ -33,7 +33,7 @@ def response(req: httpx.Request) -> httpx.Response:
     # OKX returns newest first and the 'after' cursor is exclusive.
     return httpx.Response(200, json={"code": "0", "data": [
         [str(anchor - 300_000 * i), "100", "110", "90", "102",
-         "200", "2", "204", "1"]
+         "200", "3.5", "204", "1"]
         for i in range(1, 13)
     ]})
 
@@ -63,7 +63,7 @@ async def test_okx_backward_cursor_restarts_and_preserves_true_observation(tmp_p
             interval_minutes=5, count=12,
         )
         assert len(rows) == 12
-        assert rows[0]["volume_base"] == pytest.approx(2.0)
+        assert rows[0]["volume_base"] == pytest.approx(3.5)
         # Historical candles imported in October do NOT appear in an old
         # point-in-time May 2026 training set.
         assert market.recent_candles(

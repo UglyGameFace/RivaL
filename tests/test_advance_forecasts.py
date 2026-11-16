@@ -241,6 +241,24 @@ def test_live_card_names_lead_model_source_confidence_and_target(learning_store,
     assert "unchanged" in rolled.fields[0].value
 
 
+def test_host_delivery_state_distinguishes_no_subscription_from_no_receipt(learning_store):
+    market, monitor = setup(learning_store)
+    monitor.run_once(now=CLOCK)
+    service = CallBoardService(SimpleNamespace(), learning_store, market)
+    service.initialize()
+    report = read_advance_receipt(learning_store, CLOCK)
+    assert report["channel_cards"]["active"] == 0
+    assert report["delivery_state"] == "no_active_channel_subscriptions"
+    assert report["recent_forecasts"]
+    assert report["recent_deliveries"] == []
+
+    service._save(10, "exchange", "BTC", 0, 20, 30, "frozen")
+    subscribed = read_advance_receipt(learning_store, CLOCK)
+    assert subscribed["channel_cards"]["active"] == 1
+    assert subscribed["delivery_state"] == "subscribed_no_recent_delivery_receipt"
+    assert subscribed["does_not_prove_prediction_edge"] is True
+
+
 @pytest.mark.asyncio
 async def test_deliveries_record_only_the_original_rows_discord_actually_accepted(learning_store):
     now = datetime.now(UTC)
@@ -273,6 +291,7 @@ async def test_deliveries_record_only_the_original_rows_discord_actually_accepte
     assert all(r["issuance_to_delivery_seconds"] >= 0 for r in report["recent_deliveries"])
     assert "channel_id" not in str(report)
     assert report["discord_delivery_is_api_acceptance_not_independent_observation"] is True
+    assert report["delivery_state"] == "accepted_delivery_recorded"
 
 
 def test_missing_schema_is_unavailable_and_a_read_does_not_run_migrations(learning_store):

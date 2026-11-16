@@ -4,6 +4,30 @@ This follows merged [#623](https://github.com/UglyGameFace/RivaL/pull/623)
 without reviving weekly training or sending discarded historical candidates
 through the model-import folder.
 
+## Critical pre-selection correction
+
+Training-only analysis must also select its optional cross-venue dispersion
+inputs using **training-period availability only**. The initial #624 code
+reused the production selector, which checks source availability across
+train/validation/test when pinning venues. This does not leak outcome labels,
+but it leaks later *source availability into research design*. An apparently
+better train-only profile from that version is not valid grounds for selecting
+a challenger.
+
+The corrected research-only selector restricts complete market clocks and
+venue coverage to the horizon-purged training cutoff. Among candidate
+venue subsets, it requires the same inner training-fold floor, at least
+100 distinct inner evaluation targets, and seven evaluation UTC days.
+It never asks which of those venues survived the outer validation/test
+period. Production XMarket fitting retains its original all-split source
+selection and unchanged numerical gates.
+
+**Evidence rule:** Existing #624 artifacts, if already produced, are
+diagnostics only until a run at the corrected commit provides fresh,
+exact-source train-only results. Do not call the first run's subset ranking a
+validated model improvement. This correction intentionally does not
+restart the one-shot workflow or re-open the old holdout.
+
 ## Execution contract
 
 - Source: original SHA-verified candle manifests restored by the existing

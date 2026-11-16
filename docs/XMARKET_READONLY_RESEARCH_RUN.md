@@ -25,8 +25,13 @@ selection and unchanged numerical gates.
 **Evidence rule:** Existing #624 artifacts, if already produced, are
 diagnostics only until a run at the corrected commit provides fresh,
 exact-source train-only results. Do not call the first run's subset ranking a
-validated model improvement. This correction intentionally does not
-restart the one-shot workflow or re-open the old holdout.
+validated model improvement. The corrected workflow is permitted to
+run **one additional research-only pass** only if its merge transitions
+main directly from the verified #624 commit `b957d2e0`. Existing
+jobs are serialized by the unchanged concurrency group. It has no
+recurring schedule, cannot publish models, and never scores the
+old outer holdout for selection. If the main base changes, the guarded
+push skips and manual dispatch remains the explicit recovery path.
 
 ## Execution contract
 

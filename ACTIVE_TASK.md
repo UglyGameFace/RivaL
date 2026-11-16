@@ -1,5 +1,13 @@
 # RivaL active bot work — November 16, 2026 UTC
 
+## Following merged #623: source-verified research run
+
+**Merged baseline:** #623 is on main at `c158cd4a` (full PR SQLite/PostgreSQL CI: 3,566 passed). This branch `research/xmarket-train-only-one-shot-20261116` adds an owner-directed, one-time GitHub Actions read-only research run for all four assets and 5/15/60m, without model publication. Existing weekly archive push gates remain in effect; do not revive unattended weekly training.
+
+**Evidence semantics:** Original provider-SHA-verified candle manifests and native PM/Kalshi input bundles are read-only. No provider backfill, Drive source writes, database mutation, model import, live serving or trading. The inner comparison uses only the original training split, purges by the target horizon, and never scores or selects against outer validation/test for research. GitHub artifact summarizes sanitized source status, time splits, profile Brier and blockers. See `docs/XMARKET_READONLY_RESEARCH_RUN.md`.
+
+**Required checks:** Exact-head lint/full PostgreSQL CI, merge, main validation, then verify that the one-time GitHub Actions jobs actually executed and returned four genuine artifacts. If the workflow does not fire because the expected base SHA changed, retain explicit manual-only instructions rather than changing the chronology. No qualified after-cost XMarket scope yet. Keep #6/#299/#295/#151 open and confirm source-exact Discloud forward evidence separately.
+
 ## Current objective: XMarket rejected-fit quality research (November 16, 2026)
 
 **Branch:** `research/xmarket-purged-feature-ablation-20261116`. Start from verified `main@fe88d8c` after merged advance-call #622; parallel open Jarvis PR #608 is unrelated. Do not replay the November 14 holdout, promote an unqualified model, or stop the five issuing XMarket shadows.

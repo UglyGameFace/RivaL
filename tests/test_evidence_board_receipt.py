@@ -49,6 +49,31 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(_recent_forecast_summary(bad)["status"], "read_unavailable")
         self.assertEqual(_recent_forecast_summary(bad)["rows"], [])
 
+    def test_kucoin_gap_status_is_public_safe_and_never_claims_recovered(self) -> None:
+        private = {"status": "recorded", "assets": [
+            {"asset": "ETH", "queued_exact_gaps_14d": 2,
+             "due_exact_gaps_14d": 1, "attempted_exact_gaps_14d": 1,
+             "bulk_status": "upstream_empty", "contract": "PRIVATE"}
+        ]}
+        host, _ = summarize_host({"path_targets": {
+            "kucoin_gap_recovery": private,
+        }})
+        status = host["kucoin_gap_recovery"]
+        self.assertEqual(status, {
+            "status": "recorded", "assets_observed": 1,
+            "queued_exact_gaps_14d": 2, "due_exact_gaps_14d": 1,
+            "attempted_exact_gaps_14d": 1, "bulk_upstream_empty_assets": 1,
+        })
+        self.assertNotIn("PRIVATE", str(status))
+        bad, _ = summarize_host({"path_targets": {
+            "kucoin_gap_recovery": {"status": "recorded", "assets": [
+                {**private["assets"][0], "due_exact_gaps_14d": -1},
+            ]},
+        }})
+        self.assertEqual(bad["kucoin_gap_recovery"]["status"], "unavailable")
+        unknown, _ = summarize_host(None)
+        self.assertIsNone(unknown["kucoin_gap_recovery"]["queued_exact_gaps_14d"])
+
     def test_missing_host_is_unknown_not_zero(self) -> None:
         host, db = summarize_host(None)
         self.assertEqual(host["status"], "unavailable")

@@ -108,7 +108,8 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     receipt = run(asset=args.asset, manifests=args.manifests_dir,
                   train_end=args.train_end, test_start=args.test_start,
-                  trained_through=args.trained_through)
+                  trained_through=args.trained_through,
+                  okx_source_integrity=args.okx_source_integrity)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(receipt, sort_keys=True, indent=2), encoding="utf-8")
     print(json.dumps({"asset": args.asset, "status": receipt["status"],

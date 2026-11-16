@@ -5,6 +5,7 @@ It does not consume third-party credits, enable background AI or modify forecast
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import time
@@ -69,7 +70,7 @@ async def _ask(market: PerpetualMarketStore, settings: Settings,
         await ai.aclose()
 
 
-def verify_once() -> dict:
+def verify_once(*, include_xrp: bool = True) -> dict:
     settings = Settings()
     report: dict = {"outcome": "deferred", "provider": settings.rival_ai_provider}
     if settings.rival_storage_backend != "postgres" or settings.rival_database_url is None:
@@ -147,6 +148,14 @@ def verify_once() -> dict:
             report["outcome"] = "failed"
             report["reason"] = "exact_database_receipt_missing"
             return report
+        # The off-host acceptance checks the same BTC and XRP receipts in
+        # separate console requests: two CPU inferences in one synchronous
+        # request can exceed the Discloud gateway deadline. The default
+        # combined path stays available for backward-compatible diagnostics.
+        if not include_xrp:
+            report["asset"] = "BTC"
+            report["outcome"] = "verified"
+            return report
         # Batch 2 (round-3 P1-5): the BTC ask alone cannot catch an XRP
         # regression in save_ai_research — XRP burned a full gateway
         # inference and then failed the save for three audits. Ask XRP too
@@ -198,9 +207,75 @@ def verify_once() -> dict:
         store.close()
 
 
-def main() -> int:
+
+def verify_xrp_only() -> dict:
+    """Independent XRP persisted-research proof with no hidden BTC inference.
+
+    Must be paired with a separately verified BTC receipt by the off-host
+    relay. This call remains a real local-model ask and exact PostgreSQL read.
+    """
+    settings = Settings()
+    report: dict = {"outcome": "deferred", "asset": "XRP",
+                    "provider": settings.rival_ai_provider}
+    if settings.rival_storage_backend != "postgres" or settings.rival_database_url is None:
+        return {**report, "outcome": "failed", "reason": "postgres_not_configured"}
+    if settings.rival_ai_provider == "disabled" or settings.rival_local_ai_token is None:
+        return {**report, "reason": "local_provider_not_configured"}
+    store = PostgresHotStore(settings.rival_database_url.get_secret_value())
     try:
-        report = verify_once()
+        market = PerpetualMarketStore(store)
+        market.research_candidate_registry = ResearchCandidateRegistry(store)
+        market.research_history_auditor = SixMonthQualityAudit(market)
+        market.research_forward_auditor = ForwardAccuracyMonitor(market)
+        with store.connect() as conn:
+            report["saved_before"] = int(conn.execute(
+                "SELECT COUNT(*) AS n FROM perp_ai_research WHERE model=?",
+                (LOCAL_MODEL,),
+            ).fetchone()["n"])
+        try:
+            result, elapsed = asyncio.run(_ask(market, settings, asset="XRP"))
+        except LocalCapacityDeferred as exc:
+            return {**report, "reason": "minimum_spacing",
+                    "retry_at": exc.retry_at.isoformat() if exc.retry_at else None}
+        except ResearchUnavailable:
+            return {**report, "outcome": "failed",
+                    "reason": "xrp_research_unavailable"}
+        except Exception as exc:  # noqa: BLE001 - never emit model/provider secrets
+            return {**report, "outcome": "failed",
+                    "reason": "xrp_research_exception",
+                    "error_class": type(exc).__name__}
+        row = market.cached_ai_research(
+            asset=result.asset, model=result.model,
+            evidence_sha256=result.evidence_sha256,
+        )
+        with store.connect() as conn:
+            report["saved_after"] = int(conn.execute(
+                "SELECT COUNT(*) AS n FROM perp_ai_research WHERE model=?",
+                (LOCAL_MODEL,),
+            ).fetchone()["n"])
+        report["seconds"] = elapsed
+        report["model"] = result.model
+        report["source_count"] = result.source_count
+        report["from_cache"] = bool(result.from_cache)
+        report["xrp_verified"] = bool(
+            verified_receipt(result, row, now=datetime.now(UTC), asset="XRP")
+            and (report["saved_after"] > report["saved_before"]
+                 or result.from_cache)
+        )
+        report["outcome"] = "verified" if report["xrp_verified"] else "failed"
+        if not report["xrp_verified"]:
+            report["reason"] = "xrp_exact_database_receipt_missing"
+        return report
+    finally:
+        store.close()
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Private LFM3 source-exact acceptance")
+    parser.add_argument("--asset", choices=("both", "BTC", "XRP"), default="both")
+    args = parser.parse_args(argv)
+    try:
+        report = (verify_xrp_only() if args.asset == "XRP" else
+                  verify_once(include_xrp=args.asset == "both"))
     except Exception as exc:  # noqa: BLE001 - redact host errors
         report = {"outcome": "failed", "reason": "unverified_host_exception",
                   "error_class": type(exc).__name__}

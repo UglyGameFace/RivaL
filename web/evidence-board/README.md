@@ -5,6 +5,15 @@
 
 The Cloudflare `rival-evidence-board` Worker is now the **read-only RivaL operations dashboard**, not a mini GitHub. GitHub activity and research provenance remain available under **Diagnostics**, but do not form the primary product.
 
+## Model identity vs production telemetry
+
+The homepage and Model Lab name the signed, actually *scored* model using `performance.model`, currently `prospective-logistic-persistent-v3` (displayed as **Persistent Logistic v3**). Scores are observed in distinct BTC/ETH/SOL/XRP × 5/15/60m scopes and compared with the matched **baseline**, which is a reference forecast, not an unnamed competing AI model. These scoring observations are not proof the host is currently serving that exact model artifact/weights.
+
+When the Discloud host/database receipt fails, only host-specific counters should read **Host read unavailable**. Independently verified paired model scores stay visible, and the Command page shows the recorded scored family and number of scoring scopes. XMarket shadow issuance is a separate, dated host counter and is not conflated with the incumbent forecast cycle: the latter may be zero while XMarket shadows exist. The UI does not infer zero forecasts, model failure, or a profitable trade from a missing host read, and it does not fabricate winning model families, fresh calls, or after-cost qualification.
+
+Automatic GitHub-to-Cloudflare deployment of the Board is now production-verified; see [Build and trigger validation](../../docs/RIVAL_EVIDENCE_AUTODEPLOY.md). The collector has a connected source-specific trigger, but its first actual source-change build is still separately unverified.
+
+
 ## Main screens
 
 | Screen | What users see | Real source | Important gaps |

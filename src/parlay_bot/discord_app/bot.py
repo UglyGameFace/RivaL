@@ -1819,7 +1819,6 @@ class RivalDiscordClient(discord.Client):
 
     async def _status_facts(self) -> StatusFacts:
         """Real runtime state only; a slow source is reported, not guessed."""
-        now = datetime.now(UTC)
         incidents = feeds = None
         watchdog_checked_at = None
         try:
@@ -1862,6 +1861,9 @@ class RivalDiscordClient(discord.Client):
         except Exception:  # noqa: BLE001 - the card must never fail on its history
             problems, problem_totals = self.problem_log.recent(), self.problem_log.totals()
         memory = host_memory.snapshot()
+        # All awaited reads are complete. Books and workers may have updated
+        # during them; evaluate live state against the observation clock.
+        now = datetime.now(UTC)
         return StatusFacts(
             now=now, boot_at=self._boot_at,
             ready=self.is_ready() and self.discord_ready_at is not None,
@@ -3621,9 +3623,14 @@ class RivalDiscordClient(discord.Client):
                     self._acceptance_log_task = asyncio.ensure_future(
                         self._log_acceptance_once(now))
                 with statement_timeout(WATCHDOG_STATEMENT_TIMEOUT_MS):
-                    quote_streams = self.live_stream.health(now=now) if self.live_stream else None
+                    # SQL inspection/recovery can take seconds while sockets
+                    # replace their latest books. Observe at completion, not
+                    # the old pass-start clock which makes new books "future".
+                    published_at = datetime.now(UTC)
+                    quote_streams = (self.live_stream.health(now=published_at)
+                                     if self.live_stream else None)
                     events = await asyncio.wait_for(
-                        asyncio.to_thread(self.health_monitor.publish, faults, now=now,
+                        asyncio.to_thread(self.health_monitor.publish, faults, now=published_at,
                                           quote_streams=quote_streams),
                         timeout=15,
                     )

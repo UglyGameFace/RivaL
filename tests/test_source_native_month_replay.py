@@ -33,6 +33,7 @@ class _Drive:
             "interval_minutes": 5, "source_integrity": "postgres-first-observed-at-v1",
             "prospective_forecast": False, "live_trading_authorized": False,
             "data_sha256": hashlib.sha256(self.data).hexdigest(),
+            "source_sha256": "e" * 64,
         }
         first = _bytes(doc)
         second = _bytes({**doc, "different_provenance": "new"})
@@ -113,6 +114,9 @@ async def test_native_replay_different_manifest_provenance_fails_closed(tmp_path
     assert evidence["first"]["manifest_sha256"] != evidence["second"]["manifest_sha256"]
     assert evidence["first"]["claimed_history_sha256"] == hashlib.sha256(drive.data).hexdigest()
     assert evidence["second"]["claimed_history_sha256"] == hashlib.sha256(drive.data).hexdigest()
+    assert evidence["first"]["claimed_provider_source_sha256"] == "e" * 64
+    assert evidence["second"]["claimed_provider_source_sha256"] == "e" * 64
+    assert evidence["first"]["source_integrity"] == "postgres-first-observed-at-v1"
     assert evidence["verification"] == {
         "both_manifests_sha_verified": True,
         "first_history_readback_verified": True,

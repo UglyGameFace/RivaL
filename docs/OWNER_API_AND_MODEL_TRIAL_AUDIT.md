@@ -77,6 +77,44 @@ exchange/asset/horizon. Model Lab and XMarket are distinct families and
 proof streams; simply adding offline model fits, feature ablations and
 data collectors cannot guarantee a profitable successor.
 
+## Verified XMarket training-research failure behind the apparent progress
+
+The one-shot XMarket runs
+[#43871582320](https://github.com/UglyGameFace/RivaL/actions/runs/43871582320)
+and corrected [#43878923264](https://github.com/UglyGameFace/RivaL/actions/runs/43878923264)
+**did execute** and failed all four asset jobs. This is more precise than
+the earlier claim that no verified run evidence was available.
+
+I inspected the GitHub-produced per-asset, read-only JSON evidence artifacts
+for the corrected run. In all 12 combinations, source verification flags
+for Polymarket and Kalshi were `verified`, and all outer overlap
+admission checks were true. However the mandatory *inner training-only*
+feature-evaluation fold contained only **two distinct UTC days** per scope,
+versus the predeclared seven-day floor. Independent evaluation target counts
+were 302–358, exceeding the 100-target floor; the problem was **days**.
+The four assets' oldest verified native market coverage was too sparse in
+the Sep-2026 training partition to fit these causal feature experiments.
+
+Original-source restore also reported six Bitget monthly archive months
+per asset; OKX was excluded for
+`HistoryImportError: conflicting native month snapshots`, including BTC
+references for non-BTC coins. The original source-verifier appropriately
+failed closed instead of picking one conflicting document. The missing
+matched-market training calendar, not the number of restored Bitget months,
+determines the usable feature-fold duration.
+
+**Necessary next work:** source-exact chronological recovery across at
+least seven distinct eligible training-evaluation days, plus enough
+earlier purged fit data for each asset and horizon; identify each conflicting
+OKX monthly snapshot's original provider hashes and decide only with
+authenticated source evidence, not by guess or silent overwrite. Then run
+a separately authorized fresh research pass. Only after it produces scores
+can an XMarket challenger be pre-registered for a *new untouched future*
+evaluation period. Do not lower the seven-day floor, fabricate history,
+mine the old validation/test periods, or claim that any XMarket scope is
+profitable. The existing five imported XMarket 15/60m shadows remain separate
+from the non-XMarket `6-year` trial in the screenshot.
+
 ## Acceptance and remaining blockers
 
 - Unit/integration tests reproduce permission divergence, non-owner

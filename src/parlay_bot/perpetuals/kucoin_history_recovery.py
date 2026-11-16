@@ -141,6 +141,130 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
                 (asset, opened.isoformat()),
             )
 
+    def _queue_due_path_gaps(self, asset: str, *, now: datetime, end: datetime) -> int:
+        """Queue only provable isolated KuCoin holes blocking immutable paper paths.
+
+        The six-month audit intentionally refuses to queue a massive missing
+        historical prefix. That can leave a single, source-identifiable 5m
+        hole inside a due forward path unrepairable while the older bulk
+        cursor remains active. Sample a bounded 14-day oldest/newest set.
+        Only a missing slot strictly bracketed by authentic stored neighbors
+        may join the existing six-hour-backoff gap queue. A source request
+        still occurs only through the existing one-page fetch_asset budget.
+        """
+        floor = max(six_complete_months_start(now), now - timedelta(days=14))
+        base = "XBT" if asset == "BTC" else asset
+        symbol = f"{base}USDTM"
+        with self.store.connect() as conn:
+            if self.store.database.backend == "postgres":
+                exists = conn.execute(
+                    "SELECT to_regclass(?) AS name", ("rival_forward_paths",),
+                ).fetchone()["name"]
+            else:
+                present = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                    ("rival_forward_paths",),
+                ).fetchone()
+                exists = present["name"] if present else None
+            if not exists:
+                return 0
+
+            outstanding = conn.execute(
+                """SELECT COUNT(*) AS n FROM perp_history_gap_repair
+                   WHERE venue='kucoin' AND asset=? AND opened_at>=?""",
+                (asset, floor.isoformat()),
+            ).fetchone()
+            budget = min(4, max(0, 16 - int(outstanding["n"])))
+            if not budget:
+                return 0
+            candidates = []
+            for order in ("ASC", "DESC"):
+                candidates.extend(conn.execute(
+                    f"""SELECT reference_opened_at,issued_at,target_opened_at,
+                               horizon_minutes
+                        FROM rival_forward_paths
+                        WHERE venue='kucoin' AND contract=? AND quote='USDT'
+                          AND asset=? AND state='pending' AND side='long'
+                          AND horizon_minutes IN (15,60)
+                          AND target_opened_at>=? AND target_opened_at<?
+                        ORDER BY target_opened_at {order} LIMIT 12""",
+                    (symbol, asset, floor.isoformat(), end.isoformat()),
+                ).fetchall())
+
+            processed = set()
+            queued = 0
+            for path in candidates:
+                key = (path["reference_opened_at"], path["target_opened_at"],
+                       path["horizon_minutes"])
+                if key in processed:
+                    continue
+                processed.add(key)
+                try:
+                    reference = _utc(datetime.fromisoformat(
+                        str(path["reference_opened_at"])))
+                    issued = _utc(datetime.fromisoformat(str(path["issued_at"])))
+                    target = _utc(datetime.fromisoformat(
+                        str(path["target_opened_at"])))
+                    horizon = int(path["horizon_minutes"])
+                    steps = horizon // 5
+                    if not (
+                        horizon in (15, 60)
+                        and issued < reference + timedelta(minutes=10)
+                        and issued <= now
+                        and target == reference + (steps + 1) * _STEP
+                    ):
+                        continue
+                    slots = tuple(
+                        reference + (index + 2) * _STEP
+                        for index in range(steps)
+                    )
+                    found = conn.execute(
+                        """SELECT opened_at,closed_at,first_observed_at
+                           FROM perp_market_candles
+                           WHERE venue='kucoin' AND contract=? AND quote='USDT'
+                             AND interval_minutes=5
+                             AND opened_at>=? AND opened_at<=?
+                           ORDER BY opened_at LIMIT 15""",
+                        (symbol, (slots[0] - _STEP).isoformat(),
+                         (slots[-1] + _STEP).isoformat()),
+                    ).fetchall()
+                    valid = set()
+                    for bar in found:
+                        opened = _utc(datetime.fromisoformat(str(bar["opened_at"])))
+                        closed = _utc(datetime.fromisoformat(str(bar["closed_at"])))
+                        observed = _utc(datetime.fromisoformat(
+                            str(bar["first_observed_at"])))
+                        if (closed != opened + _STEP - timedelta(milliseconds=1)
+                            or not closed <= observed <= now):
+                            # Neighbor evidence is malformed, not safe proof
+                            # that a provider-original candle is missing.
+                            valid.clear()
+                            break
+                        valid.add(opened)
+                    else:
+                        missing = [slot for slot in slots if slot not in valid]
+                        if len(missing) != 1:
+                            continue
+                        hole = missing[0]
+                        if not (floor <= hole < end
+                                and hole - _STEP in valid
+                                and hole + _STEP in valid):
+                            continue
+                        result = conn.execute(
+                            """INSERT INTO perp_history_gap_repair
+                               (venue,asset,opened_at,retry_after)
+                               VALUES ('kucoin',?,?,?)
+                               ON CONFLICT(venue,asset,opened_at) DO NOTHING""",
+                            (asset, hole.isoformat(), now.isoformat()),
+                        )
+                        queued += int(result.rowcount == 1)
+                        if queued >= budget:
+                            break
+                except (ValueError, TypeError, OverflowError):
+                    # A corrupt forecast clock cannot authorize API recovery.
+                    continue
+            return queued
+
     async def _multiplier(self, asset: str, symbol: str, now: datetime) -> float:
         cached = self._metadata.get(symbol)
         if cached and timedelta(0) <= now - cached[1] < timedelta(hours=1):
@@ -185,20 +309,26 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
         end = clock.replace(
             minute=clock.minute // 5 * 5, second=0, microsecond=0,
         ) - timedelta(hours=4)
-        repairing = False
-        if cursor >= end:
-            gap = await asyncio.to_thread(
-                self._claim_due_gap, asset, now=clock, end=end,
-            )
-            if gap is None:
-                pending = await asyncio.to_thread(self._pending_gaps, asset, now=clock)
-                await asyncio.to_thread(
-                    self._advance, asset, now=clock, next_open=None,
-                    status="gaps_pending" if pending else "caught_up",
-                )
-                return 0
+        # Queue source-authentic singleton holes from a small sample of
+        # immutable, already-due paper paths even while the six-month
+        # historical cursor is still filling older months. One provider
+        # request per cycle remains the hard limit.
+        await asyncio.to_thread(
+            self._queue_due_path_gaps, asset, now=clock, end=end,
+        )
+        gap = await asyncio.to_thread(
+            self._claim_due_gap, asset, now=clock, end=end,
+        )
+        repairing = gap is not None
+        if repairing:
             cursor = gap
-            repairing = True
+        elif cursor >= end:
+            pending = await asyncio.to_thread(self._pending_gaps, asset, now=clock)
+            await asyncio.to_thread(
+                self._advance, asset, now=clock, next_open=None,
+                status="gaps_pending" if pending else "caught_up",
+            )
+            return 0
         # A repair request covers ONLY the exact missing five-minute slot.
         # A provider returning a neighbor cannot be counted as recovery.
         until = min(cursor + (1 if repairing else self.page_bars) * _STEP, end)

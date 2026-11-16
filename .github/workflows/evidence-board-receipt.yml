@@ -15,11 +15,11 @@ on:
       - "src/**"
       - ".github/workflows/discloud-deploy.yml"
       - ".github/workflows/live-learning-cycle-receipt.yml"
-  # A successful production release is an independent fallback event when
-  # GitHub's best-effort cron silently drops scheduled publications.
-  # workflow_run executes the default-branch publisher, never release artifacts.
+  # A successful production release or independent hourly Discloud uptime check
+  # offers another read when best-effort cron skips. Only the evidence workflow
+  # mints a signed OIDC publication; it never reuses upstream artifacts.
   workflow_run:
-    workflows: ["RivaL Production Release"]
+    workflows: ["RivaL Production Release", "RivaL independent Discloud uptime"]
     types: [completed]
   # A 10-minute read-only evidence cadence bounds dashboard lag without
   # turning a website refresh into a host console/Drive API request.

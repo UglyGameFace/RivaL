@@ -26,6 +26,7 @@ from parlay_bot.archive.models import ArchiveArtifact
     ("transient_503", True, 2, 1),
     ("staged_resume", True, 1, 0),
     ("timeout_vanished", False, 1, 1),
+    ("lookup_timeout", False, 1, 1),
     ("permission_denied", False, 1, 1),
     ("changed_remote_checksum", False, 1, 1),
     ("different_remote_id", False, 1, 1),
@@ -89,6 +90,8 @@ async def test_reconcile_original_promotion_without_reupload(
                 location = "staging"
             else:
                 raise AssertionError("unbounded source search")
+            if scenario == "lookup_timeout" and state["patch"] > 0:
+                raise httpx.ReadTimeout("private Drive URL and response", request=req)
             files = ([item(location)] if state["location"] == location else [])
             return httpx.Response(200, json={"files": files})
         if req.method == "POST" and req.url.path == "/upload/drive/v3/files":
@@ -108,6 +111,8 @@ async def test_reconcile_original_promotion_without_reupload(
             assert req.url.params["removeParents"] == "staging-id"
             if scenario == "permission_denied":
                 return httpx.Response(403, json={"error": "private-denial"})
+            if scenario == "lookup_timeout":
+                raise httpx.ReadTimeout("private promotion response", request=req)
             if scenario == "timeout_vanished":
                 state["location"] = "none"
                 raise httpx.ReadTimeout("private request detail", request=req)

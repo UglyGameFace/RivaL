@@ -27,6 +27,7 @@ def _snapshot(h, now, *, direction="UP", p=0.62, status="unqualified_model",
         price=80123.56, issued_at=now-timedelta(seconds=30),
         ends_at=now+timedelta(minutes=h),
         status=status, evidence_qualified=qualified,
+        model_version="flow_v3",
     )
 
 
@@ -63,13 +64,35 @@ def test_call_board_shows_unqualified_up_down_and_only_issued_next(monkeypatch):
     assert "DOWN" in card.fields[0].value
     assert "UP" in card.fields[1].value
     assert "UNQUALIFIED RESEARCH; NO TRADE CALL" in card.fields[1].value
-    assert "64%" not in card.fields[1].value or "Next" in card.fields[1].value
+    assert "Confidence: 67.0%" in card.fields[1].value
+    assert "Confidence: 53.0%" in card.fields[0].value
+    assert "RAW model estimate; NOT calibrated" in card.fields[1].value
+    assert "Model: `flow_v3`" in card.fields[1].value
+    assert "Exchange: hyperliquid" in card.fields[1].value
     assert "Next *already-issued* target" in card.fields[1].value
+    assert "Confidence: 64.0% (raw, research only)" in card.fields[1].value
     assert "90%" not in card.fields[1].value
     assert "Next issued target: not yet available" in card.fields[0].value
     assert "NO CURRENT FORECAST" in card.fields[2].value
     assert "Not verified" in card.fields[3].value
     assert "No real orders" in card.footer.text
+
+
+def test_call_board_labels_calibrated_confidence_separately(monkeypatch):
+    now = datetime(2026, 11, 16, 3, tzinfo=UTC)
+    snapshot = _snapshot(15, now, direction="DOWN", p=.82, qualified=True)
+    snapshot = __import__("dataclasses").replace(snapshot, calibrated=True)
+    monkeypatch.setattr(call_board, "target_snapshot",
+                        lambda _m, *, asset, horizon_minutes, now:
+                        snapshot if horizon_minutes == 15 else
+                        _snapshot(horizon_minutes, now, direction="WAIT"))
+    monkeypatch.setattr(call_board, "recent_watches", lambda *_a, **_k: [])
+    card, _ = live_calls_embed(object(), "BTC", now=now)
+    assert "Confidence: 82.0%" in card.fields[1].value
+    assert "Platt-calibrated model estimate" in card.fields[1].value
+    assert "forward reliability unverified" in card.fields[1].value
+    assert "WATCH ONLY; profitability not proven" in card.fields[1].value
+    assert "RAW model estimate" not in card.fields[1].value
 
 
 def test_call_board_keeps_all_horizons_as_wait_when_collector_unavailable():

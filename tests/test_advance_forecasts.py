@@ -244,14 +244,14 @@ def test_live_card_names_lead_model_source_confidence_and_target(learning_store,
 def test_host_delivery_state_distinguishes_no_subscription_from_no_receipt(learning_store):
     market, monitor = setup(learning_store)
     monitor.run_once(now=CLOCK)
+    service = CallBoardService(SimpleNamespace(), learning_store, market)
+    service.initialize()
     report = read_advance_receipt(learning_store, CLOCK)
     assert report["channel_cards"]["active"] == 0
     assert report["delivery_state"] == "no_active_channel_subscriptions"
     assert report["recent_forecasts"]
     assert report["recent_deliveries"] == []
 
-    service = CallBoardService(SimpleNamespace(), learning_store, market)
-    service.initialize()
     service._save(10, "exchange", "BTC", 0, 20, 30, "frozen")
     subscribed = read_advance_receipt(learning_store, CLOCK)
     assert subscribed["channel_cards"]["active"] == 1

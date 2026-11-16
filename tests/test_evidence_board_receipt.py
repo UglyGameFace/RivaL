@@ -74,6 +74,25 @@ class ReceiptTests(unittest.TestCase):
         unknown, _ = summarize_host(None)
         self.assertIsNone(unknown["kucoin_gap_recovery"]["queued_exact_gaps_14d"])
 
+    def test_live_call_delivery_shows_exact_opt_in_and_model_without_ids(self) -> None:
+        host, _ = summarize_host({"advance_forecasts": {
+            "channel_cards": {"status": "recorded", "active": 0,
+                              "guild_id": "PRIVATE"},
+            "recent_deliveries": [],
+            "model": "advance-candle-logistic-lead5-v1",
+        }})
+        self.assertEqual(host["live_call_delivery"], {
+            "status": "recorded", "active_channels": 0,
+            "recent_accepted_delivery_rows": 0,
+            "advance_model": "advance-candle-logistic-lead5-v1",
+        })
+        self.assertNotIn("PRIVATE", str(host["live_call_delivery"]))
+        bad, _ = summarize_host({"advance_forecasts": {
+            "channel_cards": {"status": "recorded", "active": -1},
+            "recent_deliveries": [], "model": "unsafe",
+        }})
+        self.assertEqual(bad["live_call_delivery"]["status"], "unavailable")
+
     def test_missing_host_is_unknown_not_zero(self) -> None:
         host, db = summarize_host(None)
         self.assertEqual(host["status"], "unavailable")

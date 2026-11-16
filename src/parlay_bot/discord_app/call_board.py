@@ -133,11 +133,6 @@ def live_calls_embed(market, asset: str, now: datetime | None = None):
 
 
 
-def polymarket_calls_embed(service, asset: str, horizon: int):
-    """Use the existing actual contract/current-next board, never perp candles."""
-    raise RuntimeError("Polymarket calls are read asynchronously")
-
-
 async def build_polymarket_calls(service, asset: str, horizon: int):
     from parlay_bot.discord_app.polymarket_live_board import matching_call
 
@@ -318,8 +313,8 @@ class CallBoardService:
         raise ValueError("Unsupported call board market")
 
     def _revision(self, asset: str) -> str | None:
-        """Cheap indexed check; a new immutable forecast triggers instant redraw."""
-        if self.market is None:
+        """Cheap indexed check; a new immutable forecast triggers a redraw."""
+        if self.market is None or getattr(self.market, "store", None) is None:
             return None
         with self.market.store.connect() as conn:
             row = conn.execute(
@@ -370,7 +365,7 @@ class CallBoardService:
                 embed, key = await asyncio.wait_for(
                     self._render(kind, asset, horizon), timeout=20,
                 )
-            except (ValueError, TimeoutError, Exception):  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - one unsupported market fails closed
                 _LOG.warning("Requested market Live Calls unavailable", exc_info=True)
                 return "Cannot verify fresh calls for this market; no panel posted."
             try:
@@ -391,6 +386,9 @@ class CallBoardService:
                 except (discord.HTTPException, AttributeError):
                     pass
                 return "Could not save this panel; no active tracking created."
+            self._last_evaluated[
+                (kind, asset, horizon if kind == "polymarket" else 0)
+            ] = datetime.now(UTC)
             return (
                 f"Posted {asset} {kind} Live Calls in this channel. "
                 "One message updates automatically, without DMs."
@@ -432,11 +430,13 @@ class CallBoardService:
                         )
                         revision = self._last_revision.get(key)
                         new_issuance = False
-                        if kind == "exchange" and (not force):
+                        if kind == "exchange" and not force and not stale:
                             checked = await asyncio.to_thread(self._revision, asset)
                             new_issuance = checked != revision
                             self._last_revision[key] = checked
-                        if force or stale or new_issuance:
+                        # An exchange issuance wake must not cause a Gamma/CLOB
+                        # or Kalshi REST burst unrelated to that new forecast.
+                        if (force and kind == "exchange") or stale or new_issuance:
                             cards[key] = await asyncio.wait_for(
                                 self._render(kind, asset, horizon), timeout=20,
                             )

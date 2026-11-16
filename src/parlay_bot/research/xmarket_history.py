@@ -267,6 +267,39 @@ def combine(bundles, *, history=(), errors=()) -> dict:
                          for b in bundles if b.get("_bundle_sha256")]}
 
 
+
+async def read_verified_inputs_only(drive, *, asset: str) -> dict:
+    """Restore verified original Drive source bundles without backfill or writes.
+
+    Unlike weekly_inputs_once, this never calls provider APIs, publishes a
+    checkpoint, or changes Drive cursors. It fails closed on incomplete
+    pagination, malformed source documents and original-provider mismatches.
+    """
+    if asset not in ("BTC", "ETH", "SOL", "XRP"):
+        raise ValueError("invalid XMarket asset")
+    bundles = []
+    cursor = None
+    for _ in range(32):
+        items, cursor = await drive.read_verified_research_reports(
+            limit=20, page_token=cursor, return_next_page=True,
+            name_prefix=BUNDLE_PREFIX + asset + "-",
+        )
+        for file_id, payload in items:
+            doc = validate_bundle(json.loads(payload))
+            if doc["asset"] != asset:
+                raise ValueError("cross-asset Drive readback")
+            bundles.append({**doc, "_drive_file_id": file_id,
+                            "_bundle_sha256": hashlib.sha256(payload).hexdigest()})
+        if cursor is None:
+            break
+    else:
+        raise ValueError("XMarket original source archive exceeds bounded listing")
+    if not bundles:
+        return {"samples": [], "live_venues": [], "verification": {},
+                "errors": ["no_verified_drive_bundles"], "receipts": []}
+    return combine(bundles)
+
+
 def load_local_inputs(path: Path, *, asset: str | None = None) -> dict:
     """Only canonical, typed input bundles; arbitrary price CSVs are not provenance."""
     pattern = f"xmarket-inputs-{asset}-*.json" if asset else "xmarket-inputs-*.json"

@@ -139,3 +139,74 @@ def test_pinned_namespace_cannot_mislabel_other_source_manifest(tmp_path):
         archive_training.load_frames_manifests(
             tmp_path, okx_source_integrity=PIN,
         )
+
+
+@pytest.mark.parametrize("days,expected_status", [
+    (6, "incomplete"), (7, "measured"),
+])
+def test_train_only_report_preserves_real_inner_fold_shortfall(
+    tmp_path, monkeypatch, days, expected_status,
+):
+    from tools import run_xmarket_train_only_research as research
+
+    calls = []
+
+    def load(_root, *, target_asset, okx_source_integrity):
+        calls.append(("load", target_asset, okx_source_integrity))
+        return {"opaque": True}, {
+            "provider_sha256_by_month": {"okx:2026-05": "a" * 64},
+            "okx_selected_source_integrity": okx_source_integrity,
+            "okx_unselected_manifests": 1,
+        }
+
+    async def native(_asset):
+        return {"verification": {
+            "polymarket": {"status": "verified"},
+            "kalshi": {"status": "verified"},
+        }}
+
+    def train(_frames, *, horizon, market_data, research_only, **_kwargs):
+        assert research_only is True
+        assert market_data["verification"]["kalshi"]["status"] == "verified"
+        calls.append(("train", horizon))
+        status = "measured_train_only" if days >= 7 else "insufficient_train_only_fold"
+        return {"artifact": None, "publish_kind": "report", "report": {
+            "training_status": "research_only",
+            "train_only_feature_ablation": {
+                "status": status, "fold": {"eval_days": days}, "profiles": [],
+                "can_publish_model": False,
+            },
+            "overlap_evidence": {"eligible": True},
+        }}
+
+    monkeypatch.setattr(research, "load_frames_manifests", load)
+    monkeypatch.setattr(research, "_read_originals", native)
+    monkeypatch.setattr(research, "train_run", train)
+    receipt = research.run(
+        asset="BTC", manifests=tmp_path, okx_source_integrity=PIN,
+        train_end="2026-09-19T00:00:00+00:00",
+        test_start="2026-10-17T00:00:00+00:00",
+        trained_through="2026-11-13T23:55:00+00:00",
+    )
+    assert receipt["status"] == expected_status
+    assert receipt["research_only"] is True
+    assert receipt["models_published"] == receipt["trades_placed"] == 0
+    assert receipt["okx_selected_source_integrity"] == PIN
+    assert receipt["okx_unselected_manifests"] == 1
+    assert [s["horizon_minutes"] for s in receipt["scopes"]] == [5, 15, 60]
+    assert [s["inner_train_only_eval_days"] for s in receipt["scopes"]] == [days] * 3
+    assert [s["inner_train_only_missing_days"] for s in receipt["scopes"]] == [
+        max(0, 7-days)
+    ] * 3
+    assert all(not s["outer_validation_test_scored"] for s in receipt["scopes"])
+    assert calls == [("load", "BTC", PIN), ("train", 5), ("train", 15),
+                     ("train", 60)]
+
+
+def test_one_shot_workflow_selects_only_verified_okx_and_remains_nonrecurring():
+    workflow = Path(".github/workflows/xmarket-train-only-research.yml").read_text()
+    assert workflow.count("--okx-source-integrity okx-v5-public-history-5m-v1") == 2
+    assert "schedule:" not in workflow
+    assert "workflow_dispatch:" in workflow
+    assert 'github.event_name == \'push\'' in workflow
+    assert "training" not in workflow.lower().split("model imports")[1].split("\\n", 1)[0]

@@ -1,5 +1,8 @@
 # RivaL Operations Dashboard
 
+**Independent public dashboard:** https://evidence.the420lobby.com/ (Cloudflare Worker `rival-evidence-board`). This site is hosted outside ChatGPT; [hosting, dependencies, deployment and recovery](HOSTING.md) document how to preserve it. The existing https://rival.the420lobby.com/ site remains separate.
+
+
 The Cloudflare `rival-evidence-board` Worker is now the **read-only RivaL operations dashboard**, not a mini GitHub. GitHub activity and research provenance remain available under **Diagnostics**, but do not form the primary product.
 
 ## Main screens

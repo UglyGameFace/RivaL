@@ -23,10 +23,20 @@ def _bytes(document):
 class _Drive:
     DRIVE_URL = "https://www.googleapis.com/drive/v3"
 
-    def __init__(self, *, changed_manifest=False, corrupt_replay=False):
+    def __init__(
+        self, *, changed_manifest=False, corrupt_replay=False,
+        first_data=None, second_data=None, corrupt_second_history=False,
+    ):
         self.folders = SimpleNamespace(manifests="manifests", history="history")
-        self.data = b'{"closed_at":"2026-09-01T00:05:00+00:00"}\n'
+        self.data = (first_data if first_data is not None
+                     else _bytes({"closed_at": "2026-09-01T00:05:00+00:00"}) + bytes((10,)))
+        self.second_data = second_data if second_data is not None else self.data
         file = "okx-BTC-USDT-SWAP-USDT-5m-2026-09--0000000000000001.ndjson"
+        second_file = (
+            file if self.second_data == self.data
+            else "okx-BTC-USDT-SWAP-USDT-5m-2026-09--"
+                 + hashlib.sha256(self.second_data).hexdigest()[:16] + ".ndjson"
+        )
         doc = {
             "file": file, "source": SOURCE, "venue": "okx",
             "contract": "BTC-USDT-SWAP", "quote": "USDT",
@@ -35,23 +45,35 @@ class _Drive:
             "data_sha256": hashlib.sha256(self.data).hexdigest(),
             "source_sha256": "e" * 64,
         }
+        second_doc = {
+            **doc, "file": second_file,
+            "data_sha256": hashlib.sha256(self.second_data).hexdigest(),
+            "source_sha256": "f" * 64 if self.second_data != self.data else "e" * 64,
+        }
+        if changed_manifest:
+            second_doc["different_provenance"] = "new"
         first = _bytes(doc)
-        second = _bytes({**doc, "different_provenance": "new"})
-        if not changed_manifest:
-            second = first
-        self.blobs = {"m1": first, "m2": first if corrupt_replay else second,
-                      "h1": self.data}
+        second = _bytes(second_doc)
+        self.blobs = {
+            "m1": first, "m2": first if corrupt_replay else second,
+            "h1": self.data,
+            "h2": b"corrupt" if corrupt_second_history else self.second_data,
+        }
         self.manifests = [
-            {"id": key, "name": file.removesuffix(".ndjson")+".manifest.json",
+            {"id": key, "name": filename.removesuffix(".ndjson") + ".manifest.json",
              "size": str(len(blob)), "parents": ["manifests"],
              "appProperties": {"rival_kind": "manifest",
                                "rival_sha256": hashlib.sha256(blob).hexdigest()}}
-            for key, blob in (("m1", first), ("m2", second))
+            for key, blob, filename in (
+                ("m1", first, file), ("m2", second, second_file),
+            )
         ]
         if corrupt_replay:
-            # The second metadata authenticates different manifest bytes;
-            # the downloaded copy is tampered. Must fail before replay skip.
-            self.manifests[1]["appProperties"]["rival_sha256"] = hashlib.sha256(second).hexdigest()
+            # Metadata authenticates the original second manifest, but the
+            # returned second object is tampered.
+            self.manifests[1]["appProperties"]["rival_sha256"] = (
+                hashlib.sha256(second).hexdigest()
+            )
         self.calls = []
         self._client = self
 
@@ -72,9 +94,16 @@ class _Drive:
 
     async def _find_batch_object(self, *, parent_id, batch_id, kind):
         assert (parent_id, kind) == ("history", "history")
-        assert batch_id == "native-" + hashlib.sha256(self.data).hexdigest()[:24]
-        file = self.manifests[0]["name"].removesuffix(".manifest.json") + ".ndjson"
-        return SimpleNamespace(file_id="h1", name=file, size_bytes=len(self.data))
+        first = "native-" + hashlib.sha256(self.data).hexdigest()[:24]
+        second = "native-" + hashlib.sha256(self.second_data).hexdigest()[:24]
+        if batch_id == first:
+            key, size, i = "h1", len(self.data), 0
+        elif batch_id == second:
+            key, size, i = "h2", len(self.second_data), 1
+        else:
+            raise AssertionError("unexpected normalized source SHA")
+        file = self.manifests[i]["name"].removesuffix(".manifest.json") + ".ndjson"
+        return SimpleNamespace(file_id=key, name=file, size_bytes=size)
 
     async def get(self, url, *, params, headers, follow_redirects=False):
         if params.get("alt") != "media":
@@ -109,7 +138,7 @@ async def test_native_replay_different_manifest_provenance_fails_closed(tmp_path
     evidence = caught.value.evidence
     assert (evidence["venue"], evidence["contract"], evidence["quote"],
             evidence["month"]) == ("okx", "BTC-USDT-SWAP", "USDT", "2026-09")
-    assert evidence["schema"] == "rival-native-month-conflict-v1"
+    assert evidence["schema"] == "rival-native-month-conflict-v2"
     assert evidence["resolution"] == "blocked_divergent_manifest_bytes"
     assert evidence["first"]["manifest_sha256"] != evidence["second"]["manifest_sha256"]
     assert evidence["first"]["claimed_history_sha256"] == hashlib.sha256(drive.data).hexdigest()
@@ -120,12 +149,85 @@ async def test_native_replay_different_manifest_provenance_fails_closed(tmp_path
     assert evidence["verification"] == {
         "both_manifests_sha_verified": True,
         "first_history_readback_verified": True,
-        "second_history_readback_verified": False,
+        "second_history_readback_verified": True,
+        "second_provider_original_witness_verified": False,
+    }
+    assert evidence["comparison"] == {
+        "first_rows": 1,
+        "second_rows": 1,
+        "all_candle_fields_identical": True,
+        "identical_except_first_observed_at": True,
     }
     assert "m1" not in json.dumps(evidence)
     assert "m2" not in json.dumps(evidence)
     assert "source_url" not in json.dumps(evidence)
     assert drive.calls.count("m2") == 1
+
+
+def _observation_row(*, observed_at: str, close: float = 101) -> bytes:
+    record = {
+        "venue": "okx", "contract": "BTC-USDT-SWAP",
+        "quote": "USDT", "interval_minutes": 5,
+        "opened_at": "2026-09-01T00:00:00+00:00",
+        "closed_at": "2026-09-01T00:04:59.999000+00:00",
+        "first_observed_at": observed_at,
+        "open": 100, "high": 102, "low": 99, "close": close,
+        "volume_base": 1, "volume_quote": 100,
+    }
+    return _bytes(record) + bytes((10,))
+
+
+@pytest.mark.asyncio
+async def test_conflicting_source_sha_can_be_observation_only(tmp_path):
+    first = _observation_row(observed_at="2026-10-01T00:00:00+00:00")
+    second = _observation_row(observed_at="2026-11-01T00:00:00+00:00")
+    drive = _Drive(changed_manifest=True, first_data=first, second_data=second)
+    with pytest.raises(NativeMonthConflictError) as caught:
+        await restore_verified_source_months(
+            drive, venue="okx", contract="BTC-USDT-SWAP",
+            months=["2026-09"], root=tmp_path,
+        )
+    proof = caught.value.evidence
+    assert proof["comparison"] == {
+        "first_rows": 1, "second_rows": 1,
+        "all_candle_fields_identical": False,
+        "identical_except_first_observed_at": True,
+    }
+    assert proof["verification"]["second_history_readback_verified"] is True
+    assert proof["first"]["claimed_history_sha256"] != proof["second"]["claimed_history_sha256"]
+    assert "2026-10" not in json.dumps(proof)
+    assert "2026-11" not in json.dumps(proof)
+    assert drive.calls.count("h2") == 1
+
+
+@pytest.mark.asyncio
+async def test_conflicting_sources_with_price_changes_remain_blocked(tmp_path):
+    first = _observation_row(observed_at="2026-10-01T00:00:00+00:00", close=101)
+    second = _observation_row(observed_at="2026-11-01T00:00:00+00:00", close=102)
+    drive = _Drive(changed_manifest=True, first_data=first, second_data=second)
+    with pytest.raises(NativeMonthConflictError) as caught:
+        await restore_verified_source_months(
+            drive, venue="okx", contract="BTC-USDT-SWAP",
+            months=["2026-09"], root=tmp_path,
+        )
+    assert caught.value.evidence["comparison"]["identical_except_first_observed_at"] is False
+    assert caught.value.evidence["resolution"] == "blocked_divergent_manifest_bytes"
+
+
+@pytest.mark.asyncio
+async def test_conflicting_source_second_original_tampering_fails_closed(tmp_path):
+    first = _observation_row(observed_at="2026-10-01T00:00:00+00:00")
+    second = _observation_row(observed_at="2026-11-01T00:00:00+00:00")
+    drive = _Drive(
+        changed_manifest=True, first_data=first, second_data=second,
+        corrupt_second_history=True,
+    )
+    with pytest.raises(HistoryImportError, match="second history SHA mismatch"):
+        await restore_verified_source_months(
+            drive, venue="okx", contract="BTC-USDT-SWAP",
+            months=["2026-09"], root=tmp_path,
+        )
+    assert drive.calls.count("h2") == 1
 
 
 @pytest.mark.asyncio

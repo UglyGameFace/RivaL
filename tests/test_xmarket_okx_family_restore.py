@@ -209,4 +209,4 @@ def test_one_shot_workflow_selects_only_verified_okx_and_remains_nonrecurring():
     assert "schedule:" not in workflow
     assert "workflow_dispatch:" in workflow
     assert 'github.event_name == \'push\'' in workflow
-    assert "training" not in workflow.lower().split("model imports")[1].split("\\n", 1)[0]
+    assert "python tools/run_xmarket_train_only_research.py" in workflow

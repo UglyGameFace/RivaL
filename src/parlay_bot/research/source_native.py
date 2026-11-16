@@ -65,6 +65,73 @@ def _source_manifest_receipt(manifest: dict, manifest_sha: str) -> dict:
     }
 
 
+def _canonical_month_record_signatures(payload: bytes) -> dict:
+    """Compare source-normalized history without exposing prices or timestamps.
+
+    This does not replace provider provenance verification. Both artifacts
+    must pass their complete declared SHA checks before reaching this helper.
+    Only first_observed_at is omitted from the alternative digest; contract,
+    time, OHLC, volume and every other stored field remain checked.
+    """
+    full = hashlib.sha256()
+    without_observation = hashlib.sha256()
+    count = 0
+    for raw in payload.splitlines():
+        count += 1
+        if count > 10_000:
+            raise HistoryImportError("native conflict comparison exceeds row cap")
+        try:
+            record = json.loads(raw)
+            if not isinstance(record, dict):
+                raise ValueError("not a JSON object")
+            all_fields = json.dumps(
+                record, sort_keys=True, separators=(",", ":"), allow_nan=False,
+            ).encode("utf-8")
+            without = json.dumps(
+                {key: value for key, value in record.items()
+                 if key != "first_observed_at"},
+                sort_keys=True, separators=(",", ":"), allow_nan=False,
+            ).encode("utf-8")
+        except (ValueError, TypeError) as exc:
+            raise HistoryImportError(
+                "invalid source-native history comparison row"
+            ) from exc
+        full.update(all_fields + b"\\n")
+        without_observation.update(without + b"\\n")
+    if count == 0:
+        raise HistoryImportError("empty source-native conflict history")
+    return {
+        "rows": count,
+        "canonical_all_fields_sha256": full.hexdigest(),
+        "canonical_without_first_observed_sha256": without_observation.hexdigest(),
+    }
+
+
+async def _read_conflict_history(drive, manifest: dict) -> bytes:
+    """Reverify the other manifest's normalized artifact, never select it."""
+    digest = manifest["data_sha256"]
+    name = manifest["file"]
+    history = await drive._find_batch_object(
+        parent_id=drive.folders.history,
+        batch_id="native-" + digest[:24],
+        kind="history",
+    )
+    if (history is None or history.name != name
+        or not isinstance(history.size_bytes, int)
+        or not 0 < history.size_bytes <= 12_000_000):
+        raise HistoryImportError("conflicting native second history unavailable")
+    response = await drive._client.get(
+        f"{drive.DRIVE_URL}/files/{history.file_id}",
+        params={"alt": "media"}, headers=await drive._headers(),
+        follow_redirects=False,
+    )
+    if (response.status_code != 200
+        or len(response.content) != history.size_bytes
+        or hashlib.sha256(response.content).hexdigest() != digest):
+        raise HistoryImportError("conflicting native second history SHA mismatch")
+    return response.content
+
+
 def native_manifest_provenance(manifest: dict) -> bool:
     """One authoritative check shared by research/model readers and Drive restore."""
     if not isinstance(manifest, dict):
@@ -733,16 +800,46 @@ async def restore_verified_source_months(
                 # versions so the publisher can be diagnosed without guessing.
                 first = seen_evidence[identity]
                 if first["manifest_sha256"] != expected_sha:
+                    # A different manifest does not tell us whether its candle
+                    # prices differ or merely first-observed chronology. Verify
+                    # the SECOND normalized artifact too, without treating it
+                    # as valid training input or overwriting either source.
+                    second_data = await _read_conflict_history(drive, info)
+                    second_signature = _canonical_month_record_signatures(
+                        second_data,
+                    )
+                    first_signature = first["_record_signatures"]
+                    comparable_rows = (
+                        first_signature["rows"] == second_signature["rows"]
+                    )
                     raise NativeMonthConflictError({
-                        "schema": "rival-native-month-conflict-v1",
+                        "schema": "rival-native-month-conflict-v2",
                         "venue": identity[0], "contract": identity[1],
                         "quote": identity[2], "month": identity[3],
-                        "first": first,
+                        "first": {
+                            k: v for k, v in first.items()
+                            if k != "_record_signatures"
+                        },
                         "second": _source_manifest_receipt(info, expected_sha),
                         "verification": {
                             "both_manifests_sha_verified": True,
                             "first_history_readback_verified": True,
-                            "second_history_readback_verified": False,
+                            "second_history_readback_verified": True,
+                            "second_provider_original_witness_verified": False,
+                        },
+                        "comparison": {
+                            "first_rows": first_signature["rows"],
+                            "second_rows": second_signature["rows"],
+                            "all_candle_fields_identical": (
+                                comparable_rows and
+                                first_signature["canonical_all_fields_sha256"] ==
+                                second_signature["canonical_all_fields_sha256"]
+                            ),
+                            "identical_except_first_observed_at": (
+                                comparable_rows and
+                                first_signature["canonical_without_first_observed_sha256"] ==
+                                second_signature["canonical_without_first_observed_sha256"]
+                            ),
                         },
                         "resolution": "blocked_divergent_manifest_bytes",
                     })
@@ -829,7 +926,12 @@ async def restore_verified_source_months(
         imported.append(path)
         # Remember identity only once its manifest and history bytes (plus
         # required source witnesses) have been verified successfully.
-        seen_evidence[identity] = _source_manifest_receipt(info, expected_sha)
+        seen_evidence[identity] = {
+            **_source_manifest_receipt(info, expected_sha),
+            "_record_signatures": _canonical_month_record_signatures(
+                response.content,
+            ),
+        }
     return imported
 
 def source_month_readiness(

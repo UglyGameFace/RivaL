@@ -77,6 +77,13 @@ def test_noise_is_report_only():
     assert result["publish_kind"] == "report"
     assert result["artifact"] is None
     assert result["report"]["gate_failures"]
+    # Failed offline fits publish exploratory training-only evidence; never
+    # generate importable weights or replace the sealed validation/test gates.
+    research = result["report"]["train_only_feature_ablation"]
+    assert research["research_only"] is True
+    assert research["can_publish_model"] is False
+    assert research["uses_outer_validation_or_test"] is False
+    assert research["status"] in ("measured_train_only", "insufficient_train_only_fold")
 
 
 def test_short_and_missing_histories_keep_measured_blocked_reports():

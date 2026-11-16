@@ -39,6 +39,15 @@ def read_probe(store, now: datetime) -> dict:
                    for venue, contract, _quote in eligible}
     except Exception:  # noqa: BLE001 - optional source census must report unknown
         present = None
+    # A healthy quote websocket does not imply that this exact venue has
+    # recent source-authentic 5m candles, hence no incumbent/shadow rows
+    # may exist despite abundant quote updates (notably Binance).
+    candle_sources = (
+        {asset: sorted(venue for venue, source_asset in present
+                       if source_asset == asset)
+         for asset in SUPPORTED}
+        if present is not None else None
+    )
     samples_by_asset = {}
     report = []
     seen = set()
@@ -120,6 +129,8 @@ def read_probe(store, now: datetime) -> dict:
             "does_not_prove_model_edge": True,
         })
     return {"status": "recorded", "scopes": report, "evaluated_models": len(report),
+            "recent_source_candle_venues_by_asset": candle_sources,
+            "candle_census_is_not_quote_stream_health": True,
             "does_not_prove_prospective_predictions": True,
             "read_only": True}
 

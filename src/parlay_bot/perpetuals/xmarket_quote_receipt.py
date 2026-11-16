@@ -22,6 +22,8 @@ def read_xmarket_quotes(store,now: datetime,progress: dict) -> dict:
     the original forecast, artifact SHA and issue time before counting a quote.
     Also report the observer's real CASH/decisive threshold and whether a
     decisive row's 90-second opportunity elapsed without a matched entry.
+    An independently labelled 30-minute cohort separates fresh missed
+    decisions from old rows issued before a new exchange feed was deployed.
     No missing quote is treated as a filled trade or a model loss.
     An absent/unreadable ledger is never reported as zero recorded quotes.
     """
@@ -43,6 +45,7 @@ def read_xmarket_quotes(store,now: datetime,progress: dict) -> dict:
         since = (now-timedelta(hours=2)).isoformat()
         until = now.isoformat()
         elapsed_entry_cutoff = (now-ENTRY_GRACE).isoformat()
+        recent_30m_cutoff = (now-timedelta(minutes=30)).isoformat()
         # The source observer opens only when the candidate OR incumbent
         # leaves CASH. Quote depth and book freshness remain separate gates.
         # Reuse its threshold, and do not reinterpret an absent quote as a loss.
@@ -61,6 +64,15 @@ def read_xmarket_quotes(store,now: datetime,progress: dict) -> dict:
                            SUM(CASE WHEN {signal} AND q.family IS NULL
                                     AND s.issued_at<=? THEN 1 ELSE 0 END)
                                AS elapsed_unmatched_decisive_rows,
+                           SUM(CASE WHEN s.issued_at>=? AND {signal} THEN 1 ELSE 0 END)
+                               AS recent_30m_decisive_forecast_rows,
+                           SUM(CASE WHEN s.issued_at>=? AND {signal}
+                                    AND q.family IS NOT NULL THEN 1 ELSE 0 END)
+                               AS recent_30m_entry_rows,
+                           SUM(CASE WHEN s.issued_at>=? AND {signal}
+                                    AND q.family IS NULL AND s.issued_at<=?
+                                    THEN 1 ELSE 0 END)
+                               AS recent_30m_elapsed_unmatched_decisive_rows,
                            SUM(CASE WHEN q.family IS NOT NULL THEN 1 ELSE 0 END) AS entry_rows,
                            SUM(CASE WHEN q.state='EXIT_QUOTED' AND q.exit_at<=?
                                     THEN 1 ELSE 0 END) AS closed_exit_rows,
@@ -79,12 +91,18 @@ def read_xmarket_quotes(store,now: datetime,progress: dict) -> dict:
                              AND s.issued_at>=? AND s.issued_at<=?
                              AND s.venue=? AND s.contract=? AND s.quote=?""",
                         (*signal_args,*signal_args,elapsed_entry_cutoff,
+                         recent_30m_cutoff,*signal_args,
+                         recent_30m_cutoff,*signal_args,
+                         recent_30m_cutoff,*signal_args,elapsed_entry_cutoff,
                          until,until,until,asset,horizon,since,until,
                          venue,contract,currency),
                     ).fetchone()
                     counts = {key:int(row[key] or 0) for key in (
                         "forecast_rows","decisive_forecast_rows",
                         "elapsed_unmatched_decisive_rows",
+                        "recent_30m_decisive_forecast_rows",
+                        "recent_30m_entry_rows",
+                        "recent_30m_elapsed_unmatched_decisive_rows",
                         "entry_rows","closed_exit_rows","missed_exit_rows",
                     )}
                     # Snapshot counts are diagnostic observations, not

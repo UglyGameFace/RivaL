@@ -2511,64 +2511,89 @@ class RivalDiscordClient(discord.Client):
                 _LOG.exception("RivaL liquidity record flush failed; retrying")
             await asyncio.sleep(30)
 
-    async def _stream_shadow_loop(self) -> None:
-        """Sample fresh WS books for read-only forward cost proof, never raw ticks.
+    async def _sample_stream_shadow_quote(
+        self, venue: str, asset: str, permit: asyncio.Semaphore,
+    ) -> None:
+        """Observe one source's latest book, isolating its paired ledgers.
 
-        REST is deliberately not polled here. Missing data stays missing.
-        The old five-minute provenance ledger remains intact for comparison.
+        Hold a bounded permit for BOTH source-matched ledger writes. Fetch the
+        current book only after acquiring the permit: queued tasks must never
+        process an already-stale snapshot. A failure cannot stop other venues.
+        """
+        async with permit:
+            assert self.live_stream is not None
+            assert self.stream_shadow is not None
+            book = self.live_stream.snapshot(venue, asset)
+            if book is None:
+                return
+            try:
+                result = await asyncio.to_thread(self.stream_shadow.observe, book)
+                # The first ledger can spend seconds in PostgreSQL. Re-read
+                # the live book before the independent fusion ledger.
+                fresh = self.live_stream.snapshot(venue, asset)
+                if self.autonomous is not None and fresh is not None:
+                    multi_result = await asyncio.to_thread(
+                        self.autonomous.multi.observe, fresh,
+                    )
+                    if multi_result["opened"] or multi_result["closed"]:
+                        _LOG.info(
+                            "RivaL multi-source paired-quote "
+                            "venue=%s asset=%s opened=%d closed=%d",
+                            venue, asset, multi_result["opened"],
+                            multi_result["closed"],
+                        )
+                if result["opened"] or result["closed"] or result["expired"]:
+                    _LOG.info(
+                        "RivaL forward quote venue=%s asset=%s "
+                        "entered=%d exited=%d missed=%d",
+                        venue, asset, result["opened"], result["closed"],
+                        result["expired"],
+                    )
+            except QuoteUnavailable as exc:
+                # An unusable/stale book is missing evidence, not a fill.
+                _LOG.info(
+                    "RivaL streaming forward sample skipped venue=%s "
+                    "asset=%s: %s", venue, asset, exc,
+                )
+            except Exception:  # noqa: BLE001 - isolate each source and asset
+                _LOG.exception(
+                    "RivaL streaming forward proof failed venue=%s asset=%s",
+                    venue, asset,
+                )
+
+    async def _stream_shadow_loop(self) -> None:
+        """Sample native books fairly for paired forward quote proof.
+
+        No network REST polling, per-book persisted ticks or additional worker
+        process. The former nested serial walk always visited Gate, Deribit
+        and Lighter last. With 28 source/asset pairs, occasional slow
+        PostgreSQL calls could outlive the strict 90-second entry window.
+        Interleave venues by asset, rotate the start each pass, and run at
+        most three independent source/asset ledger operations concurrently.
+        The production connection pool has eight slots shared with training.
+        All original source clocks, entry/exit windows and costs stay intact.
         """
         await self.wait_until_ready()
         assert self.stream_shadow is not None
         assert self.live_stream is not None
         _LOG.info("RivaL streaming quote forward shadow RUNNING")
+        venue_offset = 0
         while not self.is_closed():
             try:
                 await asyncio.to_thread(self.stream_shadow.expire)
                 if self.autonomous is not None:
                     await asyncio.to_thread(self.autonomous.multi.expire)
-                for venue in SUPPORTED_VENUES:
-                    for asset in self.live_stream.assets:
-                        book = self.live_stream.snapshot(venue, asset)
-                        if book is None:
-                            continue
-                        try:
-                            result = await asyncio.to_thread(
-                                self.stream_shadow.observe, book,
-                            )
-                            # Re-read the book: the first ledger's write can
-                            # take seconds, and the 10-second freshness check
-                            # then rejected the reused book (RIVAL-K).
-                            fresh = self.live_stream.snapshot(venue, asset)
-                            if self.autonomous is not None and fresh is not None:
-                                multi_result = await asyncio.to_thread(
-                                    self.autonomous.multi.observe, fresh,
-                                )
-                                if multi_result["opened"] or multi_result["closed"]:
-                                    _LOG.info(
-                                        "RivaL multi-source paired-quote "
-                                        "venue=%s asset=%s opened=%d closed=%d",
-                                        venue, asset, multi_result["opened"],
-                                        multi_result["closed"],
-                                    )
-                            if result["opened"] or result["closed"] or result["expired"]:
-                                _LOG.info(
-                                    "RivaL forward quote venue=%s asset=%s "
-                                    "entered=%d exited=%d missed=%d",
-                                    venue, asset, result["opened"],
-                                    result["closed"], result["expired"],
-                                )
-                        except QuoteUnavailable as exc:
-                            # A stale or unusable book is a skipped sample,
-                            # the freshness gate working, not a fault.
-                            _LOG.info(
-                                "RivaL streaming forward sample skipped venue=%s "
-                                "asset=%s: %s", venue, asset, exc,
-                            )
-                        except Exception:  # noqa: BLE001 - isolate per market
-                            _LOG.exception(
-                                "RivaL streaming forward proof failed venue=%s asset=%s",
-                                venue, asset,
-                            )
+                # Every pass can see all venues; no permanent tail starvation.
+                # Round-robin first venue and visit one asset at a time.
+                venues = (SUPPORTED_VENUES[venue_offset:]
+                          + SUPPORTED_VENUES[:venue_offset])
+                venue_offset = (venue_offset + 1) % len(SUPPORTED_VENUES)
+                permit = asyncio.Semaphore(3)
+                await asyncio.gather(*(
+                    self._sample_stream_shadow_quote(venue, asset, permit)
+                    for asset in self.live_stream.assets
+                    for venue in venues
+                ))
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - never bring Discord down

@@ -1,5 +1,13 @@
 # RivaL active bot work — November 16, 2026 UTC
 
+## Real OKX original-source month conflict repair
+
+**Branch:** `fix/xmarket-identical-okx-native-snapshots-20261116`, based on merged owner/trial #626 (`fe663906`), separate from Jarvis #608. November 16 verified original source run [43878923264](https://github.com/UglyGameFace/RivaL/actions/runs/43878923264) excluded all OKX monthly restore paths as `conflicting native month snapshots`, leaving XMarket inner-research evaluation at 2 rather than the required 7 distinct UTC days. More weight updates alone cannot meet a future profitability gate.
+
+**Actual root cause:** `source_native.restore_verified_source_months` rejected all repeated `(venue,contract,quote,month)` manifests even if their SHA-verified original manifest bytes could be identical. Repair safely accepts exact manifest-SHA replay only after first original manifest/history (including witnesses) is verified, and rejects any changed manifest or corrupted replay. This **does not assume the real OKX conflicts are identical**, invent source coverage, lower minimum-days gate, delete historical evidence, touch model weights or restart training.
+
+**Validation:** Run exact PR/full SQLite/PostgreSQL CI, merge and main CI if validated, then an authenticated original Drive read-only restore to determine whether real OKX SHA differs. Genuine conflicting source data still needs publisher/provenance investigation, plus at least 7 eligible training-only evaluation days and prospective future after-cost proof. See `docs/XMARKET_OKX_SNAPSHOT_REPLAY.md`.
+
 ## Owner API access and live trial-screen repair
 
 **Branch:** `fix/rival-owner-api-and-model-trial-truth-20261116`, based on current `main@ed596182`; the only independent open PR on initial review was Jarvis #608. Screenshots show the account that can use RivaL's private menu is denied by More → API Usage & Limits, while model performance shows 173 aggregate trials / 189 cut records / zero passed.

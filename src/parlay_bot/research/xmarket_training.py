@@ -436,6 +436,14 @@ def train_run(
         "serve_clamp": list(SERVE_CLAMP),
     }
     if not gates_passed:
+        # This research does not re-score the sealed validation/test partition
+        # to search for new winners. It uses only a purged inner training fold,
+        # publishes no weights, and never changes the existing import gates.
+        from parlay_bot.research.xmarket_feature_search import compare_train_only
+
+        report["train_only_feature_ablation"] = compare_train_only(
+            train, names=tuple(names), horizon_minutes=horizon,
+        )
         return {"publish_kind": "report", "artifact": None, "report": report}
     doc = {
         **report,

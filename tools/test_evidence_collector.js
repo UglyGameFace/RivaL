@@ -45,6 +45,9 @@ async function main(){
     {asset:'ETH',horizon:5,venue:'bad/PRIVATE',quote:'USD',issued_at:issued,target_close_at:target,
      probability_up:0.6,baseline_up:0.5,direction:'UP',status:'open',outcome_up:null,lead_seconds:300}]},
   xmarket_stage:'waiting_for_completed_day_export',
+  live_call_delivery:{status:'recorded',active_channels:0,
+   recent_accepted_delivery_rows:0,advance_model:'advance-candle-logistic-lead5-v1',
+   guild_id:'PRIVATE'},
   kucoin_gap_recovery:{status:'recorded',assets_observed:1,
    queued_exact_gaps_14d:2,due_exact_gaps_14d:1,
    attempted_exact_gaps_14d:1,bulk_upstream_empty_assets:1,contract:'PRIVATE'},
@@ -91,6 +94,11 @@ async function main(){
 
  assert.equal(receipt.host.xmarket_exports.recent_completed_days_pending,4);
  assert.equal(receipt.host.xmarket_stage,'waiting_for_completed_day_export');
+ assert.equal(receipt.host.live_call_delivery.active_channels,0);
+ assert.equal(receipt.host.live_call_delivery.recent_accepted_delivery_rows,0);
+ assert.equal(receipt.host.live_call_delivery.advance_model,'advance-candle-logistic-lead5-v1');
+ assert.ok(!Object.hasOwn(receipt.host.live_call_delivery,'guild_id'));
+ assert.equal(receipt.host.live_call_delivery.delivery_is_discord_api_acceptance_only,true);
  assert.equal(receipt.host.kucoin_gap_recovery.queued_exact_gaps_14d,2);
  assert.equal(receipt.host.kucoin_gap_recovery.due_exact_gaps_14d,1);
  assert.equal(receipt.host.kucoin_gap_recovery.does_not_prove_source_recovery,true);

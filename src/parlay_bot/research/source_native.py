@@ -628,7 +628,7 @@ async def restore_verified_source_months(
     target = Path(root) / SOURCE
     target.mkdir(parents=True, exist_ok=True)
     imported = []
-    unique = set()
+    seen_sha: dict[tuple[str, str, str, str], str] = {}
     for entry in found:
         if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
             raise HistoryImportError("unexpected native manifest listing record")
@@ -680,14 +680,19 @@ async def restore_verified_source_months(
             identity = (info["venue"], info["contract"], info["quote"], month)
             if month not in months:
                 continue
-            if identity in unique:
-                raise HistoryImportError("conflicting native month snapshots")
-            unique.add(identity)
             name = info["file"]
             if (not isinstance(name, str) or Path(name).name != name
                 or not name.endswith(".ndjson")
                 or item.name != name.removesuffix(".ndjson") + ".manifest.json"):
                 raise HistoryImportError("native source filename mismatch")
+            if identity in seen_sha:
+                # Exact immutable manifests can exist in multiple Drive
+                # objects. A replay is accepted only after the second
+                # object's metadata and actual manifest SHA were verified.
+                # Different manifest provenance always fails closed.
+                if seen_sha[identity] != expected_sha:
+                    raise HistoryImportError("conflicting native month snapshots")
+                continue
             history = await drive._find_batch_object(
                 parent_id=drive.folders.history,
                 batch_id="native-" + info["data_sha256"][:24],
@@ -768,6 +773,9 @@ async def restore_verified_source_months(
             if not output.exists():
                 output.write_bytes(payload)
         imported.append(path)
+        # Remember identity only once its manifest and history bytes (plus
+        # required source witnesses) have been verified successfully.
+        seen_sha[identity] = expected_sha
     return imported
 
 def source_month_readiness(

@@ -112,7 +112,8 @@ def _training_frames(frames: dict, *, asset: str) -> tuple[dict, dict]:
 
 
 def _select_dispersion_venues(dispersion_frames, *, asset, live_venues, bars,
-                              train_end, test_start, trained_through, horizon):
+                              train_end, test_start, trained_through, horizon,
+                              train_only=False):
     """Pin only contemporaneous, complete cross-venue inputs.
 
     A venue with months of *verified* historical candles but none during the
@@ -130,6 +131,13 @@ def _select_dispersion_venues(dispersion_frames, *, asset, live_venues, bars,
         at for at in common
         if at <= through and market_values(bars, at) is not None
     }
+    if train_only:
+        # Feature-contract selection is itself a research decision. The
+        # original production fit still checks all splits, but a train-only
+        # experiment cannot use future validation/test source availability
+        # to choose which historical venues to compare.
+        cutoff = pd.to_datetime(train_end, utc=True) - pd.Timedelta(minutes=horizon)
+        market_clock = {at for at in market_clock if at < cutoff}
     venue_clocks = {}
     for venue in offered:
         f = dispersion_frames[f"{venue}|{asset}"][1]
@@ -139,7 +147,9 @@ def _select_dispersion_venues(dispersion_frames, *, asset, live_venues, bars,
         "offered_venues": list(offered),
         "native_complete_market_bars": len(market_clock),
         "per_venue_complete_bars": {v: len(venue_clocks[v]) for v in offered},
-        "required_split_rows": {"train": 300, "validation": 100, "test": 100},
+        "required_split_rows": ({"train": 300} if train_only
+                                else {"train": 300, "validation": 100, "test": 100}),
+        "uses_outer_holdout_availability": not train_only,
         "selection": "none",
     }
     # A venue subset must retain a material fraction of independently
@@ -158,17 +168,42 @@ def _select_dispersion_venues(dispersion_frames, *, asset, live_venues, bars,
             if len(joint) < required_overlap:
                 continue
             index = pd.DatetimeIndex(sorted(joint), tz="UTC")
-            masks = chronological_splits(
-                index, train_end=train_end, test_start=test_start, horizon=horizon
-            )
-            counts = tuple(int(mask.sum()) for mask in masks)
-            capacity = dict(zip(("train", "validation", "test"),
-                                (count * len(venues) for count in counts)))
-            ready = all(capacity[name] >= minimum
-                        for name, minimum in evidence["required_split_rows"].items())
+            if train_only:
+                from parlay_bot.research.xmarket_feature_search import (
+                    MIN_EVAL_DAYS,
+                    MIN_EVAL_TARGETS,
+                    MIN_FIT_ROWS,
+                )
+
+                # The same inner fold and horizon purge as the research
+                # scorer. Prefer a larger venue set only when it can
+                # actually support the inner experiment, without peeking
+                # at the original validation/test calendar.
+                inner_start = index[int(len(index) * .75)]
+                purge = pd.Timedelta(minutes=horizon)
+                inner_fit = index[index < inner_start - purge]
+                inner_eval = index[index >= inner_start]
+                capacity = {"train": len(index) * len(venues)}
+                counts = {"train": len(index)}
+                ready = bool(
+                    len(inner_fit) * len(venues) >= MIN_FIT_ROWS
+                    and len(inner_eval) >= MIN_EVAL_TARGETS
+                    and inner_eval.normalize().nunique() >= MIN_EVAL_DAYS
+                )
+            else:
+                masks = chronological_splits(
+                    index, train_end=train_end, test_start=test_start, horizon=horizon
+                )
+                split_names = ("train", "validation", "test")
+                split_counts = tuple(int(mask.sum()) for mask in masks)
+                capacity = dict(zip(split_names,
+                                    (count * len(venues) for count in split_counts)))
+                counts = dict(zip(split_names, split_counts))
+                ready = all(capacity[name] >= minimum
+                            for name, minimum in evidence["required_split_rows"].items())
             candidate = (venues, {
                 **evidence, "selection": "sufficient_observed_market_coverage",
-                "joint_split_rows": dict(zip(("train", "validation", "test"), counts)),
+                "joint_split_rows": counts,
                 "joint_bars": len(joint),
                 "observed_pooled_split_capacity": capacity,
                 "all_split_capacity_present": ready,
@@ -236,7 +271,7 @@ def train_run(
     venues, dispersion_selection = _select_dispersion_venues(
         dispersion_frames, asset=asset, live_venues=live_venues, bars=bars,
         train_end=train_end, test_start=test_start, trained_through=trained_through,
-        horizon=horizon,
+        horizon=horizon, train_only=research_only,
     )
     names = feature_names(venues)
     report_base = {

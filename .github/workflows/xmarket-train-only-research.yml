@@ -2,6 +2,9 @@ name: RivaL one-shot verified XMarket train-only research
 
 # Explicit owner-directed research after PR #623. No cron, deployments,
 # archive source backfill, Drive writes, model imports, or sealed test scoring.
+# One corrected source-selection rerun is allowed immediately after #624 on
+# the exact main SHA below. Concurrency serializes this with the original
+# research job, and unrelated commits cannot re-trigger it.
 on:
   push:
     branches: [main]
@@ -18,14 +21,15 @@ concurrency:
 
 jobs:
   train-only:
-    # The push hook runs once only when this new workflow is merged
-    # immediately after the already verified #623 source commit.
-    # Manual dispatch remains an explicit user action, never automatic.
+    # The push hook runs once only on the exact main transition from
+    # merged #624 to its causality-corrected successor. Original #624 run
+    # remains independent; no weekly or recurring retraining is introduced.
+    # Later reruns require an explicit manual dispatch.
     if: >-
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
        (github.event_name == 'push' &&
-        github.event.before == 'c158cd4a46449468c1aac800bf3eb00f62df5042'))
+        github.event.before == 'b957d2e05aeb7bba833a021c32a7187a8ebce507'))
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:

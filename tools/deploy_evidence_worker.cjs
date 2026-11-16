@@ -43,6 +43,11 @@ function checkBindings(actual, expected) {
   assert.ok(Array.isArray(actual), 'Remote Worker bindings unavailable');
   assert.deepEqual(actual.map(bindingKey).sort(), expected.map(bindingKey).sort(),
     'Deployed Worker bindings differ from the known production contract; refusing upload');
+  for (const binding of actual) {
+    const spec = expected.find(candidate => bindingKey(candidate) === bindingKey(binding));
+    assert.deepEqual(Object.keys(binding).sort(), Object.keys(spec).sort(),
+      'Unrecognized Worker binding configuration; refusing upload');
+  }
 }
 function checkSource(source, target) {
   assert.ok(source.length > (target.module ? 15000 : 160000), 'Worker source unexpectedly truncated');
@@ -61,7 +66,8 @@ async function api(url, token, options = {}) {
   const res = await fetch(url, {
     ...options, headers: { Authorization: 'Bearer ' + token, ...options.headers }
   });
-  if (!res.ok) throw new Error('Cloudflare API returned HTTP ' + res.status + ' for ' + options.method || 'GET');
+  if (!res.ok) throw new Error('Cloudflare API returned HTTP ' + res.status +
+    ' for ' + (options.method || 'GET'));
   if (options.raw) return res.text();
   const data = await res.json();
   if (!data || data.success !== true) {

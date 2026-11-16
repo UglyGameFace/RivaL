@@ -42,9 +42,9 @@ def _okx_payload(now: datetime, **overrides) -> dict:
 def _bitget_payload(now: datetime, **overrides) -> dict:
     row = {
         "symbol": "BTCUSDT",
-        "bidPx": "81000",
+        "bidPr": "81000",
         "bidSz": "10",
-        "askPx": "81001",
+        "askPr": "81001",
         "askSz": "10",
         "ts": str(int(now.timestamp() * 1000)),
     }
@@ -58,6 +58,9 @@ def test_okx_ticker_parses_and_validates() -> None:
     assert quote.venue == "okx"
     assert quote.symbol == "BTC-USDT-SWAP"
     assert (quote.bid, quote.ask) == (81000.0, 81001.0)
+    # The provider reports contract counts; BTC-USDT-SWAP is 0.01 BTC
+    # per contract, independently checked against public instruments.
+    assert quote.bid_quantity == quote.ask_quantity == pytest.approx(.1)
 
 
 def test_bitget_ticker_parses_and_validates() -> None:
@@ -65,6 +68,7 @@ def test_bitget_ticker_parses_and_validates() -> None:
     quote = parse_bitget_ticker(_bitget_payload(now), asset="BTC", received_at=now)
     assert quote.venue == "bitget"
     assert quote.symbol == "BTCUSDT"
+    assert quote.bid_quantity == quote.ask_quantity == 10
 
 
 @pytest.mark.parametrize("parser,payload_fn", [
@@ -79,8 +83,10 @@ def test_venue_ticker_rejects_bad_books(parser, payload_fn) -> None:
     )
     with pytest.raises(QuoteUnavailable):
         parser(payload_fn(now, **wrong_symbol), asset="BTC", received_at=now)
+    prices = ({"bidPx": "81001", "askPx": "81000"} if parser is parse_okx_ticker
+              else {"bidPr": "81001", "askPr": "81000"})
     with pytest.raises(QuoteUnavailable):
-        parser(payload_fn(now, bidPx="81001", askPx="81000"), asset="BTC", received_at=now)
+        parser(payload_fn(now, **prices), asset="BTC", received_at=now)
     stale = now - timedelta(seconds=30)
     with pytest.raises(QuoteUnavailable):
         parser(

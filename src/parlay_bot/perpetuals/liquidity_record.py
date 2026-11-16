@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from parlay_bot.perpetuals.live_quotes import ASSETS
+from parlay_bot.perpetuals.live_quotes import ASSETS, OKX_CONTRACT_SIZE
 
 BUCKET = timedelta(minutes=5)
 # A bucket is flushed once its end is this far in the past, so late frames
@@ -42,7 +42,6 @@ FLUSH_GRACE = timedelta(seconds=15)
 COVERAGE_SLACK = timedelta(seconds=30)
 DEPTH_BANDS_BPS = (10, 25)
 VENUES = ("binance", "hyperliquid", "okx", "coinbase")
-OKX_CONTRACT_SIZE = {"BTC": 0.01, "ETH": 0.1, "SOL": 1.0, "XRP": 100.0}
 SYMBOL_TO_ASSET = {symbol: asset for asset, symbol in ASSETS.items()}
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS perp_liquidity_5m (

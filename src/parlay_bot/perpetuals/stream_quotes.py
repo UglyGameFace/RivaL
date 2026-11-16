@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -17,10 +18,14 @@ import websockets
 
 from parlay_bot.perpetuals.live_quotes import (
     ASSETS,
+    VENUE_BOOK_SYMBOLS,
     BookQuote,
     PerpReferenceBook,
     QuoteUnavailable,
+    VenueBookQuote,
+    parse_bitget_ticker,
     parse_hyperliquid_reference,
+    parse_okx_ticker,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -28,13 +33,14 @@ HYPERLIQUID_WS = "wss://api.hyperliquid.xyz/ws"
 BINANCE_WS = "wss://fstream.binance.com/market/stream?streams=" + "/".join(
     f"{symbol.lower()}@bookTicker" for symbol in ASSETS.values()
 )
-VENUES = ("hyperliquid", "binance")
+VENUES = ("hyperliquid", "binance", "okx", "bitget")
 RECONNECT_CAP_SECONDS = 60.0
 BOOK_SILENCE_SECONDS = 120
 RECEIVE_CHECK_SECONDS = 30
 # Liquidity-only Binance feeds (issue #295), on Binance's documented routes:
 # partial depth is a /public stream, aggregate trades a /market stream.
 OKX_PUBLIC_WS = "wss://ws.okx.com:443/ws/v5/public"
+BITGET_PUBLIC_WS = "wss://ws.bitget.com/v2/ws/public"
 COINBASE_WS = "wss://ws-feed.exchange.coinbase.com"
 BINANCE_DEPTH_WS = "wss://fstream.binance.com/public/stream?streams="
 BINANCE_TRADES_WS = "wss://fstream.binance.com/market/stream?streams="
@@ -42,16 +48,52 @@ BINANCE_TRADES_WS = "wss://fstream.binance.com/market/stream?streams="
 
 def parse_stream_message(
     venue: str, message: str | bytes, *, received_at: datetime,
-) -> PerpReferenceBook | BookQuote | None:
+) -> PerpReferenceBook | BookQuote | VenueBookQuote | None:
     """Only admit timestamped, source-identified, viable best-book updates."""
     if isinstance(message, bytes):
         raise QuoteUnavailable("Binary market stream frame not supported.")
+    if venue in ("okx", "bitget") and message == "pong":
+        return None
     try:
         wrapper: Any = json.loads(message)
     except (ValueError, TypeError) as exc:
         raise QuoteUnavailable("Invalid market stream JSON.") from exc
     if not isinstance(wrapper, dict):
         raise QuoteUnavailable("Market stream must be an object.")
+    if venue in ("okx", "bitget"):
+        arg = wrapper.get("arg")
+        data = wrapper.get("data")
+        if data is None:
+            return None  # subscription acknowledgements and notices
+        if not isinstance(arg, dict):
+            raise QuoteUnavailable("Missing venue subscription identity.")
+        channel = "books5" if venue == "okx" else "ticker"
+        if arg.get("channel") != channel:
+            return None
+        if venue == "bitget" and arg.get("instType") != "USDT-FUTURES":
+            return None
+        symbol = arg.get("instId")
+        asset = next((asset for asset, expected in VENUE_BOOK_SYMBOLS[venue].items()
+                      if expected == symbol), None)
+        if asset is None:
+            return None
+        try:
+            if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
+                raise ValueError("invalid book snapshot")
+            row = data[0]
+            if row.get("instId", symbol) != symbol or row.get("symbol", symbol) != symbol:
+                raise ValueError("snapshot identity mismatch")
+            if venue == "okx":
+                bid, ask = row["bids"][0], row["asks"][0]
+                ticker = {"instId": symbol, "ts": row["ts"],
+                          "bidPx": bid[0], "bidSz": bid[1],
+                          "askPx": ask[0], "askSz": ask[1]}
+                return parse_okx_ticker({"code": "0", "data": [ticker]},
+                                        asset=asset, received_at=received_at)
+            return parse_bitget_ticker({"code": "00000", "data": [{**row, "symbol": symbol}]},
+                                       asset=asset, received_at=received_at)
+        except (ValueError, TypeError, KeyError, IndexError, OverflowError) as exc:
+            raise QuoteUnavailable("Invalid source-matched venue book.") from exc
     if venue == "hyperliquid":
         if wrapper.get("channel") != "l2Book":
             return None
@@ -101,7 +143,7 @@ class StreamingBookHub:
         ):
             raise ValueError("Invalid perpetual stream assets")
         self.assets = assets
-        self._quotes: dict[tuple[str, str], BookQuote | PerpReferenceBook] = {}
+        self._quotes: dict[tuple[str, str], BookQuote | PerpReferenceBook | VenueBookQuote] = {}
         self._tasks: list[asyncio.Task[None]] = []
         self._connected: dict[str, bool] = dict.fromkeys(VENUES, False)
         self._reconnects: dict[str, int] = dict.fromkeys(VENUES, 0)
@@ -118,7 +160,7 @@ class StreamingBookHub:
         self._liquidity_frames = 0
 
     def snapshot(self, venue: str, asset: str, *, now: datetime | None = None
-                 ) -> BookQuote | PerpReferenceBook | None:
+                 ) -> BookQuote | PerpReferenceBook | VenueBookQuote | None:
         if venue not in VENUES or asset not in self.assets:
             return None
         clock = now or datetime.now(UTC)
@@ -159,9 +201,11 @@ class StreamingBookHub:
         received_at: datetime | None = None,
     ) -> bool:
         now = received_at or datetime.now(UTC)
-        if self.recorder is not None and venue == "hyperliquid":
+        if self.recorder is not None and venue in ("hyperliquid", "okx"):
             # Same socket carries l2Book and trades; the recorder takes both.
             self.recorder.ingest(venue, message)
+            if venue == "okx":
+                self._liquidity_frames += 1
         try:
             quote = parse_stream_message(venue, message, received_at=now)
         except QuoteUnavailable:
@@ -184,6 +228,10 @@ class StreamingBookHub:
                 f"{ASSETS[asset].lower()}@bookTicker" for asset in self.assets
             )
         )
+        if venue == "okx":
+            url = OKX_PUBLIC_WS
+        elif venue == "bitget":
+            url = BITGET_PUBLIC_WS
         attempts = 0
         while True:
             backoff_override = 0.0
@@ -197,6 +245,7 @@ class StreamingBookHub:
                     self._blocked_until[venue] = None
                     self._blocked_status[venue] = None
                     last_book = datetime.now(UTC)
+                    last_ping = time.monotonic()
                     attempts = 0
                     if venue == "hyperliquid":
                         for asset in self.assets:
@@ -209,6 +258,21 @@ class StreamingBookHub:
                                     "method": "subscribe",
                                     "subscription": {"type": "trades", "coin": asset},
                                 }))
+                    elif venue == "okx":
+                        args = [{"channel": "books5", "instId": f"{asset}-USDT-SWAP"}
+                                for asset in self.assets]
+                        if self.recorder is not None:
+                            args += [{"channel": "trades", "instId": f"{asset}-USDT-SWAP"}
+                                     for asset in self.assets]
+                            args.append({"channel": "liquidation-orders", "instType": "SWAP"})
+                        await socket.send(json.dumps({"op": "subscribe", "args": args}))
+                    elif venue == "bitget":
+                        # Classic public v2 format, checked against an actual
+                        # live acknowledgement + ticker on 2026-11-15. The
+                        # distinct UTA topic/symbol format is not this endpoint.
+                        await socket.send(json.dumps({"op": "subscribe", "args": [
+                            {"instType": "USDT-FUTURES", "channel": "ticker", "instId": ASSETS[a]}
+                            for a in self.assets]}))
                     while True:
                         try:
                             message = await asyncio.wait_for(socket.recv(),
@@ -217,6 +281,9 @@ class StreamingBookHub:
                                 last_book = datetime.now(UTC)
                         except TimeoutError:
                             pass
+                        if venue in ("okx", "bitget") and time.monotonic()-last_ping >= 20:
+                            await socket.send("ping")
+                            last_ping = time.monotonic()
                         if (datetime.now(UTC) - last_book).total_seconds() >= BOOK_SILENCE_SECONDS:
                             self._silence_restarts[venue] += 1
                             _LOG.warning("RivaL %s book stream silent for %ds; reconnecting",
@@ -307,15 +374,10 @@ class StreamingBookHub:
                     self._run_liquidity(name, url), name=f"rival-{name}-liquidity",
                 ))
             # Order flow from US-reachable venues: OKX perps and Coinbase spot.
-            okx = json.dumps({"op": "subscribe", "args": [
-                *({"channel": channel, "instId": f"{asset}-USDT-SWAP"}
-                  for asset in self.assets for channel in ("books5", "trades")),
-                {"channel": "liquidation-orders", "instType": "SWAP"}]})
             coinbase = json.dumps({"type": "subscribe",
                                    "product_ids": [f"{a}-USD" for a in self.assets],
                                    "channels": ["matches", "ticker"]})
             for name, url, venue, message in (
-                ("okx-orderflow", OKX_PUBLIC_WS, "okx", okx),
                 ("coinbase-orderflow", COINBASE_WS, "coinbase", coinbase),
             ):
                 self._tasks.append(asyncio.create_task(

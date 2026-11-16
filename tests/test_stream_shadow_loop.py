@@ -25,7 +25,8 @@ def _client(snapshots, multi_observe):
     client.autonomous = SimpleNamespace(multi=SimpleNamespace(
         expire=lambda: None, observe=multi_observe))
     client.live_stream = SimpleNamespace(
-        assets=("ETH",), snapshot=lambda venue, asset: next(snapshots[venue]))
+        assets=("ETH",), snapshot=lambda venue, asset: next(snapshots[venue])
+        if venue in snapshots else None)
     return client
 
 

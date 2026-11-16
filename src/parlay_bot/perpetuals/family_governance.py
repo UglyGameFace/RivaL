@@ -113,7 +113,9 @@ class FamilyPromotion:
         # The optional quote ledger may not have seen a venue book yet.
         # Research promotion still records a strict HELD decision.
         from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
-        from parlay_bot.perpetuals.profit_proof import COST_SCENARIOS
+        from parlay_bot.perpetuals.profit_proof import cost_scenarios
+
+        source_costs = cost_scenarios(venue)
 
         FamilyQuoteShadow(self.store).initialize()
         # Prove the exact same selected stream, not other venues of the asset.
@@ -213,7 +215,7 @@ class FamilyPromotion:
             scored_base=[]
             scored_coin=[]
             calibration_rows=[]
-            quote_pairs={label:[] for label,_ in COST_SCENARIOS}
+            quote_pairs={label:[] for label,_ in source_costs}
             covered=eligible=trades=0
             invalid=0
             for row in forecasts:
@@ -298,7 +300,7 @@ class FamilyPromotion:
                     continue
                 covered+=1
                 trades+=int(cs!="CASH")
-                for label,cost in COST_SCENARIOS:
+                for label,cost in source_costs:
                     c_net=candidate_gross-(cost if cs!="CASH" else 0)
                     i_net=incumbent_gross-(cost if ins!="CASH" else 0)
                     quote_pairs[label].append((target.date().isoformat(),c_net,i_net))

@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.family_quotes import SUPPORTED_QUOTE_SOURCES
+from parlay_bot.perpetuals.live_quotes import source_contract
 
 _BASE = {"read_only": True,"does_not_prove_prediction_edge": True,
          "counts_are_independent_targets": False}
@@ -41,7 +42,7 @@ def read_xmarket_quotes(store,now: datetime,progress: dict) -> dict:
         with store.connect() as conn:
             for asset,horizon in fits:
                 for venue,currency in sorted(SUPPORTED_QUOTE_SOURCES):
-                    contract = asset if venue == "hyperliquid" else asset+"USDT"
+                    contract = source_contract(venue, asset)
                     row = conn.execute(
                         """SELECT COUNT(*) AS forecast_rows,
                            SUM(CASE WHEN q.family IS NOT NULL THEN 1 ELSE 0 END) AS entry_rows,

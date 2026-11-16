@@ -114,6 +114,7 @@ def test_host_forward_proof_reports_one_real_exact_source_without_mixing(monkeyp
 
     assert SUPPORTED_QUOTE_SOURCES == {
         ("hyperliquid", "USDC"), ("binance", "USDT"),
+        ("okx", "USDT"), ("bitget", "USDT"),
     }
     def candidate(*, targets, days, coverage, complete):
         return {

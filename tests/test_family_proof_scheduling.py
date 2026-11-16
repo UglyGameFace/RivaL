@@ -12,30 +12,31 @@ def _streams():
         *[("hyperliquid", coin, "USDC") for coin in ("BTC", "ETH", "SOL", "XRP")],
         *[("binance", coin + "USDT", "USDT")
           for coin in ("BTC", "ETH", "SOL", "XRP")],
-        *[(venue, coin + "-USDT-SWAP", "USDT")
-          for venue in ("okx", "gate", "bitget")
+        *[(venue, coin + ("-USDT-SWAP" if venue == "okx" else "USDT"), "USDT")
+          for venue in ("okx", "bitget", "gate")
           for coin in ("BTC", "ETH", "SOL", "XRP")],
     ]
 
 
-def test_every_quote_supported_market_and_horizon_is_reviewed_within_a_day():
+def test_every_quote_supported_market_and_horizon_is_reviewed_within_two_days():
     entries = _streams()
     seen = [select_family_proof_scope(entries, hour_slot=hour)
-            for hour in range(24)]
-    assert len(set(seen)) == 24
+            for hour in range(48)]
+    assert len(set(seen)) == 48
     assert all(s is not None and s[3] in (5, 15, 60) for s in seen)
-    assert {s[:3] for s in seen} == set(entries[:8])
+    assert {s[:3] for s in seen} == set(entries[:16])
     assert [select_family_proof_scope(entries, hour_slot=h)
-            for h in range(24, 48)] == seen
+            for h in range(48, 96)] == seen
     assert [select_family_proof_scope(list(reversed(entries)), hour_slot=h)
-            for h in range(24)] == seen
+            for h in range(48)] == seen
     assert all(supports_quote_source(s[0], s[2]) for s in seen)
 
 
 def test_missing_unsupported_and_wrong_quote_are_deferred_without_fake_proof():
     assert select_family_proof_scope([], hour_slot=0) is None
-    assert select_family_proof_scope(_streams()[8:], hour_slot=18) is None
-    assert not supports_quote_source("okx", "USDT")
+    assert select_family_proof_scope(_streams()[16:], hour_slot=18) is None
+    assert supports_quote_source("okx", "USDT")
+    assert supports_quote_source("bitget", "USDT")
     assert not supports_quote_source("hyperliquid", "USDT")
     assert not supports_quote_source("binance", "USDC")
     assert select_family_proof_scope(

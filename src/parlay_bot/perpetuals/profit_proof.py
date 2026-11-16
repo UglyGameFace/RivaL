@@ -25,6 +25,22 @@ COST_SCENARIOS = (
     ("conservative", 8.0 + 4.0 + 2.0),
     ("severe", 25.0 + 30.0 + 25.0),
 )
+# Existing policy includes 8 bps round-trip taker fees. Standard public fees
+# checked 2026-11-15 are 10 bps on OKX and 12 bps on Bitget. Preserve every
+# existing slippage/funding stress and add the venue difference to BOTH cases.
+VENUE_FEE_PREMIUM_BPS = {"okx": 2.0, "bitget": 4.0}
+
+
+def cost_scenarios(venue: str) -> tuple[tuple[str, float], ...]:
+    premium = VENUE_FEE_PREMIUM_BPS.get(venue, 0.0)
+    return tuple((label, cost+premium) for label, cost in COST_SCENARIOS)
+
+
+def fee_premium_sql(column: str) -> str:
+    """SQL aggregate expression; column names come only from internal callers."""
+    return (f"CASE {column} " + " ".join(
+        f"WHEN '{venue}' THEN {premium}" for venue,premium in VENUE_FEE_PREMIUM_BPS.items()
+    ) + " ELSE 0 END")
 
 
 def _stamp(raw: object) -> datetime:

@@ -98,7 +98,7 @@ from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.spike_watch import SpikeWatch
 from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
-from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
+from parlay_bot.perpetuals.stream_shadow import SUPPORTED_VENUES, StreamShadowLedger
 from parlay_bot.perpetuals.unattended_acceptance import unattended_acceptance_receipt
 from parlay_bot.perpetuals.volcal_model import VolcalModelSet, is_volcal_document
 from parlay_bot.perpetuals.xmarket_model import XmarketModelSet, is_xmarket_document
@@ -2524,7 +2524,7 @@ class RivalDiscordClient(discord.Client):
                 await asyncio.to_thread(self.stream_shadow.expire)
                 if self.autonomous is not None:
                     await asyncio.to_thread(self.autonomous.multi.expire)
-                for venue in ("hyperliquid", "binance"):
+                for venue in SUPPORTED_VENUES:
                     for asset in self.live_stream.assets:
                         book = self.live_stream.snapshot(venue, asset)
                         if book is None:
@@ -3621,8 +3621,10 @@ class RivalDiscordClient(discord.Client):
                     self._acceptance_log_task = asyncio.ensure_future(
                         self._log_acceptance_once(now))
                 with statement_timeout(WATCHDOG_STATEMENT_TIMEOUT_MS):
+                    quote_streams = self.live_stream.health(now=now) if self.live_stream else None
                     events = await asyncio.wait_for(
-                        asyncio.to_thread(self.health_monitor.publish, faults, now=now),
+                        asyncio.to_thread(self.health_monitor.publish, faults, now=now,
+                                          quote_streams=quote_streams),
                         timeout=15,
                     )
                 webhook = os.environ.get("RIVAL_HEALTH_DISCORD_WEBHOOK_URL", "")

@@ -567,7 +567,8 @@ def _runtime_diagnostics(store, now: datetime) -> dict:
         with store.connect() as conn:
             rows = conn.execute("""SELECT component,checked_at,payload_json
                 FROM rival_runtime_diagnostics
-                WHERE component IN ('database','research_loop','model_evaluation')""").fetchall()
+                WHERE component IN ('database','research_loop','model_evaluation',
+                                    'quote_streams')""").fetchall()
         result = {}
         for row in rows:
             result[row['component']] = {

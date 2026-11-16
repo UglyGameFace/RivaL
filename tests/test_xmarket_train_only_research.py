@@ -7,8 +7,8 @@ import json
 import pytest
 
 from parlay_bot.perpetuals import flow_challenger_v3
-from parlay_bot.research import xmarket_history, xmarket_training
 from parlay_bot.perpetuals.xmarket_inputs import BUNDLE_SCHEMA
+from parlay_bot.research import xmarket_history, xmarket_training
 from tests.xmarket_fixtures import frames_and_inputs
 
 
@@ -53,8 +53,9 @@ def test_research_only_is_mutually_exclusive_with_admission_mode():
 
 
 def test_read_only_bundle_restore_never_invokes_backfill_or_writes(monkeypatch):
-    from tests.xmarket_fixtures import point
     from datetime import UTC, datetime
+
+    from tests.xmarket_fixtures import point
 
     class FakeDrive:
         def __init__(self):

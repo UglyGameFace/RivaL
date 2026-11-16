@@ -470,3 +470,64 @@ def test_xmarket_proof_handoff_fails_closed_for_stale_invalid_and_missing():
     assert host._xmarket_forward_handoff(
         fitted, {"status": "unavailable"}
     ) == {"status": "unavailable", "does_not_prove_edge": True}
+
+
+def test_kucoin_gap_receipt_distinguishes_bulk_backoff_from_exact_due_gaps(
+    learning_store,
+):
+    from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
+    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+
+    stamp = datetime(2026, 11, 16, 17, tzinfo=UTC)
+    market = PerpetualMarketStore(learning_store)
+    market.initialize()
+    worker = KucoinHistoryRecovery(market, assets=("ETH",))
+    try:
+        worker._position("ETH", stamp)
+        hole = stamp - timedelta(days=1)
+        retry = stamp + timedelta(hours=6)
+        with learning_store.connect() as conn:
+            conn.execute(
+                """UPDATE perp_history_recovery
+                   SET status='upstream_empty',retry_after=?
+                   WHERE venue='kucoin' AND asset='ETH'""",
+                (retry.isoformat(),),
+            )
+            conn.execute(
+                """INSERT INTO perp_history_gap_repair
+                   (venue,asset,opened_at,retry_after)
+                   VALUES ('kucoin','ETH',?,?)""",
+                (hole.isoformat(), stamp.isoformat()),
+            )
+        receipt = host._kucoin_gap_recovery_progress(learning_store, stamp)
+        assert receipt["status"] == "recorded"
+        assert receipt["read_only"] is True
+        assert receipt["does_not_prove_gap_recovery"] is True
+        assert receipt["source_candles_not_independent_targets"] is True
+        eth = next(row for row in receipt["assets"] if row["asset"] == "ETH")
+        assert eth["bulk_status"] == "upstream_empty"
+        assert eth["bulk_retry_after"] == retry.isoformat()
+        assert eth["queued_exact_gaps_14d"] == 1
+        assert eth["due_exact_gaps_14d"] == 1
+        assert eth["attempted_exact_gaps_14d"] == 0
+        assert eth["oldest_exact_gap_at"] == hole.isoformat()
+        # Observation cannot consume a retry or remove an original gap.
+        assert host._kucoin_gap_recovery_progress(
+            learning_store, stamp
+        )["assets"] == receipt["assets"]
+    finally:
+        # No provider requests are made by this receipt.
+        learning_store.close()
+
+
+def test_kucoin_gap_receipt_fails_closed_if_persistence_unavailable():
+    class Unavailable:
+        def connect(self):
+            raise RuntimeError("connection unavailable")
+
+    result = host._kucoin_gap_recovery_progress(
+        Unavailable(), datetime(2026, 11, 16, tzinfo=UTC)
+    )
+    assert result["status"] == "read_unavailable"
+    assert result["assets"] == []
+    assert result["does_not_prove_gap_recovery"]

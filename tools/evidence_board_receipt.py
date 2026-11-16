@@ -175,6 +175,12 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
         "xmarket_expected_inputs": None, "xmarket_shadow_rows": None,
         "xmarket_imported_scopes": None,
         "xmarket_stage": "read_unavailable", "xmarket_exports": None,
+        "kucoin_gap_recovery": {
+            "status": "unavailable", "assets_observed": None,
+            "queued_exact_gaps_14d": None, "due_exact_gaps_14d": None,
+            "attempted_exact_gaps_14d": None,
+            "bulk_upstream_empty_assets": None,
+        },
         "recent_forward_calls": _recent_forecast_summary(None),
     }
     db = {
@@ -211,6 +217,41 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
         host["xmarket_shadow_rows"] = _nonnegative(xmarket.get("shadow_rows_24h"))
         if isinstance(xmarket.get("imported_scopes"), list):
             host["xmarket_imported_scopes"] = len(xmarket["imported_scopes"])
+
+    # Only safe, bounded aggregate recovery counts leave the private host.
+    # A gap queued or attempted is not proof that KuCoin returned the candle.
+    paths = report.get("path_targets")
+    recovery = paths.get("kucoin_gap_recovery") if isinstance(paths, dict) else None
+    if isinstance(recovery, dict) and recovery.get("status") == "recorded":
+        assets = recovery.get("assets")
+        if isinstance(assets, list) and len(assets) <= 4:
+            seen = set()
+            valid = True
+            for row in assets:
+                if (not isinstance(row, dict)
+                        or row.get("asset") not in ASSETS
+                        or row["asset"] in seen
+                        or not all(_nonnegative(row.get(key)) is not None
+                                   for key in ("queued_exact_gaps_14d",
+                                               "due_exact_gaps_14d",
+                                               "attempted_exact_gaps_14d"))):
+                    valid = False
+                    break
+                seen.add(row["asset"])
+            if valid:
+                host["kucoin_gap_recovery"] = {
+                    "status": "recorded",
+                    "assets_observed": len(assets),
+                    "queued_exact_gaps_14d": sum(
+                        row["queued_exact_gaps_14d"] for row in assets),
+                    "due_exact_gaps_14d": sum(
+                        row["due_exact_gaps_14d"] for row in assets),
+                    "attempted_exact_gaps_14d": sum(
+                        row["attempted_exact_gaps_14d"] for row in assets),
+                    "bulk_upstream_empty_assets": sum(
+                        row.get("bulk_status") == "upstream_empty"
+                        for row in assets),
+                }
 
     host["recent_forward_calls"] = _recent_forecast_summary(
         report.get("recent_forward_calls")

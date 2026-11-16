@@ -417,6 +417,18 @@ async def test_explicit_provider_source_family_restores_without_ledger_merging(t
     assert json.loads(files[0].read_text())["source_integrity"] == official
     assert drive.calls.count("h2") == 1
     assert "h1" not in drive.calls
+    # The official-provider acquisition path also rejects PostgreSQL copies,
+    # without relying on a preferred Drive listing order.
+    drive.calls.clear()
+    official_family = await restore_verified_source_months(
+        drive, venue="okx", contract="BTC-USDT-SWAP",
+        months=["2026-09"], root=tmp_path / "official-family",
+        source_family="okx_official",
+    )
+    assert len(official_family) == 1
+    assert json.loads(official_family[0].read_text())["source_integrity"] == official
+    assert "h1" not in drive.calls
+    assert drive.calls.count("h2") == 1
     # The earlier strict call remains blocked despite its first verified file.
 
 
@@ -433,5 +445,21 @@ async def test_provider_source_pin_rejects_unknown_and_cross_venue(tmp_path):
             await restore_verified_source_months(
                 drive, venue=venue, months=["2026-09"], root=tmp_path,
                 source_integrity=integrity,
+            )
+    assert drive.calls == []
+
+
+@pytest.mark.asyncio
+async def test_official_provider_family_rejects_invalid_modes(tmp_path):
+    drive = _Drive()
+    for venue, family, integrity in (
+        ("okx", "unverified", None),
+        ("gate", "okx_official", None),
+        ("okx", "okx_official", "okx-v5-public-history-5m-v1"),
+    ):
+        with pytest.raises(HistoryImportError, match="provider source family"):
+            await restore_verified_source_months(
+                drive, venue=venue, months=["2026-09"], root=tmp_path,
+                source_family=family, source_integrity=integrity,
             )
     assert drive.calls == []

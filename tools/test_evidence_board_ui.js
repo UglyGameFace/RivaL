@@ -286,6 +286,8 @@ const oldHost=cx.opsHomeObservation();
 assert.equal(oldHost.historical,true);
 assert.equal(oldHost.run_id,'43801752054');
 assert.equal(oldHost.host.forecast_issued,102);
+assert.match(cx.opsCommand(),/xmarket_v1/,
+ 'Only verified host-sampled XMarket family shadows should have a family label');
 assert.equal(oldHost.database.qualified_paper_scopes,0);
 assert.match(cx.opsCommand(),/Latest signed host read failed/);
 assert.match(cx.opsCommand(),/Previous verified call snapshot, not current/);

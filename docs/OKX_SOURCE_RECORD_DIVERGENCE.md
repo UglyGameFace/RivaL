@@ -101,3 +101,58 @@ Acceptance requires another authentic four-asset OKX run from the diagnostic
 commit, followed by source-family and provider witness reconciliation based
 on which fields actually differ. Even a semantically identical result does
 not automatically select, merge, promote or backdate either original.
+
+## Authenticated per-field proof from main #630 (November 16, 2026)
+
+Post-merge [official OKX restoration run #43922686148](https://github.com/UglyGameFace/RivaL/actions/runs/43922686148)
+at `main@533299ad` verified both conflicting normalized archives' SHA
+readbacks for four assets; still admitted **zero** monthly histories and
+published **zero** models. The exact new public field categories:
+
+| Asset | Month | Different non-observation fields | Price/grid/trade differences |
+| --- | --- | --- | --- |
+| BTC | 2026-07 | `volume_base`, `volume_contracts`, `volume_quote` | none |
+| ETH | 2026-10 | `volume_base`, `volume_contracts`, `volume_quote` | none |
+| SOL | 2026-09 | `volume_contracts`, `volume_quote` | none |
+| XRP | 2026-09 | `volume_base`, `volume_contracts`, `volume_quote` | none |
+
+Each also differs in `first_observed_at`. The earlier ETH September
+example was a stale collision frontier; the **fresh exact-head** run reports
+October. These field equality statements concern the verified normalized
+records, **not a provider-signed original-byte comparison**. OHLC and all
+candle identity/time grid values match; important: *volume still affects live
+model features*. The original two provenance families must never be blended
+into one model simply because prices match.
+
+## Correcting base-volume ingestion and separating original families
+
+OKX V5 public candlestick responses have
+`[ts, open, high, low, close, vol, volCcy, volCcyQuote, confirm]`;
+for linear swaps `vol` is **contracts** and `volCcy` is directly **base
+currency**. Official API spec: https://www.okx.com/docs-v5/en/
+
+The prior live `OkxMarketClient` and PostgreSQL historical
+`OkxHistoryRecovery` inferred base volume as
+`vol * ctVal * ctMult`, introducing a second representation. Going forward,
+both instead parse and validate the exchange's own `volCcy` (index 6).
+They continue validating exact linear instrument metadata, identity,
+closed candles, and contract/quote-volume types. **No pre-existing database
+candle, Drive original, first-observed clock, or settled target is rewritten**.
+
+The Drive restore's default behavior is unchanged: any two divergent
+month manifests for the same scope are BLOCKED. For official archive
+**inventory only**, `source_family="okx_official"` excludes RivaL's
+PostgreSQL-derived first-observed snapshots, but still fails closed on
+different API-versus-ZIP originals for the same month. For retrospective
+model research, `source_integrity` pins **one exact, whitelisted OKX
+provenance** into a separate local research directory; the unattended
+source-native workflow explicitly pins
+`okx-v5-public-history-5m-v1`. It never silently chooses a family or mixes
+Postgres and OKX volumes. Missing full months still yield no candidate.
+The importer screen, chronological holdout boundaries, prospective shadow
+qualification, matched quotes, and after-cost promotion gates remain intact.
+
+An OKX public-history SHA of a response-derived stream is **not** an
+independent provider-signed raw witness. Use original, authenticated ZIP
+readback or equivalent exchange-origin evidence when enforcing stronger
+source authenticity. Retrospective training alone is not live model approval.

@@ -168,6 +168,14 @@ class CallBoardService:
                 (str(channel), asset, str(message), str(owner), fingerprint),
             )
 
+    def _touch(self, row: dict, fingerprint: str) -> None:
+        with self.store.connect() as conn:
+            conn.execute(
+                """UPDATE rival_live_call_board SET fingerprint=?
+                WHERE channel_id=? AND asset=? AND message_id=?""",
+                (fingerprint, row["channel_id"], row["asset"], row["message_id"]),
+            )
+
     def _delete(self, row: dict) -> None:
         with self.store.connect() as conn:
             conn.execute(
@@ -223,12 +231,7 @@ class CallBoardService:
         except discord.NotFound:
             await asyncio.to_thread(self._delete, row)
             return False
-        with self.store.connect() as conn:
-            conn.execute(
-                """UPDATE rival_live_call_board SET fingerprint=?
-                WHERE channel_id=? AND asset=? AND message_id=?""",
-                (key, row["channel_id"], row["asset"], row["message_id"]),
-            )
+        await asyncio.to_thread(self._touch, row, key)
         return True
 
     async def cycle(self) -> int:

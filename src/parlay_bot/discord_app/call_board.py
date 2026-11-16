@@ -52,8 +52,8 @@ def live_calls_embed(market, asset: str, now: datetime | None = None):
     embed = discord.Embed(
         title=f"RivaL Live Calls · {asset} · 5m / 15m / 60m",
         description=(
-            "Prospectively issued UP/DOWN research forecasts remain visible "
-            "even when no profitable trading edge is proven. "
+            "Prospectively issued UP/DOWN forecasts show numeric confidence, "
+            "but raw model scores are NOT measured win rates. "
             "**Unqualified means NO TRADE CALL.**"
         ),
         color=discord.Color.blurple(),
@@ -66,10 +66,17 @@ def live_calls_embed(market, asset: str, now: datetime | None = None):
             verdict = ("WATCH ONLY; profitability not proven" if snapshot.evidence_qualified
                        else "UNQUALIFIED RESEARCH; NO TRADE CALL")
             direction = "📈 UP" if snapshot.direction == "UP" else "📉 DOWN"
+            score_type = (
+                "Platt-calibrated model estimate; forward reliability unverified"
+                if snapshot.calibrated else
+                "RAW model estimate; NOT calibrated or a verified win rate"
+            )
             text = (
-                f"**{direction}** · {snapshot.probability:.1%} raw model strength "
-                "(not a measured win rate)\n"
-                f"Source: {snapshot.venue or 'unavailable'}\n"
+                f"**{direction}**\n"
+                f"**Confidence: {snapshot.probability:.1%}** "
+                f"({score_type})\n"
+                f"Model: `{snapshot.model_version or 'unknown'}` · "
+                f"Exchange: {snapshot.venue or 'unavailable'}\n"
                 f"**{verdict}**"
             )
             if snapshot.price is not None and math.isfinite(snapshot.price):
@@ -102,7 +109,8 @@ def live_calls_embed(market, asset: str, now: datetime | None = None):
                 next_line = (
                     "Next *already-issued* target: "
                     + discord.utils.format_dt(target, style="t")
-                    + f" · {direction} (research only)"
+                    + f" · {direction} · Confidence: {max(p, 1 - p):.1%}"
+                    + " (raw, research only)"
                 )
         embed.add_field(name=f"{h}-minute call", value=text + "\n" + next_line,
                         inline=False)

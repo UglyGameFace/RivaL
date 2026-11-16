@@ -1,6 +1,7 @@
 """Visible calls remain separate from verified trade recommendations."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -81,7 +82,7 @@ def test_call_board_shows_unqualified_up_down_and_only_issued_next(monkeypatch):
 def test_call_board_labels_calibrated_confidence_separately(monkeypatch):
     now = datetime(2026, 11, 16, 3, tzinfo=UTC)
     snapshot = _snapshot(15, now, direction="DOWN", p=.82, qualified=True)
-    snapshot = __import__("dataclasses").replace(snapshot, calibrated=True)
+    snapshot = replace(snapshot, calibrated=True)
     monkeypatch.setattr(call_board, "target_snapshot",
                         lambda _m, *, asset, horizon_minutes, now:
                         snapshot if horizon_minutes == 15 else

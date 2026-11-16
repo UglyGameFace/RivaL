@@ -15,7 +15,6 @@ import pytest
 
 from parlay_bot.research import archive_training
 
-
 PIN = "okx-v5-public-history-5m-v1"
 OTHER = "okx-v5-official-1m-zip-derived-5m-v1"
 
@@ -25,7 +24,9 @@ def test_month_restore_segregates_pinned_okx_without_changing_other_sources(
     tmp_path, monkeypatch, pin,
 ):
     from parlay_bot.research import (
-        bitget_source_bridge, recorded_candles, source_native,
+        bitget_source_bridge,
+        recorded_candles,
+        source_native,
     )
 
     calls = []

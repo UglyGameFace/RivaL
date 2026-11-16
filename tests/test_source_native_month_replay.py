@@ -29,7 +29,7 @@ class _Drive:
     ):
         self.folders = SimpleNamespace(manifests="manifests", history="history")
         self.data = (first_data if first_data is not None
-                     else b'{"closed_at":"2026-09-01T00:05:00+00:00"}\\n')
+                     else _bytes({"closed_at": "2026-09-01T00:05:00+00:00"}) + bytes((10,)))
         self.second_data = second_data if second_data is not None else self.data
         file = "okx-BTC-USDT-SWAP-USDT-5m-2026-09--0000000000000001.ndjson"
         second_file = (
@@ -174,7 +174,7 @@ def _observation_row(*, observed_at: str, close: float = 101) -> bytes:
         "open": 100, "high": 102, "low": 99, "close": close,
         "volume_base": 1, "volume_quote": 100,
     }
-    return _bytes(record) + b"\\n"
+    return _bytes(record) + bytes((10,))
 
 
 @pytest.mark.asyncio

@@ -56,6 +56,36 @@ def test_real_quote_entries_and_exits_advance_without_borrowing_another_source(l
     assert mismatch["latest_entry_at"] is None
 
 
+def test_entry_funnel_separates_cash_live_and_elapsed_decisions(learning_store):
+    """Fresh venue books are not proof that a forecast actually chose a side."""
+    now = datetime.now(UTC).replace(microsecond=0)
+    observer = _observer(learning_store)
+    with learning_store.connect() as conn:
+        _forecast(conn, "xmarket_v1", issued=now-timedelta(minutes=4),
+                  target=now+timedelta(minutes=10))  # directional, too old to enter
+        _forecast(conn, "xmarket_v1", issued=now-timedelta(minutes=3),
+                  target=now+timedelta(minutes=9), probability=.5)  # both CASH
+        _forecast(conn, "xmarket_v1", issued=now-timedelta(seconds=20),
+                  target=now+timedelta(minutes=7))  # fresh and matched
+    assert observer.observe(_book(now), now=now)["opened"] == 1
+    with learning_store.connect() as conn:
+        _forecast(conn, "xmarket_v1", issued=now-timedelta(seconds=10),
+                  target=now+timedelta(minutes=8))  # fresh but not yet sampled
+    row = _hyper(read_xmarket_quotes(learning_store, now, PROGRESS))
+    assert row["forecast_rows"] == 4
+    assert row["decisive_forecast_rows"] == 3
+    assert row["cash_only_forecast_rows"] == 1
+    assert row["entry_rows"] == 1
+    assert row["elapsed_unmatched_decisive_rows"] == 1
+    assert row["recent_unmatched_decisive_rows"] == 1
+    assert row["closed_exit_rows"] == row["missed_exit_rows"] == 0
+    later = _hyper(read_xmarket_quotes(
+        learning_store, now+timedelta(seconds=91), PROGRESS))
+    assert later["elapsed_unmatched_decisive_rows"] == 2
+    assert later["recent_unmatched_decisive_rows"] == 0
+    assert later["entry_rows"] == 1  # a query never invents a late quote
+
+
 def test_quote_receipt_selects_only_and_distinguishes_missing_ledger(learning_store):
     now = datetime.now(UTC)
     reads = []

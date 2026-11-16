@@ -391,6 +391,7 @@ def _path_settlement_sample(store, now: datetime) -> dict:
                             continue
                         sampled.add(key)
                         reason = "ready_for_settlement"
+                        missing_candle_opens: list[str] = []
                         try:
                             reference = datetime.fromisoformat(
                                 str(path["reference_opened_at"])).astimezone(UTC)
@@ -417,7 +418,25 @@ def _path_settlement_sample(store, now: datetime) -> dict:
                                      target.isoformat()),
                                 ).fetchall()
                                 if len(bars) != steps:
-                                    reason = "missing_source_candles"
+                                    # Supply the exact source/time gaps for archival
+                                    # repair. This read-only observer does not fetch,
+                                    # backdate, rewrite or settle missing outcomes.
+                                    expected = {
+                                        reference + timedelta(minutes=5*(index+2))
+                                        for index in range(steps)
+                                    }
+                                    observed = {
+                                        datetime.fromisoformat(
+                                            str(bar["opened_at"])).astimezone(UTC)
+                                        for bar in bars
+                                    }
+                                    missing_candle_opens = [
+                                        stamp.isoformat()
+                                        for stamp in sorted(expected - observed)
+                                    ]
+                                    reason = ("missing_source_candles" if
+                                              missing_candle_opens else
+                                              "source_grid_mismatch")
                                 else:
                                     for index, bar in enumerate(bars):
                                         opened = datetime.fromisoformat(
@@ -459,6 +478,7 @@ def _path_settlement_sample(store, now: datetime) -> dict:
                             "horizon_minutes": horizon,
                             "target_opened_at": str(path["target_opened_at"]),
                             "reason": reason,
+                            "missing_candle_opened_at": missing_candle_opens,
                         })
         return {
             "status": "sampled" if sampled else "no_due_pending_paths",

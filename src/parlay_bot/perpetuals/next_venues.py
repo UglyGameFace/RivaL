@@ -126,10 +126,12 @@ class OkxMarketClient(_HttpFeed):
                 or inst.get("settleCcy") != "USDT"
                 or inst.get("ctValCcy") != asset):
                 raise MarketDataError("OKX linear swap contract mismatch")
-            base_per_contract = (
-                _number(inst.get("ctVal"), positive=True)
-                * _number(inst.get("ctMult"), positive=True)
-            )
+            # Metadata validates the linear contract, but OKX already
+            # supplies exact base-currency candle volume as volCcy (row[6]).
+            # Reconstructing it from vol * contract size can disagree with
+            # the exchange's reported base volume and poison source history.
+            _number(inst.get("ctVal"), positive=True)
+            _number(inst.get("ctMult"), positive=True)
             data = await self._get(
                 "https://www.okx.com/api/v5/market/candles",
                 {"instId": contract, "bar": _INTERVALS[interval_minutes][0],
@@ -156,11 +158,15 @@ class OkxMarketClient(_HttpFeed):
                     # one unconfirmed candle cannot discard the valid rows
                     # already parsed in this batch.
                     continue
+                _number(row[5])  # Contracts still must be numeric.
+                _number(row[7])  # Quote volume cannot be malformed.
                 candle = _make_candle(
                     venue="okx", contract=contract, opened=ts, earliest=earliest,
                     cutoff=cutoff, interval=interval_minutes, now=started,
                     prices=tuple(row[1:5]),
-                    base_volume=_number(row[5]) * base_per_contract,
+                    # row[5] is contracts, row[6] is base currency,
+                    # row[7] is quote currency (OKX V5).
+                    base_volume=_number(row[6]),
                 )
                 if candle is not None:
                     candles.append(candle)

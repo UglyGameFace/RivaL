@@ -302,3 +302,56 @@ def test_xrp_spacing_retry_never_replays_verified_btc(monkeypatch):
     assert receipt["outcome"] == "verified"
     assert calls == ["BTC", "XRP", "XRP"]
     assert slept == [RELAY.RESTART_WAIT_SECONDS]
+
+
+@pytest.mark.parametrize("standalone", [True, False])
+def test_shared_xrp_stage_has_same_exact_persistence_gates(monkeypatch, standalone):
+    from parlay_bot.perpetuals import llm_persistence_acceptance as host
+
+    class Store:
+        def __init__(self, counts):
+            self.counts = iter(counts)
+
+        def connect(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, *_args):
+            return self
+
+        def fetchone(self):
+            return {"n": next(self.counts)}
+
+    now = datetime.now(UTC)
+    result, row = example(now)
+    result.asset = row["asset"] = "XRP"
+    result.from_cache = False
+    calls = []
+
+    async def ask(_market, _settings, *, asset):
+        calls.append(asset)
+        return result, 1.25
+
+    monkeypatch.setattr(host, "_ask", ask)
+    market = SimpleNamespace(cached_ai_research=lambda **_kw: row)
+    report = host._verify_xrp_stage(
+        market, SimpleNamespace(), Store([3, 4]),
+        {"outcome": "deferred", "asset": "XRP"}, standalone=standalone,
+    )
+    assert report["outcome"] == "verified"
+    assert report["xrp_verified"] is True
+    assert calls == ["XRP"]
+    assert ("saved_after" in report) is standalone
+
+    # A cache miss without a new DB row is never accepted as persistence.
+    bad = host._verify_xrp_stage(
+        market, SimpleNamespace(), Store([4, 4]),
+        {"outcome": "deferred", "asset": "XRP"}, standalone=standalone,
+    )
+    assert bad["outcome"] == "failed"
+    assert bad["reason"] == "xrp_exact_database_receipt_missing"

@@ -52,6 +52,10 @@ def test_imported_without_prospective_rows_is_not_called_shadow_ready(learning_s
     _census(monkeypatch)
     report = diagnostic.read_probe(learning_store, CLOCK)
     assert report["read_only"] and report["does_not_prove_prospective_predictions"]
+    assert report["candle_census_is_not_quote_stream_health"] is True
+    assert report["recent_source_candle_venues_by_asset"] == {
+        "BTC": ["bitget", "okx"], "ETH": [], "SOL": [], "XRP": [],
+    }
     item = report["scopes"][0]
     assert item["asset"] == "BTC" and item["horizon_minutes"] == 15
     assert item["stored_artifact_usable"] is True
@@ -95,7 +99,9 @@ def test_missing_dispersion_venue_is_reported_without_relaxing_it(learning_store
         point("polymarket", stamp)
         for stamp in (TARGET, TARGET-timedelta(minutes=15), TARGET-timedelta(minutes=60))
     ] + [point("kalshi", TARGET)])
-    result = diagnostic.read_probe(learning_store, CLOCK)["scopes"][0]
+    probe = diagnostic.read_probe(learning_store, CLOCK)
+    assert probe["recent_source_candle_venues_by_asset"]["BTC"] == ["bitget"]
+    result = probe["scopes"][0]
     assert result["status"] == "required_dispersion_venue_absent"
     assert result["missing_dispersion_venues"] == ["okx"]
     assert result["native_at_issuance"]["native_complete"] == 1

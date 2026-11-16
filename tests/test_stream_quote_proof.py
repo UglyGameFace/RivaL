@@ -110,6 +110,65 @@ def test_order_book_wire_frames_validate_source_clock_and_market_identity():
         parse_stream_message("binance", b"binary", received_at=now)
 
 
+@pytest.mark.asyncio
+async def test_binance_2026_public_bookticker_route_accepts_only_usdm(monkeypatch):
+    """The deployed socket must use Binance's public, not market, stream."""
+    from parlay_bot.perpetuals import stream_quotes
+
+    assets = ("BTC", "SOL")
+    expected = ("wss://fstream.binance.com/public/stream?streams="
+                "btcusdt@bookTicker/solusdt@bookTicker")
+    assert stream_quotes.binance_book_stream_url(assets) == expected
+    assert stream_quotes.BINANCE_WS == stream_quotes.binance_book_stream_url(
+        tuple(stream_quotes.ASSETS)
+    )
+
+    urls = []
+    processed = asyncio.Event()
+
+    class Socket:
+        received = 0
+
+        async def recv(self):
+            self.received += 1
+            if self.received == 1:
+                return wire_binance(datetime.now(UTC), st=2)  # CM is never accepted
+            if self.received == 2:
+                return wire_binance(datetime.now(UTC), st=1)  # real USD-M payload
+            processed.set()
+            await asyncio.Future()
+
+        async def send(self, _message):
+            raise AssertionError("URL subscription needs no extra SUBSCRIBE")
+
+    class Connection:
+        async def __aenter__(self):
+            return Socket()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    def connect(url, **kwargs):
+        urls.append(url)
+        assert kwargs["max_queue"] == 32
+        return Connection()
+
+    monkeypatch.setattr(stream_quotes.websockets, "connect", connect)
+    hub = StreamingBookHub(assets=assets)
+    task = asyncio.create_task(hub._run("binance"))
+    try:
+        await asyncio.wait_for(processed.wait(), timeout=2)
+        assert urls == [expected]
+        assert hub.health()["binance"]["updates"] == 1
+        assert hub.snapshot("binance", "BTC") is not None
+        assert hub.snapshot("binance", "SOL") is None
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+    assert not hub.health()["binance"]["connected"]
+
+
 def test_ram_cache_does_not_resurrect_old_tick_or_replayed_book():
     now = datetime.now(UTC).replace(microsecond=0)
     hub = StreamingBookHub(assets=("BTC",))

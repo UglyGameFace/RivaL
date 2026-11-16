@@ -54,3 +54,9 @@ Primary references:
 - https://docs.lighter.xyz/api/websocket.md — public read-only endpoint, full BBO and microsecond last_updated_at.
 - https://mainnet.zklighter.elliot.ai/api/v1/orderBooks — active native perpetual IDs.
 - https://docs.lighter.xyz/trading/trading-fees.md — published public fee policy; existing stresses are not reduced.
+
+## Binance USD-M bookTicker public route — November 16 follow-up
+
+Binance's 2026 USD-M WebSocket endpoint split assigns individual `{symbol}@bookTicker` to the **public**, not the market, category. The authoritative route is `wss://fstream.binance.com/public/stream?streams=btcusdt@bookTicker/...`, while /market/stream is for regular market streams such as aggregate trades and mark prices. Official reference: https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/public#individual-symbol-book-ticker-streams
+
+The deployed quote socket previously used `/market/stream` in both its default constant and its per-asset constructor, explaining a concrete subscription mismatch. The correction builds both URLs from one public-route function; the separate Binance trade collector continues using `/market`. Existing source clocks, `st=1` USD-M filtering (including explicit rejection of `st=2` COIN-M books), max-age bounds, coin sizes, source joins and cost assumptions remain unchanged. A mocked WebSocket integration regression checks actual routing, accepts one fresh USD-M event, rejects COIN-M, and verifies cancellation. This identifies a plausible cause of connected-without-books; only fresh post-release authenticated host evidence can establish recovery.

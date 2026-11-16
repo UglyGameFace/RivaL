@@ -1,5 +1,45 @@
 # RivaL active bot work — November 16, 2026 UTC
 
+## Advance next-target calls — active implementation
+
+**Objective/branch:** `feat/advance-next-target-calls-20261116`, based on
+`bf568fac` (including #619/#621), [PR #622](https://github.com/UglyGameFace/RivaL/pull/622).
+Implement real pre-close next-target issuance and observable
+channel delivery. Website PRs #620/#621 and private LFM3/Jarvis #608 are
+independent; no conflicting forecasting PR was open at the initial live check.
+
+**Root cause:** #619 reads existing predictions; it cannot create an advance
+5m call from a model trained for the current horizon. Optional spike/research
+stages also preceded any lead head. A single zero-issuance cycle was incorrectly
+generalized earlier; the same receipt contained real incumbent calls and 4,084
+XMarket shadows in 24h.
+
+**Changes:** Reuse causal features and persistent learning with a distinct
+next-candle-own-open target contract for 5/15/60m selections, plus five minutes
+of lead. Priority issuance after the shared collector and before optional
+spikes; bounded guarded thread; immutable native forecast ledger, separate
+commit deadline proof/readiness/outcomes and accepted channel delivery.
+The card shows actual next raw probability/model/source/timestamps, retains
+the prior advance, and reports pending reasons. Polymarket missing next strike
+is explicit; Kalshi remains native. See `docs/ADVANCE_FORECASTS.md`.
+
+**Validation at publication:** 21 advance/guard SQLite cases passed, including
+20 matching PostgreSQL fixtures for CI; focused existing regressions passed.
+Initial PostgreSQL CI caught new `REAL` columns rounding Brier/probabilities
+to float32. They now follow existing `DOUBLE PRECISION` conventions without
+weakening the assertion. Repeated live schema setup was also removed and
+covered by a regression. Full exact-PR/main CI remains required; see #622 for
+the latest acceptance. Existing unrelated SOCKS
+proxy support was installed in the local test environment after an HTTP client
+test could not construct its transport; no production dependency was changed.
+
+**Acceptance/blockers/next:** Publish one cohesive PR after full regressions,
+validate exact CI, integrate and inspect native Discloud source plus fresh
+read-only commit/delivery receipts. Actual consecutive pre-close channel
+delivery and future model skill are not yet proved. Preserve old ledgers,
+models, qualification and cost gates; issues #6/#151/#299 remain open. Retire
+only this branch after its full tree is preserved on main.
+
 ## Active user-selected Live Calls and XMarket model-quality continuation (2026-11-16)
 
 **Branch/PR:** `feat/channel-live-research-calls-20261116`, [PR #619](https://github.com/UglyGameFace/RivaL/pull/619), based on main `a35d7b1`. This extends the merged #613–616 exact-source quote infrastructure. Existing parallel Evidence Workers #618 and private Jarvis/LFM3 #608 remain independent and untouched.

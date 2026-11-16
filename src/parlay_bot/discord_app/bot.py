@@ -150,6 +150,7 @@ STARTUP_QUIET_PERIOD = timedelta(minutes=5)
 # sequential at up to 12 s each, so the slowest all-blocked network phase
 # is ~144 s before serial persists.
 PERP_COLLECT_TIMEOUT_SECONDS = 180
+PERP_ADVANCE_TIMEOUT_SECONDS = 95
 PERP_SPIKES_TIMEOUT_SECONDS = 90
 # Forecast: the outer cap on autonomous.cycle(); its inner per-stage
 # deadlines are in parlay_bot.perpetuals.autonomous.
@@ -2943,6 +2944,25 @@ class RivalDiscordClient(discord.Client):
             stages["collect"], mark = time.monotonic() - mark, time.monotonic()
             _LOG.info("RivaL perp memory checkpoint stage=post_collect %s",
                       host_memory.snapshot().detail)
+            # The separate lead head needs only native completed candles.
+            # Issue it BEFORE optional spike analysis and heavyweight research;
+            # the incumbent's causal spike-before-forecast ordering stays intact.
+            if self.autonomous is not None:
+                try:
+                    advance_issued, advance_settled = await asyncio.wait_for(
+                        self.autonomous.advance_cycle(), timeout=PERP_ADVANCE_TIMEOUT_SECONDS,
+                    )
+                    if advance_issued:
+                        self.call_board.request_refresh()
+                    _LOG.info("RivaL advance stage issued=%d settled=%d",
+                              advance_issued, advance_settled)
+                except asyncio.CancelledError:
+                    raise
+                except TimeoutError:
+                    _LOG.warning("RivaL advance stage timed out; deadline proof unavailable")
+                except Exception:  # noqa: BLE001 - preserve existing incumbent research
+                    _LOG.exception("RivaL advance stage failed; continuing incumbent research")
+            stages["advance"], mark = time.monotonic() - mark, time.monotonic()
             # Bounded spike analytics and future-only self-evaluation: reuse
             # the existing source collector cycle and saved original bars.
             try:

@@ -88,11 +88,12 @@ class LiveModelCheckpoints:
     """
 
     def __init__(self, store, *, feature_contract=FEATURE_CONTRACT,
-                 learning_rate=0.025):
+                 learning_rate=0.025, target_contract=TARGET_CONTRACT):
         if not 0 < learning_rate <= 0.1:
             raise ValueError("learning_rate must satisfy 0 < lr <= 0.1")
         self.store = store
         self.feature_contract = feature_contract
+        self.target_contract = target_contract
         self.learning_rate = learning_rate
         self._initialized = False
         self._lock = threading.RLock()
@@ -205,7 +206,7 @@ class LiveModelCheckpoints:
     def _cold_state(self, first, now, seed=None):
         if seed and (
             seed.get("feature_contract") != self.feature_contract
-            or seed.get("target_contract") != TARGET_CONTRACT
+            or seed.get("target_contract") != self.target_contract
             or seed.get("retrospective_screen") != "passed"
             or (seed["identity"]["venue"], seed["identity"]["contract"], seed["identity"]["quote"],
                 seed["horizon_minutes"]) != (first.venue, first.contract, first.quote, first.horizon_minutes)
@@ -241,7 +242,7 @@ class LiveModelCheckpoints:
         now = utc(as_of)
         first = ordered[0]
         identity = (first.venue, first.contract, first.quote, first.horizon_minutes,
-                    self.feature_contract + (":" + seed["model_sha256"] if seed else ""), TARGET_CONTRACT)
+                    self.feature_contract + (":" + seed["model_sha256"] if seed else ""), self.target_contract)
         self.initialize()
         with self._lock:
             query_scope = ("WHERE venue=? AND contract=? AND quote=? "
@@ -380,5 +381,5 @@ class LiveModelCheckpoints:
                 "reused_this_process": self._loaded, "fitted_this_process": self._fitted,
                 "verified_checkpoint_cache_hits": self._cache_hits,
                 "historical_seeded_checkpoints": sum(bool(s and s["historical_seed"]) for s in valid),
-                "feature_contract": self.feature_contract, "target_contract": TARGET_CONTRACT,
+                "feature_contract": self.feature_contract, "target_contract": self.target_contract,
                 "model_version": STATE_VERSION}

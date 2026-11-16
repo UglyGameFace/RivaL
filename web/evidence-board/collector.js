@@ -232,6 +232,15 @@ function build(payload,identity){
       xmarket_stage:oneOf(h.xmarket_stage,['not_initialized','waiting_for_inputs',
         'waiting_for_completed_day_export','waiting_for_fit','imported_no_shadow_rows',
         'shadow_issuing','read_unavailable']),
+      live_call_delivery:{
+        status:oneOf(h.live_call_delivery?.status,['recorded','unavailable']),
+        active_channels:numberOrNull(h.live_call_delivery?.active_channels,100000),
+        recent_accepted_delivery_rows:numberOrNull(h.live_call_delivery?.recent_accepted_delivery_rows,100),
+        advance_model:typeof h.live_call_delivery?.advance_model==='string' &&
+          /^[a-z][a-z0-9-]{1,79}$/.test(h.live_call_delivery.advance_model)
+          ?h.live_call_delivery.advance_model:null,
+        delivery_is_discord_api_acceptance_only:true
+      },
       kucoin_gap_recovery:{
         status:oneOf(h.kucoin_gap_recovery?.status,['recorded','unavailable']),
         assets_observed:numberOrNull(h.kucoin_gap_recovery?.assets_observed,4),

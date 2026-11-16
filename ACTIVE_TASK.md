@@ -1,5 +1,15 @@
 # RivaL active bot work — November 16, 2026 UTC
 
+## Owner API access and live trial-screen repair
+
+**Branch:** `fix/rival-owner-api-and-model-trial-truth-20261116`, based on current `main@ed596182`; the only independent open PR on initial review was Jarvis #608. Screenshots show the account that can use RivaL's private menu is denied by More → API Usage & Limits, while model performance shows 173 aggregate trials / 189 cut records / zero passed.
+
+**Verified causes:** `GuidedHome.act("api-limits")` rechecked `application_info().owner` rather than the existing `OwnerGate` authorized IDs/team, denying valid configured/team owners. `trial_board.read` reported global comparisons without applying `rival_family_early_stop`, treated fully stopped models as active, and folded model generations by maximum days even if the older generation was stopped. The 189 stop count is stop *records*, not necessarily globally unique models. Live Model Lab review already has 30-minute replacement, two-day strong-loss thresholds and 21-day no-edge minimum; there is no evidence that removing all old models produces profit.
+
+**Implementation:** Reuse the existing private OwnerGate and fail closed; scope API confirmation controls to the actual authorized caller. Apply source stop evidence to the global and local display counts and prioritize active/qualified generations under shared labels; do not rewrite existing forecasts or model promotion gates. Regression tests plus `docs/OWNER_API_AND_MODEL_TRIAL_AUDIT.md`.
+
+**Validation required:** Exact-head CI, merged-main CI, production source SHA, Android interaction with the configured owner account, and fresh stop-aware active comparison counts. Honest remaining blockers: no qualified profitable XMarket scope, native source gaps, new locked future evaluations, source-matched paper quote proof. Keep #6/#299/#295/#151 open. No deployment or cleanup of legacy files without authenticated evidence.
+
 ## Current correction: XMarket research-only source-selection causality
 
 **Main checkpoint:** #624 merged at `b957d2e0`. Its GitHub one-shot train-only workflow has been installed; no provider-backed completion evidence is established in this task record. The earlier PR #623 had 3,566 passing SQLite/PostgreSQL tests but no claimed qualified edge.

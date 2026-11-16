@@ -1,4 +1,4 @@
-"""One authoritative, private Stop All path for every RivaL DM producer.
+"""One authoritative Stop All path for per-user RivaL tracking and channel calls.
 
 The live Polymarket tracker, exchange target, and optional Auto-Hunt
 notifications persist independently. Stop every service, even if one fails.
@@ -16,6 +16,7 @@ _LOG = logging.getLogger(__name__)
 async def stop_all_notifications(
     user_id: int, *, auto_hunt: object | None,
     targets: object | None, tracker: object | None,
+    calls: object | None = None,
 ) -> str:
     """Cancel all known per-user delivery sources without coupling failures.
 
@@ -30,6 +31,8 @@ async def stop_all_notifications(
         operations.append(("exchange forecast watch", lambda: targets.stop(user_id)))
     if tracker is not None:
         operations.append(("live Polymarket tracker", lambda: tracker.stop(user_id)))
+    if calls is not None:
+        operations.append(("channel Live Calls panels", lambda: calls.stop_owner(user_id)))
     if not operations:
         return "No alert services are available. Nothing was changed."
 

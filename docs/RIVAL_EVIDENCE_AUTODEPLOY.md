@@ -1,5 +1,12 @@
 # RivaL Evidence Board automatic deployment
 
+## Verified connection status (November 16, 2026)
+
+The user-owned Cloudflare Builds deployment token `RivaL Evidence Board Auto Deploy` is now configured; both Workers are linked to GitHub `UglyGameFace/RivaL` `main` with automatic builds enabled, source-specific build watch paths, no previews, and caching off. **Query Cloudflare Builds by immutable Worker tags, not Worker names.** The Board trigger is `67b22119-f38c-4bed-8ccc-f52ed44fc552`, collector trigger `6f07936c-4634-45eb-bac2-89cf209d0a2c`.
+
+The Board's GitHub push build `cbd10209-5ba6-4518-81b5-619b8893d4b8` completed successfully at 2026-11-16T04:04:57Z. It passed the source-backed Node UI and API tests, confirmed the fail-closed deploy contract, published source, and verified production bindings. Cloudflare's `status: stopped` represents completion; inspect `build_outcome: success` and build logs, not status alone. The collector's trigger was confirmed configured but no completed collector build had yet been observed, so its automatic deployment still needs an independent real push acceptance check. The separate signed OIDC receipt publisher has been operational and remains independent of Builds.
+
+
 ## Existing Cloudflare deployment targets
 
 Only these two production Workers are in scope:
@@ -18,7 +25,7 @@ On November 15, 2026, the Cloudflare Builds repository connection was registered
 - Evidence Board Worker tag: 53cc27fe9f904e379630e1288532ba5b
 - Evidence Collector Worker tag: 69169eab36d34fdda4430ba8cda9b94b
 
-Registration alone is not deployment authorization. Cloudflare's GitHub App must have access to this repository, and Workers Builds needs a user-scoped deployment API token. No build tokens or Workers Builds triggers existed when this integration was prepared. The connected OAuth account cannot create or read user API tokens. Never invent a token or put one into the Git repository or ChatGPT conversation.
+Registration alone is not deployment authorization. Cloudflare's GitHub App must have access to this repository, and Workers Builds needs a user-scoped deployment API token. At original preparation time, tokens and triggers were absent. The configuration and production build status above supersede that initial state. The connected session could not mint user API tokens, but the account owner has since created the authorized Builds token. Never invent a token or put one into the Git repository or ChatGPT conversation.
 
 To authorize once, open Cloudflare Workers & Pages, select a Worker, open Settings → Builds → Connect, choose GitHub, authorize the Cloudflare GitHub App if prompted, and create/select a user API token inside Workers Builds. A browser authorization must be completed by the Cloudflare account owner.
 
@@ -62,4 +69,4 @@ This repository contains two different Worker formats and an existing production
 - Independently verify a new signed GitHub OIDC receipt was accepted and retained in KV.
 - Preserve the previously deployed Worker version as rollback; a Worker code rollback does not revert KV data.
 
-This document and its deploy script prepare a safe automatic pipeline. The pipeline remains **unverified** until an authorized build token, active trigger, successful GitHub-driven production build, and source parity check are observed.
+The Board pipeline has now passed a genuine source-change GitHub-driven production build with its token, trigger, tests and binding/source verification. The Collector pipeline has a trigger but no separately observed completed source-change build yet. Future pushes must still be validated against source and binding parity; a green build does not prove bot model deployment or profitability.

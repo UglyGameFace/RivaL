@@ -270,6 +270,12 @@ async def test_new_exchange_issuance_refreshes_immediately_without_network_burst
         assert await service.cycle(force=True) == 1
         assert seen[-1] == ("exchange", "BTC", 0)
         assert all(kind == "exchange" for kind, _, _ in seen)
+        # A five-minute target resolves even when the source issues nothing
+        # new. Refresh within one short check, never leave an old UP card.
+        scope = ("exchange", "BTC", 0)
+        service._last_boundary[scope] = int(datetime.now(UTC).timestamp()) // 300 - 1
+        assert await service.cycle() == 1
+        assert seen[-1] == scope
     finally:
         store.close()
 

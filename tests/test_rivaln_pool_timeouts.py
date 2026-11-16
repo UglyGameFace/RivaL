@@ -120,8 +120,24 @@ async def _stop(task: asyncio.Task) -> None:
 
 
 @pytest.mark.asyncio
-async def test_watchdog_health_check_runs_under_twelve_seconds(tmp_path):
+async def test_watchdog_health_check_runs_under_twelve_seconds(tmp_path, monkeypatch):
+    import json
+
+    from parlay_bot.discord_app import bot as bot_module
+    from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
+    from tests.test_additional_quote_sources import wire
+
     client = _client(tmp_path)
+    # Simulate a pass which started before its SQL finished. Live sockets
+    # continue accepting genuine new books while the check is in flight.
+    clock = [datetime.now(UTC)-timedelta(seconds=20)]
+    class ObservationClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+    monkeypatch.setattr(bot_module, "datetime", ObservationClock)
+    client.live_stream = StreamingBookHub(assets=("BTC",))
+    published_streams = []
     publish_seen = asyncio.Event()
     acceptance_seen = asyncio.Event()
     seen: dict[str, list] = {
@@ -135,6 +151,9 @@ async def test_watchdog_health_check_runs_under_twelve_seconds(tmp_path):
 
     def fake_inspect(now, **kwargs):
         record("inspect")
+        clock[0] = datetime.now(UTC)
+        assert client.live_stream.accept("bitget", json.dumps(wire("bitget", clock[0])),
+                                         received_at=clock[0])
         return {"settlement_backlog": "1 recoverable prospective outcomes"}
 
     def fake_settle(now):
@@ -147,6 +166,7 @@ async def test_watchdog_health_check_runs_under_twelve_seconds(tmp_path):
 
     def fake_publish(faults, now=None, quote_streams=None):
         record("publish")
+        published_streams.append(quote_streams)
         loop.call_soon_threadsafe(publish_seen.set)
         return []
 
@@ -182,9 +202,54 @@ async def test_watchdog_health_check_runs_under_twelve_seconds(tmp_path):
         assert all(task.done() for task in auxiliary)
 
     assert seen["inspect"] == [WATCHDOG_STATEMENT_TIMEOUT_MS]
+    assert published_streams[0]["bitget"]["fresh_assets"] == ("BTC",)
     assert seen["settle"] == [WATCHDOG_STATEMENT_TIMEOUT_MS]
     assert seen["reconcile"] == [WATCHDOG_STATEMENT_TIMEOUT_MS]
     assert seen["publish"] == [WATCHDOG_STATEMENT_TIMEOUT_MS]
     # The acceptance join is spawned AFTER the scoped blocks restore the
     # ambient (unlimited) bound, so its ~20 s first read is not killed.
     assert seen["acceptance"] == [None]
+
+
+@pytest.mark.asyncio
+async def test_status_snapshot_uses_completion_clock_without_weakening_quote_age(tmp_path, monkeypatch):
+    import json
+
+    from parlay_bot.discord_app import bot as bot_module
+    from parlay_bot.discord_app import research_alerts
+    from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
+    from tests.test_additional_quote_sources import wire
+
+    started = datetime.now(UTC)-timedelta(seconds=20)
+    completed = started+timedelta(seconds=20)
+    clock = [started]
+
+    class ObservationClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+
+    monkeypatch.setattr(bot_module, "datetime", ObservationClock)
+    client = _client(tmp_path)
+    client.perp_collector = None
+    client.live_stream = StreamingBookHub(assets=("BTC", "ETH", "SOL"))
+
+    def snapshot():
+        # Books can change during the card's database reads. BTC is current,
+        # ETH is now too old and SOL is genuinely in the future.
+        clock[0] = completed
+        for asset, at in (("BTC", completed), ("ETH", started),
+                          ("SOL", completed+timedelta(seconds=1))):
+            assert client.live_stream.accept(
+                "bitget", json.dumps(wire("bitget", at, asset=asset)), received_at=at)
+        return {"issues": [], "checked_at": completed.isoformat()}
+
+    client.health_monitor.snapshot = snapshot
+    monkeypatch.setattr(research_alerts, "research_alerts", lambda *args, **kwargs: [])
+    monkeypatch.setattr(client.problem_log, "stored", lambda *args, **kwargs: ([], {}))
+    try:
+        facts = await client._status_facts()
+    finally:
+        await client.close()
+    assert facts.now == completed
+    assert facts.streams["bitget"]["fresh_assets"] == ("BTC",)

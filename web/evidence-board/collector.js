@@ -232,6 +232,15 @@ function build(payload,identity){
       xmarket_stage:oneOf(h.xmarket_stage,['not_initialized','waiting_for_inputs',
         'waiting_for_completed_day_export','waiting_for_fit','imported_no_shadow_rows',
         'shadow_issuing','read_unavailable']),
+      kucoin_gap_recovery:{
+        status:oneOf(h.kucoin_gap_recovery?.status,['recorded','unavailable']),
+        assets_observed:numberOrNull(h.kucoin_gap_recovery?.assets_observed,4),
+        queued_exact_gaps_14d:numberOrNull(h.kucoin_gap_recovery?.queued_exact_gaps_14d,100000),
+        due_exact_gaps_14d:numberOrNull(h.kucoin_gap_recovery?.due_exact_gaps_14d,100000),
+        attempted_exact_gaps_14d:numberOrNull(h.kucoin_gap_recovery?.attempted_exact_gaps_14d,100000),
+        bulk_upstream_empty_assets:numberOrNull(h.kucoin_gap_recovery?.bulk_upstream_empty_assets,4),
+        does_not_prove_source_recovery:true
+      },
       xmarket_exports:cleanXmarketExports(h.xmarket_exports),
       recent_forward_calls:cleanForwardCalls(h.recent_forward_calls)
     },

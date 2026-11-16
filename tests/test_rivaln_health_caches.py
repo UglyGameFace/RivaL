@@ -8,8 +8,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
 from parlay_bot.perpetuals.forward_audit import MODEL, ForwardAccuracyMonitor
+from parlay_bot.perpetuals.live_quotes import SOURCE_QUOTE_CURRENCIES, source_contract
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
 from parlay_bot.perpetuals.runtime_health import (
@@ -98,7 +101,8 @@ def test_backlog_verdict_is_reused_for_ten_minutes_then_rechecked(tmp_path):
         store.close()
 
 
-def test_quote_coverage_verdict_is_reused_for_ten_minutes_then_rechecked(tmp_path):
+@pytest.mark.parametrize("venue", ("hyperliquid","binance","okx","bitget","gate","deribit","lighter"))
+def test_quote_coverage_verdict_is_reused_for_ten_minutes_then_rechecked(tmp_path, venue):
     """The shadow/quote join runs at most every 10 minutes, same alert."""
     store = SQLiteHotStore(tmp_path / "quote_cache.sqlite")
     try:
@@ -112,6 +116,8 @@ def test_quote_coverage_verdict_is_reused_for_ten_minutes_then_rechecked(tmp_pat
             _create_cycle_table(conn)
             for i in range(12):  # all inside the 2-hour window, none matched
                 _shadow_forecast(conn, NOW - timedelta(minutes=65 - 5 * i))
+            conn.execute("UPDATE rival_model_shadow_forecasts SET venue=?,contract=?,quote=?",
+                         (venue,source_contract(venue,"BTC"),SOURCE_QUOTE_CURRENCIES[venue]))
         monitor = RuntimeHealthMonitor(store)
         monitor.started_at = NOW - timedelta(hours=1)
         assert "quote_coverage" in monitor.inspect(
@@ -119,6 +125,8 @@ def test_quote_coverage_verdict_is_reused_for_ten_minutes_then_rechecked(tmp_pat
         with store.connect() as conn:  # every forecast now has a matched book...
             for i in range(12):
                 _quote_row(conn, NOW - timedelta(minutes=65 - 5 * i))
+            conn.execute("UPDATE rival_family_quote_shadow SET venue=?,contract=?,quote=?",
+                         (venue,source_contract(venue,"BTC"),SOURCE_QUOTE_CURRENCIES[venue]))
         # ...but within the recheck window the verdict is reused,
         assert "quote_coverage" in monitor.inspect(
             now=NOW + timedelta(minutes=2), learning_enabled=True, streaming_enabled=True)

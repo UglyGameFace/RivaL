@@ -1,4 +1,4 @@
-"""Read-only, timestamp-verified Binance USD-M top-of-book evidence.
+"""Read-only, timestamp-verified native perpetual top-of-book evidence.
 
 Best bid/ask is NOT a guaranteed executable fill. Provider-blocked regions
 fail closed; REST calls never run from Discord's gateway/event-loop polling.
@@ -147,13 +147,16 @@ def parse_hyperliquid_reference(
 
 
 # Verified live top-of-book sources beyond Hyperliquid/Binance. Symbols are
-# the venues' own USDT-perp contracts, already used by the candle collectors
-# (OKX "{asset}-USDT-SWAP", Bitget "{asset}USDT" USDT-FUTURES). A forecast's
+# the venues' own perpetual contracts, already used by the candle collectors.
+# Deribit is linear USDC, never its inverse BTC-settled perpetual. A forecast's
 # book must still come from its OWN venue; these adapters widen which venues
 # can supply one, they never substitute another venue's price.
 VENUE_BOOK_SYMBOLS: dict[str, dict[str, str]] = {
     "okx": {asset: f"{asset}-USDT-SWAP" for asset in ASSETS},
     "bitget": {asset: f"{asset}USDT" for asset in ASSETS},
+    "gate": {asset: f"{asset}_USDT" for asset in ASSETS},
+    "deribit": {asset: f"{asset}_USDC-PERPETUAL" for asset in ASSETS},
+    "lighter": {asset: asset for asset in ASSETS},
 }
 VENUE_BOOK_BASE_URLS: dict[str, str] = {
     "okx": "https://www.okx.com",
@@ -163,8 +166,14 @@ VENUE_BOOK_BASE_URLS: dict[str, str] = {
 # Rechecked against GET /api/v5/public/instruments on 2026-11-15. Book/ticker
 # sizes are contracts on OKX; all proof ledgers consume base-coin quantities.
 OKX_CONTRACT_SIZE = {"BTC": 0.01, "ETH": 0.1, "SOL": 1.0, "XRP": 100.0}
+# Public direct-USDT contract metadata, rechecked 2026-11-16. Gate B/A
+# sizes are native contract counts; downstream notional checks use coins.
+GATE_CONTRACT_SIZE = {"BTC": 0.0001, "ETH": 0.01, "SOL": 1.0, "XRP": 10.0}
+# Only active perpetual IDs verified in /api/v1/orderBooks, never spot IDs.
+LIGHTER_PERP_MARKET_IDS = {"BTC": 1, "ETH": 0, "SOL": 2, "XRP": 7}
 SOURCE_QUOTE_CURRENCIES = {
     "hyperliquid": "USDC", "binance": "USDT", "okx": "USDT", "bitget": "USDT",
+    "gate": "USDT", "deribit": "USDC", "lighter": "USD",
 }
 SUPPORTED_QUOTE_SOURCES = frozenset(SOURCE_QUOTE_CURRENCIES.items())
 
@@ -289,7 +298,7 @@ def parse_bitget_ticker(
 
 
 class PublicBestQuoteClient:
-    """Bounded shared REST snapshot; no API keys, wallet or order endpoint."""
+    """Shared current native books; existing bounded REST fallbacks, no orders."""
 
     def __init__(
         self, *, client: httpx.AsyncClient | None = None,
@@ -431,7 +440,7 @@ class PublicBestQuoteClient:
             return value
 
     async def get_venue(self, asset: str, venue: str) -> VenueBookQuote:
-        """Top of book for an OKX or Bitget forecast's own venue.
+        """Top of book for a forecast's own verified venue.
 
         Same bounds as the Binance path: 3s cache, per-venue block on
         401/403/451 (1h) or 429 (60s), fail-closed QuoteUnavailable. A
@@ -446,6 +455,8 @@ class PublicBestQuoteClient:
                 streamed = self.stream_hub.snapshot(venue, asset)
                 if isinstance(streamed, VenueBookQuote):
                     return streamed
+            if venue not in VENUE_BOOK_BASE_URLS:
+                raise QuoteUnavailable("No fresh verified native stream book.")
             clock = time.monotonic()
             if clock < self._venue_blocked_until.get(venue, 0.0):
                 raise QuoteUnavailable("Venue temporarily blocked or rate limited.")

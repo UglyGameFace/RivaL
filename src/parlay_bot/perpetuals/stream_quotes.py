@@ -1,6 +1,6 @@
 """Bounded, reconnecting public perpetual order-book streams.
 
-Official Hyperliquid l2Book and Binance USD-M market/bookTicker wire formats.
+Official native perpetual snapshots for the shared source registry.
 Snapshots remain in RAM, never upload raw ticks to PostgreSQL or Google Drive.
 REST and existing five-minute candle collection remain independent fallbacks.
 """
@@ -18,6 +18,9 @@ import websockets
 
 from parlay_bot.perpetuals.live_quotes import (
     ASSETS,
+    GATE_CONTRACT_SIZE,
+    LIGHTER_PERP_MARKET_IDS,
+    SOURCE_QUOTE_CURRENCIES,
     VENUE_BOOK_SYMBOLS,
     BookQuote,
     PerpReferenceBook,
@@ -33,7 +36,7 @@ HYPERLIQUID_WS = "wss://api.hyperliquid.xyz/ws"
 BINANCE_WS = "wss://fstream.binance.com/market/stream?streams=" + "/".join(
     f"{symbol.lower()}@bookTicker" for symbol in ASSETS.values()
 )
-VENUES = ("hyperliquid", "binance", "okx", "bitget")
+VENUES = tuple(SOURCE_QUOTE_CURRENCIES)
 RECONNECT_CAP_SECONDS = 60.0
 BOOK_SILENCE_SECONDS = 120
 RECEIVE_CHECK_SECONDS = 30
@@ -41,6 +44,10 @@ RECEIVE_CHECK_SECONDS = 30
 # partial depth is a /public stream, aggregate trades a /market stream.
 OKX_PUBLIC_WS = "wss://ws.okx.com:443/ws/v5/public"
 BITGET_PUBLIC_WS = "wss://ws.bitget.com/v2/ws/public"
+GATE_PUBLIC_WS = "wss://fx-ws.gateio.ws/v4/ws/usdt"
+DERIBIT_PUBLIC_WS = "wss://www.deribit.com/ws/api/v2"
+# Official public read-only mode; no account, signer, auth or order channel.
+LIGHTER_PUBLIC_WS = "wss://mainnet.zklighter.elliot.ai/stream?readonly=true"
 COINBASE_WS = "wss://ws-feed.exchange.coinbase.com"
 BINANCE_DEPTH_WS = "wss://fstream.binance.com/public/stream?streams="
 BINANCE_TRADES_WS = "wss://fstream.binance.com/market/stream?streams="
@@ -60,6 +67,58 @@ def parse_stream_message(
         raise QuoteUnavailable("Invalid market stream JSON.") from exc
     if not isinstance(wrapper, dict):
         raise QuoteUnavailable("Market stream must be an object.")
+    if venue in ("gate", "deribit", "lighter"):
+        try:
+            if venue == "gate":
+                if wrapper.get("channel") != "futures.book_ticker" or wrapper.get("event") != "update":
+                    return None
+                row = wrapper["result"]
+                symbol = row["s"]
+                asset = next((a for a,s in VENUE_BOOK_SYMBOLS[venue].items() if s == symbol), None)
+                if asset is None:
+                    return None
+                stamp, scale = row["t"], 1000
+                bid, ask = row["b"], row["a"]
+                bid_qty = float(row["B"])*GATE_CONTRACT_SIZE[asset]
+                ask_qty = float(row["A"])*GATE_CONTRACT_SIZE[asset]
+            elif venue == "deribit":
+                if wrapper.get("method") != "subscription":
+                    return None
+                params = wrapper["params"]
+                row = params["data"]
+                symbol = row["instrument_name"]
+                asset = next((a for a,s in VENUE_BOOK_SYMBOLS[venue].items() if s == symbol), None)
+                if asset is None or params["channel"] != f"book.{symbol}.none.1.100ms":
+                    return None
+                stamp, scale = row["timestamp"], 1000
+                # This grouped-depth channel sends complete [price, amount]
+                # snapshots. USDC-linear amounts are already base coins.
+                (bid,bid_qty), (ask,ask_qty) = row["bids"][0], row["asks"][0]
+            else:
+                if wrapper.get("type") not in ("subscribed/ticker", "update/ticker"):
+                    return None
+                row = wrapper["ticker"]
+                asset = row["s"]
+                if asset not in LIGHTER_PERP_MARKET_IDS:
+                    return None
+                if wrapper["channel"] != f"ticker:{LIGHTER_PERP_MARKET_IDS[asset]}":
+                    raise ValueError("wrong perpetual market ID")
+                symbol = VENUE_BOOK_SYMBOLS[venue][asset]
+                stamp, scale = row["last_updated_at"], 1_000_000
+                if wrapper["last_updated_at"] != stamp:
+                    raise ValueError("conflicting source clocks")
+                bid, bid_qty = row["b"]["price"], row["b"]["size"]
+                ask, ask_qty = row["a"]["price"], row["a"]["size"]
+            if type(stamp) is not int or stamp <= 0:
+                raise ValueError("missing source clock")
+            quote = VenueBookQuote(
+                asset, venue, symbol, float(bid), float(bid_qty), float(ask), float(ask_qty),
+                datetime.fromtimestamp(stamp/scale, tz=UTC), received_at,
+            )
+            quote.validate(now=received_at)
+            return quote
+        except (KeyError, TypeError, ValueError, IndexError, OverflowError) as exc:
+            raise QuoteUnavailable("Invalid native perpetual book.") from exc
     if venue in ("okx", "bitget"):
         arg = wrapper.get("arg")
         data = wrapper.get("data")
@@ -232,6 +291,12 @@ class StreamingBookHub:
             url = OKX_PUBLIC_WS
         elif venue == "bitget":
             url = BITGET_PUBLIC_WS
+        elif venue == "gate":
+            url = GATE_PUBLIC_WS
+        elif venue == "deribit":
+            url = DERIBIT_PUBLIC_WS
+        elif venue == "lighter":
+            url = LIGHTER_PUBLIC_WS
         attempts = 0
         while True:
             backoff_override = 0.0
@@ -273,6 +338,19 @@ class StreamingBookHub:
                         await socket.send(json.dumps({"op": "subscribe", "args": [
                             {"instType": "USDT-FUTURES", "channel": "ticker", "instId": ASSETS[a]}
                             for a in self.assets]}))
+                    elif venue == "gate":
+                        await socket.send(json.dumps({"time": int(time.time()),
+                            "channel": "futures.book_ticker", "event": "subscribe",
+                            "payload": [VENUE_BOOK_SYMBOLS[venue][a] for a in self.assets]}))
+                    elif venue == "deribit":
+                        await socket.send(json.dumps({"jsonrpc": "2.0", "id": 1,
+                            "method": "public/subscribe", "params": {"channels": [
+                                f"book.{VENUE_BOOK_SYMBOLS[venue][a]}.none.1.100ms"
+                                for a in self.assets]}}))
+                    elif venue == "lighter":
+                        for asset in self.assets:
+                            await socket.send(json.dumps({"type": "subscribe",
+                                "channel": f"ticker/{LIGHTER_PERP_MARKET_IDS[asset]}"}))
                     while True:
                         try:
                             message = await asyncio.wait_for(socket.recv(),

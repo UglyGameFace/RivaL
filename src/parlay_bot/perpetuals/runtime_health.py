@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from parlay_bot.observability import health_alert_scope
 from parlay_bot.perpetuals import shadow_score_hours
+from parlay_bot.perpetuals.live_quotes import SUPPORTED_QUOTE_SOURCES
 from parlay_bot.storage.hot import RelationalHotStore
 
 _LOG = logging.getLogger(__name__)
@@ -304,8 +305,10 @@ class RuntimeHealthMonitor:
                     n, matched, by_venue = (
                         cached_quotes[1], cached_quotes[2], cached_quotes[3])
                 else:
+                    sources = sorted(SUPPORTED_QUOTE_SOURCES)
+                    source_pairs = ",".join("(?,?)" for _ in sources)
                     quote_rows = conn.execute(
-                        """SELECT f.venue,COUNT(*) AS n,
+                        f"""SELECT f.venue,COUNT(*) AS n,
                                   SUM(CASE WHEN q.entry_at IS NOT NULL THEN 1
                                            ELSE 0 END) AS matched
                            FROM rival_model_shadow_forecasts AS f
@@ -314,12 +317,13 @@ class RuntimeHealthMonitor:
                             AND q.quote=f.quote AND q.horizon_minutes=f.horizon_minutes
                             AND q.family=f.family
                             AND q.reference_opened_at=f.reference_opened_at
-                           WHERE f.venue IN ('hyperliquid','binance')
+                           WHERE (f.venue,f.quote) IN ({source_pairs})
                              AND (f.probability_up>=0.56 OR f.probability_up<=0.44
                                   OR f.incumbent_up>=0.56 OR f.incumbent_up<=0.44)
                              AND f.issued_at>=? AND f.issued_at<?
                            GROUP BY f.venue""",
-                        ((stamp-timedelta(hours=2)).isoformat(),
+                        (*[value for pair in sources for value in pair],
+                         (stamp-timedelta(hours=2)).isoformat(),
                          (stamp-timedelta(minutes=5)).isoformat()),
                     ).fetchall()
                     n = sum(int(row["n"]) for row in quote_rows)

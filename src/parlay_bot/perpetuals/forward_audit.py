@@ -247,10 +247,21 @@ def select_live_streams(
     return selected
 
 
+def family_proof_review_slot(now: datetime) -> int | None:
+    """One bounded review per twenty-minute boundary, on the 5m cycle.
+
+    Seven observable venues x four assets x three horizons take 28 hours,
+    inside the unchanged 48-hour evidence limit. A restart derives the same
+    slot from UTC rather than starting a second in-memory rotation.
+    """
+    stamp = utc(now)
+    return int(stamp.timestamp()//1200) if stamp.minute % 20 < 5 else None
+
+
 def select_family_proof_scope(
     eligible: list[tuple[str, str, str]], *, hour_slot: int,
 ) -> tuple[str, str, str, int] | None:
-    """Rotate every quote-observable venue/asset/horizon within 48 hours.
+    """Choose one deterministic source scope per bounded review slot.
 
     Only original source-matched bid/ask snapshots can satisfy the after-cost
     proof. The old hour % all_streams selection spent most proof evaluations
@@ -264,11 +275,13 @@ def select_family_proof_scope(
     # Delayed import avoids circular initialization: family_quotes references
     # profit_proof, which itself imports the authoritative forward model.
     from parlay_bot.perpetuals.family_quotes import supports_quote_source
+    from parlay_bot.perpetuals.live_quotes import source_contract
 
     scopes = sorted({
         (venue, contract, currency, horizon)
         for venue, contract, currency in eligible
         if supports_quote_source(venue, currency)
+        and contract in {source_contract(venue, asset) for asset in ASSETS}
         for horizon in HORIZONS
     })
     return scopes[hour_slot % len(scopes)] if scopes else None
@@ -1748,12 +1761,13 @@ class ForwardAccuracyMonitor:
             except Exception:  # noqa: BLE001 - optional challenger
                 _LOG.exception("RivaL cross-exchange test models unavailable")
             self._lap("cross", mark)
-        # One bounded, fair source-specific proof review per hour, including
+        # One bounded, fair source-specific proof review per twenty minutes, including
         # all three horizons. Other venues remain in immutable forward research
         # but cannot earn after-cost proof without a real matching quote feed.
-        if stamp.minute < 5:
+        proof_slot = family_proof_review_slot(stamp)
+        if proof_slot is not None:
             proof_scope = select_family_proof_scope(
-                selection, hour_slot=int(stamp.timestamp() // 3600),
+                selection, hour_slot=proof_slot,
             )
             if proof_scope is None:
                 _LOG.info(

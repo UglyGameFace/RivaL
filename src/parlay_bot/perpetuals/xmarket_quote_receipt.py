@@ -15,10 +15,10 @@ _BASE = {"read_only": True,"does_not_prove_prediction_edge": True,
 
 
 def read_xmarket_quotes(store,now: datetime,progress: dict) -> dict:
-    """At most 24 indexed recent-stream reads for fitted asset/horizon scopes.
+    """At most 84 indexed recent-stream reads for fitted asset/horizon scopes.
 
     Use the same canonical instruments accepted by the existing quote
-    observers: Hyperliquid asset/USDC and Binance assetUSDT/USDT. Join the
+    observers' canonical native instruments and quote currencies. Join the
     original forecast, artifact SHA and issue time before counting a quote.
     An absent/unreadable ledger is never reported as zero recorded quotes.
     """

@@ -112,10 +112,14 @@ def test_host_forward_proof_reports_one_real_exact_source_without_mixing(monkeyp
     now = datetime(2026, 11, 3, 3, tzinfo=UTC)
     from parlay_bot.perpetuals.family_quotes import SUPPORTED_QUOTE_SOURCES
 
-    assert SUPPORTED_QUOTE_SOURCES == {
+    # The registry is extended as each native live quote feed is verified.
+    # This receipt must inspect every registered source, not a stale fixture.
+    assert {
         ("hyperliquid", "USDC"), ("binance", "USDT"),
         ("okx", "USDT"), ("bitget", "USDT"),
-    }
+        ("gate", "USDT"), ("deribit", "USDC"), ("lighter", "USD"),
+    }.issubset(SUPPORTED_QUOTE_SOURCES)
+    observed_sources = set()
     def candidate(*, targets, days, coverage, complete):
         return {
             "valid": True, "targets": targets, "days": days,
@@ -133,6 +137,7 @@ def test_host_forward_proof_reports_one_real_exact_source_without_mixing(monkeyp
 
     def fake(_store, *, asset, venue, now):
         assert now == datetime(2026, 11, 3, 3, tzinfo=UTC)
+        observed_sources.add((venue, asset))
         if venue == "hyperliquid" and asset == "BTC":
             return {"status": "recorded", "evaluations": [
                 {"quote": "USDC", "horizon": 5, "fresh": True,
@@ -149,6 +154,10 @@ def test_host_forward_proof_reports_one_real_exact_source_without_mixing(monkeyp
 
     monkeypatch.setattr(host, "proof_progress", fake)
     report = host._future_proof(object(), now)
+    assert observed_sources == {
+        (venue, asset) for venue, _currency in SUPPORTED_QUOTE_SOURCES
+        for asset in ("BTC", "ETH", "SOL", "XRP")
+    }
     assert report["status"] == "recorded"
     assert report["evaluated_scopes"] == 2
     assert report["qualified_paper_scopes"] == 1

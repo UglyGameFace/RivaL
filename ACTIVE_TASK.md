@@ -6,7 +6,10 @@
 
 **Identified root cause:** Shared `_select_dispersion_venues` chose optional cross-venue inputs using the source availability of outer validation/test folds even in `research_only=True`. This did not expose their outcome labels or change live models, but it leaked future *availability* into exploratory training feature selection. A previously uploaded #624 run artifact must not be used to pick a challenger without this correction.
 
-**Branch:** `fix/xmarket-research-train-only-venue-selection-20261116`, starting from main. **Repair:** confine research selector market/venue timestamps to the horizon-purged original training period and require enough inner-fit/independent-time evaluation capacity. Keep the serving/production all-splits selector unchanged. Tests demonstrate future availability changes cannot alter the training-only selected feature contract, while production still requires validation/test coverage. Docs identify original #624 results as diagnostics only. Never restart weekly training or silently re-run a multi-asset research job.
+**Branch:** `fix/xmarket-research-train-only-venue-selection-20261116`, starting from main. **Repair:** confine research selector market/venue timestamps to the horizon-purged original training period and require enough inner-fit/independent-time evaluation capacity. Keep the serving/production all-splits selector unchanged. Tests demonstrate future availability changes cannot alter the training-only selected feature contract, while production still requires validation/test coverage. Docs identify original #624 results as diagnostics only. The workflow permits exactly one explicit owner-directed, bounded,
+research-only rerun on the `b957d2e0` main transition, serialized with
+any original research job. Never restart weekly training or issue
+unbounded/repeated multi-asset jobs.
 
 **Acceptance:** exact-head Ruff and full SQLite/PostgreSQL CI, reconciled merge/main check, then explicitly authorized fresh one-shot report under corrected SHA, verify all twelve research scopes and native-source gap counts. Continue source-authentic issued forecasts and after-cost gates separately. Do not close #6/#299/#295/#138 on code CI.
 

@@ -111,8 +111,8 @@ def compare_train_only(train, *, names: tuple[str, ...], horizon_minutes: int) -
             "excluded": [feature for feature in names if feature in excluded],
             "features_used": len(included),
             "brier_by_target": round(brier, 8),
-            "target_count": int(len(per_target)),
-            "days": int(len(per_day)),
+            "target_count": len(per_target),
+            "days": len(per_day),
         })
     if not result["profiles"] or result["profiles"][0]["name"] != "full":
         raise AssertionError("missing XMarket research baseline")

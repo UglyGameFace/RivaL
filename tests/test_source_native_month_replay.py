@@ -9,7 +9,11 @@ from types import SimpleNamespace
 import pytest
 
 from parlay_bot.research.free_history import HistoryImportError
-from parlay_bot.research.source_native import SOURCE, restore_verified_source_months
+from parlay_bot.research.source_native import (
+    SOURCE,
+    NativeMonthConflictError,
+    restore_verified_source_months,
+)
 
 
 def _bytes(document):
@@ -29,6 +33,7 @@ class _Drive:
             "interval_minutes": 5, "source_integrity": "postgres-first-observed-at-v1",
             "prospective_forecast": False, "live_trading_authorized": False,
             "data_sha256": hashlib.sha256(self.data).hexdigest(),
+            "source_sha256": "e" * 64,
         }
         first = _bytes(doc)
         second = _bytes({**doc, "different_provenance": "new"})
@@ -96,10 +101,30 @@ async def test_native_replay_same_manifest_sha_is_safe_and_idempotent(tmp_path):
 @pytest.mark.asyncio
 async def test_native_replay_different_manifest_provenance_fails_closed(tmp_path):
     drive = _Drive(changed_manifest=True)
-    with pytest.raises(HistoryImportError, match="conflicting native month snapshots"):
+    with pytest.raises(NativeMonthConflictError,
+                       match="conflicting native month snapshots") as caught:
         await restore_verified_source_months(
             drive, venue="okx", contract="BTC-USDT-SWAP",
             months=["2026-09"], root=tmp_path)
+    evidence = caught.value.evidence
+    assert (evidence["venue"], evidence["contract"], evidence["quote"],
+            evidence["month"]) == ("okx", "BTC-USDT-SWAP", "USDT", "2026-09")
+    assert evidence["schema"] == "rival-native-month-conflict-v1"
+    assert evidence["resolution"] == "blocked_divergent_manifest_bytes"
+    assert evidence["first"]["manifest_sha256"] != evidence["second"]["manifest_sha256"]
+    assert evidence["first"]["claimed_history_sha256"] == hashlib.sha256(drive.data).hexdigest()
+    assert evidence["second"]["claimed_history_sha256"] == hashlib.sha256(drive.data).hexdigest()
+    assert evidence["first"]["claimed_provider_source_sha256"] == "e" * 64
+    assert evidence["second"]["claimed_provider_source_sha256"] == "e" * 64
+    assert evidence["first"]["source_integrity"] == "postgres-first-observed-at-v1"
+    assert evidence["verification"] == {
+        "both_manifests_sha_verified": True,
+        "first_history_readback_verified": True,
+        "second_history_readback_verified": False,
+    }
+    assert "m1" not in json.dumps(evidence)
+    assert "m2" not in json.dumps(evidence)
+    assert "source_url" not in json.dumps(evidence)
     assert drive.calls.count("m2") == 1
 
 
@@ -111,3 +136,46 @@ async def test_native_replay_requires_sha_verification_even_on_duplicate(tmp_pat
             drive, venue="okx", contract="BTC-USDT-SWAP",
             months=["2026-09"], root=tmp_path)
     assert drive.calls.count("m2") == 1
+
+
+@pytest.mark.asyncio
+async def test_archive_restore_retains_credential_free_conflict_evidence(tmp_path, monkeypatch):
+    from parlay_bot.research import (
+        archive_training,
+        bitget_source_bridge,
+        recorded_candles,
+        source_native,
+    )
+
+    receipt = {
+        "schema": "rival-native-month-conflict-v1",
+        "venue": "okx", "contract": "BTC-USDT-SWAP",
+        "quote": "USDT", "month": "2026-09",
+        "first": {"manifest_sha256": "a" * 64},
+        "second": {"manifest_sha256": "b" * 64},
+        "resolution": "blocked_divergent_manifest_bytes",
+    }
+
+    async def bitget_restore(*args, **kwargs):
+        return []
+
+    async def source_restore(*args, venue, **kwargs):
+        if venue == "okx":
+            raise NativeMonthConflictError(receipt)
+        return []
+
+    async def recorded_restore(*args, **kwargs):
+        return {"restored": []}
+
+    monkeypatch.setattr(
+        bitget_source_bridge, "restore_verified_bitget_market_months", bitget_restore,
+    )
+    monkeypatch.setattr(source_native, "restore_verified_source_months", source_restore)
+    monkeypatch.setattr(recorded_candles, "restore_recorded_partitions", recorded_restore)
+    report = await archive_training.restore_verified_months(
+        asset="BTC", months=["2026-09"], root=tmp_path, drive=object(),
+    )
+    assert report["excluded"]["okx"]["source_conflict"] == receipt
+    assert report["excluded"]["okx"]["reason"] == "NativeMonthConflictError"
+    assert "gate" in report["restored"]
+    assert report["restored"]["gate"] == []

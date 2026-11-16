@@ -685,7 +685,10 @@ async def restore_verified_months(*, asset: str, months: list[str], root: Path,
         restore_verified_bitget_market_months,
     )
     from parlay_bot.research.publish import _drive
-    from parlay_bot.research.source_native import restore_verified_source_months
+    from parlay_bot.research.source_native import (
+        NativeMonthConflictError,
+        restore_verified_source_months,
+    )
 
     owns_drive = drive is None
     if owns_drive:
@@ -717,9 +720,12 @@ async def restore_verified_months(*, asset: str, months: list[str], root: Path,
                     )
                     report["restored"][venue + suffix] = [str(p) for p in paths]
                 except Exception as exc:  # noqa: BLE001 - record, do not skip silently
-                    report["excluded"][venue + suffix] = {
+                    reason = {
                         "reason": type(exc).__name__, "detail": str(exc)[:300],
                     }
+                    if isinstance(exc, NativeMonthConflictError):
+                        reason["source_conflict"] = exc.evidence
+                    report["excluded"][venue + suffix] = reason
         from parlay_bot.research.recorded_candles import restore_recorded_partitions
 
         try:

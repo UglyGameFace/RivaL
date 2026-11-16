@@ -23,6 +23,48 @@ SOURCE = "verified_venue_perp_klines"
 STEP = timedelta(minutes=5)
 
 
+class NativeMonthConflictError(HistoryImportError):
+    """Source disagreement carrying a bounded, credential-free audit receipt."""
+
+    def __init__(self, evidence: dict) -> None:
+        super().__init__("conflicting native month snapshots")
+        self.evidence = evidence
+
+
+def _source_manifest_receipt(manifest: dict, manifest_sha: str) -> dict:
+    """Expose signed-origin identifiers only, never Drive IDs or source URLs."""
+    def sha(key: str) -> str | None:
+        value = manifest.get(key)
+        if (not isinstance(value, str) or len(value) != 64
+            or any(ch not in "0123456789abcdef" for ch in value)):
+            return None
+        return value
+
+    integrity = manifest.get("source_integrity")
+    if integrity not in {
+        "postgres-first-observed-at-v1",
+        "drive-daily-records-first-observed-at-v1",
+        "gate-official-gzip-with-v4-api-reconciliation-v1",
+        "bitget-v3-original-api-5m-v1",
+        "okx-v5-public-history-5m-v1",
+        "okx-v5-official-1m-zip-derived-5m-v1",
+    }:
+        integrity = None
+    transport = manifest.get("source_transport")
+    if (not isinstance(transport, str) or not 1 <= len(transport) <= 64
+        or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789_-"
+               for c in transport)):
+        transport = None
+    return {
+        "manifest_sha256": manifest_sha,
+        "claimed_history_sha256": sha("data_sha256"),
+        "claimed_provider_source_sha256": sha("source_sha256"),
+        "claimed_original_archive_sha256": sha("source_archive_sha256"),
+        "source_integrity": integrity,
+        "source_transport": transport,
+    }
+
+
 def native_manifest_provenance(manifest: dict) -> bool:
     """One authoritative check shared by research/model readers and Drive restore."""
     if not isinstance(manifest, dict):
@@ -628,7 +670,7 @@ async def restore_verified_source_months(
     target = Path(root) / SOURCE
     target.mkdir(parents=True, exist_ok=True)
     imported = []
-    seen_sha: dict[tuple[str, str, str, str], str] = {}
+    seen_evidence: dict[tuple[str, str, str, str], dict] = {}
     for entry in found:
         if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
             raise HistoryImportError("unexpected native manifest listing record")
@@ -685,13 +727,25 @@ async def restore_verified_source_months(
                 or not name.endswith(".ndjson")
                 or item.name != name.removesuffix(".ndjson") + ".manifest.json"):
                 raise HistoryImportError("native source filename mismatch")
-            if identity in seen_sha:
-                # Exact immutable manifests can exist in multiple Drive
-                # objects. A replay is accepted only after the second
-                # object's metadata and actual manifest SHA were verified.
-                # Different manifest provenance always fails closed.
-                if seen_sha[identity] != expected_sha:
-                    raise HistoryImportError("conflicting native month snapshots")
+            if identity in seen_evidence:
+                # Compare only complete SHA-verified manifest bytes. Different
+                # originals MUST remain blocked; attach evidence about both
+                # versions so the publisher can be diagnosed without guessing.
+                first = seen_evidence[identity]
+                if first["manifest_sha256"] != expected_sha:
+                    raise NativeMonthConflictError({
+                        "schema": "rival-native-month-conflict-v1",
+                        "venue": identity[0], "contract": identity[1],
+                        "quote": identity[2], "month": identity[3],
+                        "first": first,
+                        "second": _source_manifest_receipt(info, expected_sha),
+                        "verification": {
+                            "both_manifests_sha_verified": True,
+                            "first_history_readback_verified": True,
+                            "second_history_readback_verified": False,
+                        },
+                        "resolution": "blocked_divergent_manifest_bytes",
+                    })
                 continue
             history = await drive._find_batch_object(
                 parent_id=drive.folders.history,
@@ -775,7 +829,7 @@ async def restore_verified_source_months(
         imported.append(path)
         # Remember identity only once its manifest and history bytes (plus
         # required source witnesses) have been verified successfully.
-        seen_sha[identity] = expected_sha
+        seen_evidence[identity] = _source_manifest_receipt(info, expected_sha)
     return imported
 
 def source_month_readiness(

@@ -20,6 +20,7 @@ from parlay_bot.config import Settings
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.official_okx_bootstrap import ASSETS, FIRST, bootstrap
 from parlay_bot.research.publish import _drive
+from parlay_bot.research.source_native import NativeMonthConflictError
 
 # Historical candles: 20 requests / 2 seconds / public IP. 0.16 seconds
 # allocates 12.5 requests / 2 seconds across ALL assets on one runner.
@@ -139,9 +140,13 @@ async def run_bulk(
                         )
                     except (HistoryImportError, httpx.HTTPError,
                             OSError, RuntimeError, ValueError) as exc:
-                        outcomes.append({
-                            "status": "blocked", "asset": asset, "error": str(exc)[:300],
-                        })
+                        blocked = {
+                            "status": "blocked", "asset": asset,
+                            "error": str(exc)[:300],
+                        }
+                        if isinstance(exc, NativeMonthConflictError):
+                            blocked["source_conflict"] = exc.evidence
+                        outcomes.append(blocked)
                         break
                     outcomes.append(outcome)
                     if outcome["full_2023_to_present_verified"]:
@@ -154,7 +159,11 @@ async def run_bulk(
 
     results = await asyncio.gather(*(worker(asset) for asset in assets))
     failures = [
-        {"asset": item["asset"], "error": result["error"]}
+        {
+            "asset": item["asset"], "error": result["error"],
+            **({"source_conflict": result["source_conflict"]}
+               if "source_conflict" in result else {}),
+        }
         for item in results for result in item["passes"]
         if result.get("status") == "blocked"
     ]

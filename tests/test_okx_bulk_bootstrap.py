@@ -413,3 +413,42 @@ async def test_malformed_listing_records_still_fail_closed(tmp_path):
             await restore_verified_source_months(
                 _listing_drive(bad), venue="gate", months=["2025-02"], root=tmp_path,
             )
+
+
+@pytest.mark.asyncio
+async def test_bulk_preserves_privacy_safe_original_conflict_receipt(tmp_path, monkeypatch):
+    import json
+
+    from parlay_bot.research.source_native import NativeMonthConflictError
+
+    class Drive:
+        async def aclose(self):
+            return None
+
+    evidence = {
+        "schema": "rival-native-month-conflict-v1",
+        "venue": "okx", "contract": "BTC-USDT-SWAP",
+        "quote": "USDT", "month": "2026-09",
+        "first": {"manifest_sha256": "a" * 64, "claimed_history_sha256": "c" * 64},
+        "second": {"manifest_sha256": "b" * 64, "claimed_history_sha256": "d" * 64},
+        "resolution": "blocked_divergent_manifest_bytes",
+    }
+
+    async def blocked(**kwargs):
+        raise NativeMonthConflictError(evidence)
+
+    monkeypatch.setattr(bulk, "_drive", lambda settings: Drive())
+    monkeypatch.setattr(bulk, "bootstrap", blocked)
+    result = await bulk.run_bulk(
+        assets=("BTC",), passes=1,
+        root=tmp_path / "source", report_dir=tmp_path / "reports",
+    )
+    assert result["new_months_by_asset"] == {"BTC": 0}
+    assert result["failures"] == [{
+        "asset": "BTC", "error": "conflicting native month snapshots",
+        "source_conflict": evidence,
+    }]
+    saved = json.loads((tmp_path / "reports" / "okx-bulk-progress.json").read_text())
+    assert saved["failures"][0]["source_conflict"] == evidence
+    assert saved["live_model_promoted"] is False
+    assert "Drive" not in json.dumps(saved["failures"])

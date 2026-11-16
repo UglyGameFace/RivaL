@@ -493,6 +493,64 @@ def _path_settlement_sample(store, now: datetime) -> dict:
         return {"status": "read_unavailable", "sample_only_not_backlog_census": True}
 
 
+
+def _kucoin_gap_recovery_progress(store, now: datetime) -> dict:
+    """Read independent KuCoin source-gap retries, not guessed path wins.
+
+    A missing bulk page and a missing singleton path candle use separate
+    backoffs. A successful deployment must show a source row and declining
+    due paths before anyone can call the repair accepted in production.
+    """
+    try:
+        with store.connect() as conn:
+            positions = conn.execute(
+                """SELECT asset,status,next_opened_at,retry_after,attempted_at
+                   FROM perp_history_recovery WHERE venue='kucoin'
+                     AND asset IN ('BTC','ETH','SOL','XRP')
+                   ORDER BY asset"""
+            ).fetchall()
+            gaps = conn.execute(
+                """SELECT asset,COUNT(*) AS queued,
+                          SUM(CASE WHEN attempted_at IS NOT NULL THEN 1 ELSE 0 END)
+                              AS attempted,
+                          SUM(CASE WHEN retry_after<=? THEN 1 ELSE 0 END) AS due,
+                          MIN(opened_at) AS oldest_opened_at
+                   FROM perp_history_gap_repair WHERE venue='kucoin'
+                     AND asset IN ('BTC','ETH','SOL','XRP')
+                     AND opened_at>=? AND opened_at<=?
+                   GROUP BY asset""",
+                (now.isoformat(), (now-timedelta(days=14)).isoformat(),
+                 now.isoformat()),
+            ).fetchall()
+        by_asset = {r["asset"]: dict(r) for r in gaps}
+        rows = []
+        for position in positions:
+            asset = position["asset"]
+            gap = by_asset.get(asset, {})
+            rows.append({
+                "asset": asset,
+                "bulk_status": position["status"],
+                "bulk_next_opened_at": position["next_opened_at"],
+                "bulk_retry_after": position["retry_after"],
+                "last_bulk_attempt_at": position["attempted_at"],
+                "queued_exact_gaps_14d": int(gap.get("queued") or 0),
+                "attempted_exact_gaps_14d": int(gap.get("attempted") or 0),
+                "due_exact_gaps_14d": int(gap.get("due") or 0),
+                "oldest_exact_gap_at": gap.get("oldest_opened_at"),
+            })
+        return {
+            "status": "recorded" if rows else "not_initialized",
+            "assets": rows, "read_only": True,
+            "source_candles_not_independent_targets": True,
+            "does_not_prove_gap_recovery": True,
+        }
+    except Exception:  # noqa: BLE001 - optional read must not hide healthy cycles
+        return {
+            "status": "read_unavailable", "assets": [], "read_only": True,
+            "does_not_prove_gap_recovery": True,
+        }
+
+
 def _path_target_progress(store, now: datetime) -> dict:
     """Bounded read-only check of independently scored path target heads.
 
@@ -573,6 +631,7 @@ def _path_target_progress(store, now: datetime) -> dict:
             "settlement_sample": (_path_settlement_sample(store, now) if due else
                                   {"status": "no_due_pending_paths",
                                    "sampled_unique_paths": 0, "read_only": True}),
+            "kucoin_gap_recovery": _kucoin_gap_recovery_progress(store, now),
             "counts_are_independent_targets": False,
             "read_only": True,
             "does_not_prove_prediction_edge": True,

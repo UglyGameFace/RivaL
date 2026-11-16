@@ -197,6 +197,7 @@ def train_run(
     months_requested=None,
     market_data: dict | None = None,
     admission_only: bool = False,
+    research_only: bool = False,
 ) -> dict:
     """Train one (asset, horizon) artifact and gate it.
 
@@ -212,6 +213,8 @@ def train_run(
     )
     from parlay_bot.research.pooled_training import frame_coverage
 
+    if admission_only and research_only:
+        raise ValueError("XMarket admission-only and research-only are exclusive")
     if asset not in ASSETS:
         raise ValueError(f"unsupported asset: {asset!r}")
     if horizon not in HORIZONS:
@@ -322,7 +325,8 @@ def train_run(
         "last": str(data.index.max()) if len(data) else None}
     # pm change at t predicts the later perp return; calculated on one
     # source stream, with exact 5m timestamp alignment across missing rows.
-    diag = data[data["stream"] == min(coverage_frames)]
+    diagnostic_rows = data.loc[data.index < pd.to_datetime(train_end, utc=True) - pd.Timedelta(minutes=horizon)] if research_only else data
+    diag = diagnostic_rows[diagnostic_rows["stream"] == min(coverage_frames)]
     pm = pd.Series([r["price"] for r in bars["polymarket"].values()],
                    index=pd.DatetimeIndex(list(bars["polymarket"]), tz="UTC"), dtype=float)
     changes = pm - pm.reindex(pm.index - pd.Timedelta(minutes=5)).set_axis(pm.index)
@@ -353,6 +357,26 @@ def train_run(
         return {"publish_kind": "report", "artifact": None,
                 "report": {**report_base, "training_status": "admission_only",
                            "gate_failures": ["admission_only_never_fits_or_publishes"]}}
+    if research_only:
+        # The already-verified source join is reused, but the *outer*
+        # validation/test probabilities, calibration and model publication
+        # are never computed or used for research selection.
+        from parlay_bot.research.xmarket_feature_search import compare_train_only
+
+        ablation = compare_train_only(
+            train, names=tuple(names), horizon_minutes=horizon,
+        ) if len(train) >= 300 else {
+            "status": "insufficient_train_only_fold",
+            "research_only": True,
+            "can_publish_model": False,
+            "uses_outer_validation_or_test": False,
+            "profiles": [],
+        }
+        return {"publish_kind": "report", "artifact": None,
+                "report": {**report_base, "training_status": "research_only",
+                           "gate_failures": ["research_only_no_model_or_outer_holdout_scoring"],
+                           "train_only_feature_ablation": ablation,
+                           "outer_validation_test_scored": False}}
     if len(data) < 300:
         return blocked(f"not enough labelled overlap rows: {len(data)}")
     if len(train) < 300 or len(val) < 100 or len(test) < 100:

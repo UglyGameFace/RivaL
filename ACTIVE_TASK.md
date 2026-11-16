@@ -3,7 +3,8 @@
 ## Advance next-target calls — active implementation
 
 **Objective/branch:** `feat/advance-next-target-calls-20261116`, based on
-`b59aa13b` (#619). Implement real pre-close next-target issuance and observable
+`bf568fac` (including #619/#621), [PR #622](https://github.com/UglyGameFace/RivaL/pull/622).
+Implement real pre-close next-target issuance and observable
 channel delivery. Website PRs #620/#621 and private LFM3/Jarvis #608 are
 independent; no conflicting forecasting PR was open at the initial live check.
 
@@ -22,9 +23,13 @@ The card shows actual next raw probability/model/source/timestamps, retains
 the prior advance, and reports pending reasons. Polymarket missing next strike
 is explicit; Kalshi remains native. See `docs/ADVANCE_FORECASTS.md`.
 
-**Validation:** Focused first pass: 16 advance SQLite cases passed (16 matching
-PostgreSQL cases require CI service); 37 existing focused cases passed. Full
-local regression and exact-PR/main CI are pending. Existing unrelated SOCKS
+**Validation at publication:** 21 advance/guard SQLite cases passed, including
+20 matching PostgreSQL fixtures for CI; focused existing regressions passed.
+Initial PostgreSQL CI caught new `REAL` columns rounding Brier/probabilities
+to float32. They now follow existing `DOUBLE PRECISION` conventions without
+weakening the assertion. Repeated live schema setup was also removed and
+covered by a regression. Full exact-PR/main CI remains required; see #622 for
+the latest acceptance. Existing unrelated SOCKS
 proxy support was installed in the local test environment after an HTTP client
 test could not construct its transport; no production dependency was changed.
 

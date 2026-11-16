@@ -38,12 +38,12 @@ CREATE TABLE IF NOT EXISTS rival_advance_forecasts (
     model_version TEXT NOT NULL, target_contract TEXT NOT NULL,
     reference_opened_at TEXT NOT NULL, inputs_known_at TEXT NOT NULL,
     issued_at TEXT NOT NULL, committed_at TEXT, target_opened_at TEXT NOT NULL,
-    target_closed_at TEXT NOT NULL, probability_up REAL NOT NULL,
-    baseline_up REAL NOT NULL, training_evaluated INTEGER NOT NULL,
+    target_closed_at TEXT NOT NULL, probability_up DOUBLE PRECISION NOT NULL,
+    baseline_up DOUBLE PRECISION NOT NULL, training_evaluated INTEGER NOT NULL,
     feature_sha256 TEXT NOT NULL, weights_sha256 TEXT NOT NULL,
     settled_at TEXT, outcome_known_at TEXT, outcome_status TEXT,
-    realized_open REAL, realized_close REAL, outcome_up INTEGER,
-    model_brier REAL, baseline_brier REAL,
+    realized_open DOUBLE PRECISION, realized_close DOUBLE PRECISION, outcome_up INTEGER,
+    model_brier DOUBLE PRECISION, baseline_brier DOUBLE PRECISION,
     PRIMARY KEY(venue,contract,quote,horizon_minutes,target_opened_at,model_version)
 );
 CREATE INDEX IF NOT EXISTS idx_rival_advance_asset_target
@@ -83,7 +83,10 @@ def target_open(now: datetime, horizon: int) -> datetime:
 
 class AdvanceForecastMonitor:
     def __init__(self, market):
+        from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
+
         self.market, self.store = market, market.store
+        self.discovery = ShadowLearningMonitor(self.store)
         self.checkpoints = LiveModelCheckpoints(
             self.store, feature_contract=FEATURE_CONTRACT,
             target_contract=TARGET_CONTRACT,
@@ -95,6 +98,7 @@ class AdvanceForecastMonitor:
         if self._ready:
             return
         self.market.initialize()
+        self.discovery.initialize()
         self.checkpoints.initialize()
         with self.store.connect() as conn:
             conn.executescript(SCHEMA)
@@ -122,17 +126,14 @@ class AdvanceForecastMonitor:
         transaction. A lingering thread is guarded by AutonomousResearch.
         """
         from parlay_bot.perpetuals.forward_audit import select_live_streams
-        from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 
         stamp = utc(now or datetime.now(UTC))
         if stamp > datetime.now(UTC) + timedelta(seconds=5) or not 0 < budget_seconds <= 60:
             raise ValueError("invalid advance forecast clock/budget")
         started = time.monotonic()
         self.initialize()
-        discovery = ShadowLearningMonitor(self.store)
-        discovery.initialize()
         selected = select_live_streams(
-            discovery._eligible_streams(now=stamp, limit=40),
+            self.discovery._eligible_streams(now=stamp, limit=40),
             slot=int(stamp.timestamp() // 300),
         )
         issued = 0

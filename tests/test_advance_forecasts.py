@@ -9,6 +9,7 @@ import pytest
 
 from parlay_bot.discord_app import call_board
 from parlay_bot.discord_app.call_board import CallBoardService, live_calls_embed
+from parlay_bot.discord_app.targeting import TargetSnapshot
 from parlay_bot.perpetuals import advance_forecasts as module
 from parlay_bot.perpetuals.advance_forecasts import (
     MODEL,
@@ -278,3 +279,115 @@ def test_missing_schema_is_unavailable_and_a_read_does_not_run_migrations(learni
     market = PerpetualMarketStore(learning_store)
     assert read_advance(market, asset="BTC", horizon=5, now=CLOCK)["next"] is None
     assert read_advance_receipt(learning_store, CLOCK)["status"] == "read_unavailable"
+
+
+def test_live_cycles_do_not_repeat_schema_ddl(learning_store, monkeypatch):
+    _market, monitor = setup(learning_store)
+    monitor.run_once(now=CLOCK)
+    real = monitor.discovery.initialize
+    monkeypatch.setattr(monitor.discovery, "initialize",
+                        lambda: pytest.fail("repeated discovery schema on a live cycle"))
+    assert monitor.run_once(now=CLOCK+timedelta(seconds=1)) == (0, 0)
+    monkeypatch.setattr(monitor.discovery, "initialize", real)
+
+
+def test_a_failed_source_cannot_starve_another_asset(learning_store, monkeypatch):
+    market, monitor = setup(learning_store)
+    with learning_store.connect() as conn:
+        conn.execute(
+            """INSERT INTO perp_market_candles
+            SELECT venue,'ETH',quote,interval_minutes,opened_at,closed_at,first_observed_at,
+                   open_price,high_price,low_price,close_price,volume_base,trades
+            FROM perp_market_candles WHERE contract='BTC'"""
+        )
+    real = market.recent_candles
+
+    def read(**kw):
+        if kw["contract"] == "BTC":
+            raise ValueError("unavailable BTC source")
+        return real(**kw)
+
+    monkeypatch.setattr(market, "recent_candles", read)
+    assert monitor.run_once(now=CLOCK) == (3, 0)
+    assert {r["asset"] for r in forecasts(learning_store)} == {"ETH"}
+    with learning_store.connect() as conn:
+        reasons = conn.execute("SELECT reason FROM rival_advance_readiness WHERE asset='BTC'")
+        assert {r["reason"] for r in reasons.fetchall()} == {"source_read_or_fit_failed"}
+
+
+def test_slow_fitting_cannot_issue_after_the_target_started(learning_store, monkeypatch):
+    _market, monitor = setup(learning_store)
+    target = target_open(CLOCK, 5)
+    times = iter([CLOCK, CLOCK])
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, _tz=None):
+            return next(times, target+timedelta(seconds=1))
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    assert monitor.run_once()[0] == 2
+    assert all(r["horizon_minutes"] != 5 for r in forecasts(learning_store))
+    with learning_store.connect() as conn:
+        reason = conn.execute("SELECT reason FROM rival_advance_readiness WHERE horizon_minutes=5")
+        assert reason.fetchone()["reason"] == "target_already_started"
+
+
+def test_current_and_next_card_fit_discord_limits_and_preserve_the_prior_call(learning_store,
+                                                                          monkeypatch):
+    market, monitor = setup(learning_store)
+    monitor.run_once(now=CLOCK)
+    add_outcome(learning_store, target_open(CLOCK, 5)-timedelta(minutes=5))
+    now = CLOCK+timedelta(minutes=5)
+    monitor.run_once(now=now)
+    monkeypatch.setattr(call_board, "recent_watches", lambda *_a, **_k: [])
+
+    def snapshot(_market, *, asset, horizon_minutes, now):
+        return TargetSnapshot(
+            asset=asset, horizon_minutes=horizon_minutes, direction="UP", probability=.71,
+            detail="Research only", venue="hyperliquid", price=80123.5,
+            issued_at=now-timedelta(seconds=10), ends_at=target_open(now, horizon_minutes),
+            status="unqualified_model", model_version="incumbent:"+"a"*64,
+        )
+
+    monkeypatch.setattr(call_board, "target_snapshot", snapshot)
+    card, _ = live_calls_embed(market, "BTC", now=now)
+    assert len(card.advance_forecasts) == 3
+    for field in card.fields[:3]:
+        assert "Confidence: 71.0%" in field.value
+        assert "NEXT ·" in field.value
+        assert "Prior advance" in field.value
+        assert len(field.value) <= 1024
+
+
+@pytest.mark.asyncio
+async def test_cancelled_advance_wait_does_not_start_a_duplicate_model_thread():
+    import asyncio
+    import threading
+
+    from parlay_bot.perpetuals.autonomous import AutonomousResearch, StepStillRunning
+
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def work():
+        calls.append(True)
+        entered.set()
+        release.wait(timeout=5)
+        return 0, 0
+
+    research = object.__new__(AutonomousResearch)
+    research._step_threads = {}
+    research.advance_forward = SimpleNamespace(run_once=work)
+    running = asyncio.create_task(research.advance_cycle())
+    try:
+        assert await asyncio.wait_for(asyncio.to_thread(entered.wait), timeout=1)
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        with pytest.raises(StepStillRunning):
+            await research.advance_cycle()
+        assert calls == [True]
+    finally:
+        release.set()
+        await asyncio.wait_for(research._step_threads["advance.run_once"], timeout=1)

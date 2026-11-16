@@ -17,7 +17,9 @@ def test_evidence_board_cadence_preserves_signed_read_only_collection():
     assert "RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}" in content
     assert "workflow_dispatch:" in content
     assert 'workflow_run:' in content
-    assert 'workflows: ["RivaL Production Release"]' in content
+    assert 'workflows: ["RivaL Production Release", "RivaL independent Discloud uptime"]' in content
+    collector = (WORKFLOW.parents[2] / "web/evidence-board/collector.js").read_text(encoding="utf-8")
+    assert "'schedule','workflow_dispatch','push','workflow_run'" in collector
     assert "github.event.workflow_run.conclusion == 'success'" in content
     assert "github.event.workflow_run.head_branch == 'main'" in content
     assert "github.event.workflow_run.head_repository.full_name == github.repository" in content

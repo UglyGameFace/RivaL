@@ -293,3 +293,74 @@ async def test_performance_menu_shows_loading_before_blocked_database(monkeypatc
         release.set()
         home.stop()
         await _close(bot)
+
+
+@pytest.mark.asyncio
+async def test_api_limits_uses_private_owner_gate_not_discord_application_owner(tmp_path):
+    """An authorized configured owner/team member can open the exact modal."""
+    from parlay_bot.discord_app.api_limits import OwnerLimitsView
+    from parlay_bot.discord_app.owner_gate import OwnerGate
+
+    owner = 111111111111111111
+    bot = _bot(tmp_path)
+    bot.owner_gate = OwnerGate(bot, str(owner))
+    home = bot._build_guided_home(owner)
+    # Old path made an unnecessary remote application_info() call that
+    # compared only application.owner.id and rejected team/configured owners.
+    sequence = []
+
+    async def acknowledge(**kwargs):
+        sequence.append("ack")
+        assert kwargs["ephemeral"]
+
+    async def send(content, **kwargs):
+        assert sequence == ["ack"]
+        sequence.append("sent")
+        assert kwargs["ephemeral"]
+        assert isinstance(kwargs.get("view"), OwnerLimitsView)
+        assert kwargs["view"].owner_id == owner
+        assert content.startswith("API Usage & Limits:")
+
+    event = SimpleNamespace(
+        user=SimpleNamespace(id=owner), client=bot,
+        response=SimpleNamespace(defer=AsyncMock(side_effect=acknowledge)),
+        followup=SimpleNamespace(send=AsyncMock(side_effect=send)),
+    )
+    try:
+        # No application info lookup is needed for configured owners.
+        bot.application_info = AsyncMock(side_effect=AssertionError(
+            "outdated Discord application owner check must not run"))
+        await home.act(event, "api-limits")
+        assert sequence == ["ack", "sent"]
+        bot.application_info.assert_not_awaited()
+    finally:
+        await _close(bot)
+
+
+@pytest.mark.asyncio
+async def test_api_limits_refuses_nonowner_even_if_client_passes_a_menu(tmp_path):
+    """Owner limits also fail closed if a stale menu is invoked directly."""
+    from parlay_bot.discord_app.owner_gate import OwnerGate
+
+    bot = _bot(tmp_path)
+    owner, visitor = 111111111111111111, 222222222222222222
+    bot.owner_gate = OwnerGate(bot, str(owner))
+    home = bot._build_guided_home(owner)
+    event = SimpleNamespace(
+        user=SimpleNamespace(id=visitor), client=bot,
+        response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+    try:
+        await home.act(event, "api-limits")
+        event.response.defer.assert_awaited_once()
+        event.followup.send.assert_awaited_once()
+        assert "authorized by RivaL" in event.followup.send.await_args.args[0]
+        assert "view" not in event.followup.send.await_args.kwargs
+        # Missing gate must fail closed too.
+        bot.owner_gate = None
+        event.followup.send.reset_mock()
+        await home.act(event, "api-limits")
+        assert "authorized by RivaL" in event.followup.send.await_args.args[0]
+    finally:
+        await _close(bot)

@@ -224,6 +224,13 @@ cx.ops.predictions.BTC={
   markets:[{title:'BTC threshold',ticker:'BTCX',yes_bid:.48,yes_ask:.54,
    volume_24h:500,close_time:Date.now()+300000}],open_count:1}
 };
+// Source exchange clocks can be a fraction of a second ahead of this browser's clock.
+cx.ops.perps.generated_at=Date.now()+500;
+assert.equal(cx.opsMarketFresh(),true,'Sub-second source clock lead must not falsely mark quotes dated');
+assert.match(cx.opsAge(cx.ops.perps.generated_at),/under 1m ago/);
+cx.ops.perps.generated_at=Date.now()+60000;
+assert.equal(cx.opsMarketFresh(),false,'Future source timestamps beyond bounded tolerance must not count as live');
+cx.ops.perps.generated_at=Date.now();
 assert.match(cx.opsCommand(),/\$64,000/);
 assert.match(cx.opsMarkets(),/Polymarket contracts/);
 assert.match(cx.opsMarkets(),/Kalshi crypto markets/);

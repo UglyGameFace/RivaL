@@ -454,50 +454,53 @@ class CallBoardService:
                 except Exception:  # noqa: BLE001 - another source may still work
                     _LOG.warning("Live Calls issuance check unavailable", exc_info=True)
 
-            results = {}
-            budget = asyncio.Semaphore(3)
+            read_budget = asyncio.Semaphore(3)
+            edit_budget = asyncio.Semaphore(4)
+            by_key: dict[tuple, list[dict]] = {}
+            for row in rows:
+                key = (row["market_kind"], row["asset"], int(row["horizon_minutes"]))
+                by_key.setdefault(key, []).append(row)
 
-            async def read(key):
-                async with budget:
-                    kind, asset, horizon = key
+            async def update_slot(key: tuple) -> int:
+                kind, asset, horizon = key
+                async with read_budget:
                     try:
-                        result = await asyncio.wait_for(
+                        embed, digest = await asyncio.wait_for(
                             self._render(kind, asset, horizon), timeout=20,
                         )
                         self._last_evaluated[key] = datetime.now(UTC)
-                        return result
                     except asyncio.CancelledError:
                         raise
-                    except Exception:  # noqa: BLE001 - no cross-market fallback
+                    except Exception:  # noqa: BLE001 - never substitute markets
                         _LOG.warning(
                             "Live Calls source unavailable kind=%s asset=%s",
                             kind, asset, exc_info=True,
                         )
-                        return None
-
-            if due:
-                fetched = await asyncio.gather(*(read(key) for key in due))
-                results = dict(zip(due, fetched, strict=True))
-            if not results:
-                return 0
-            edit_budget = asyncio.Semaphore(4)
-
-            async def deliver(row):
-                key = (row["market_kind"], row["asset"], int(row["horizon_minutes"]))
-                render = results.get(key)
-                if render is None:
-                    return 0
-                async with edit_budget:
-                    try:
-                        return int(await self._edit(row, *render))
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:  # noqa: BLE001 - independent channel post
-                        _LOG.warning("Live Calls Discord edit unavailable",
-                                     exc_info=True)
                         return 0
 
-            return sum(await asyncio.gather(*(deliver(row) for row in rows)))
+                async def deliver(row: dict) -> int:
+                    async with edit_budget:
+                        try:
+                            return int(await self._edit(row, embed, digest))
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:  # noqa: BLE001 - one channel may fail
+                            _LOG.warning(
+                                "Live Calls channel edit unavailable",
+                                exc_info=True,
+                            )
+                            return 0
+
+                # Deliver this exact market as soon as its own read is done.
+                # A slow Kalshi/Polymarket request cannot hold a finished
+                # exchange forecast hostage until every provider returns.
+                return sum(await asyncio.gather(
+                    *(deliver(row) for row in by_key[key]),
+                ))
+
+            return sum(await asyncio.gather(
+                *(update_slot(key) for key in due),
+            ))
 
     async def _stop(self, row: dict) -> None:
         await asyncio.to_thread(self._delete, row)

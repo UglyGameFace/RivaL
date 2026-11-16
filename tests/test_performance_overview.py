@@ -130,8 +130,8 @@ async def test_page_is_verdict_first_then_scoreboard_trials_and_health(tmp_path,
         assert "✅ grading/review just now" in health and "✅ predictions just now" in health
         assert "✅ 1/1 exchanges live" in health
         assert "**Baseline skill:** too early to judge" in health
-        assert "No test models have scored results here yet." in embeds[1].description
-        assert "All markets: 0 on trial · 0 passed · 0 cut early for losing" in embeds[1].description
+        assert "No active scored model comparisons here." in embeds[1].description
+        assert "All markets: 0 active trial comparisons · 0 qualified · 0 early-stop records" in embeds[1].description
         assert max(map(len, fields.values())) < 1024
         assert all(len(e) <= 6000 for e in embeds)
         assert sum(len(e) for e in embeds) <= 5900
@@ -207,7 +207,7 @@ def _evidence(days, targets, gain, *, bps=None, qualified=False):
 @pytest.mark.asyncio
 async def test_every_model_on_trial_is_one_row_from_the_hourly_check(tmp_path, monkeypatch):
     """The table reads the promotion check itself (every family it scored),
-    folds the exchanges into one row per model, and marks cut models."""
+    folds the exchanges into one row per model, but hides fully stopped models."""
     from parlay_bot.perpetuals.early_stop import EarlyStop
 
     bot, home = _make_home(tmp_path, section="details")
@@ -237,28 +237,28 @@ async def test_every_model_on_trial_is_one_row_from_the_hourly_check(tmp_path, m
         fields = _all_fields(embeds)
         name, value = next((k, v) for k, v in fields.items()
                            if k.startswith("🧪 Models on trial here"))
-        assert name == "🧪 Models on trial here (4)"
+        assert name == "🧪 Models on trial here (3)"
         from tests.test_trial_board import _grouped
 
         rows = _grouped(value)
         assert [words[0] for _, words in rows] == [
-            "Trend-only", "Cross-exch", "6-year", "Liquidity"]
+            "Trend-only", "Cross-exch", "6-year"]
         # No graded calls stored in this test: the Right column says so ("—").
         assert rows[0] == ("ahead", ["Trend-only", "12/21", "300", "—", "+3.0"])
         assert rows[1][0] == "early"     # 9 results is too few to judge
-        assert rows[3][0] == "cut"       # cut on every exchange it ran on
+        assert len(rows) == 3           # fully stopped liquidity is not on trial
         block = value.split("```")[1].strip().splitlines()
         assert max(len(line) for line in block) <= 35   # one line per model on a phone
         # Plain group headings, not bare symbols, above each status.
         assert "▲ Ahead of the main model" in value
         assert "⏳ Too early to judge" in value
-        assert "✂ Cut for losing" in value
+        assert '✂ Cut for losing' not in value
         # The leader line lives in the trials embed's description now, and
         # the all-markets count in the how-to-read field under the table.
         assert ("Closest on current evidence: **Trend-only** (ahead on 2 of 2 exchanges, "
                 "nonpositive aggregate after-fee comparison). Still needs 9 more days; "
                 "then all promotion checks must pass.") in embeds[1].description
-        assert "All markets: 5 on trial · 0 passed · 2 cut early for losing" in fields[
+        assert "All markets: 4 active trial comparisons · 0 qualified · 2 early-stop records" in fields[
             "How to read this table"]
     finally:
         await _close(bot, home)

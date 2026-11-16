@@ -132,3 +132,46 @@ async def test_native_replay_requires_sha_verification_even_on_duplicate(tmp_pat
             drive, venue="okx", contract="BTC-USDT-SWAP",
             months=["2026-09"], root=tmp_path)
     assert drive.calls.count("m2") == 1
+
+
+@pytest.mark.asyncio
+async def test_archive_restore_retains_credential_free_conflict_evidence(tmp_path, monkeypatch):
+    from parlay_bot.research import (
+        archive_training,
+        bitget_source_bridge,
+        recorded_candles,
+        source_native,
+    )
+
+    receipt = {
+        "schema": "rival-native-month-conflict-v1",
+        "venue": "okx", "contract": "BTC-USDT-SWAP",
+        "quote": "USDT", "month": "2026-09",
+        "first": {"manifest_sha256": "a" * 64},
+        "second": {"manifest_sha256": "b" * 64},
+        "resolution": "blocked_divergent_manifest_bytes",
+    }
+
+    async def bitget_restore(*args, **kwargs):
+        return []
+
+    async def source_restore(*args, venue, **kwargs):
+        if venue == "okx":
+            raise NativeMonthConflictError(receipt)
+        return []
+
+    async def recorded_restore(*args, **kwargs):
+        return {"restored": []}
+
+    monkeypatch.setattr(
+        bitget_source_bridge, "restore_verified_bitget_market_months", bitget_restore,
+    )
+    monkeypatch.setattr(source_native, "restore_verified_source_months", source_restore)
+    monkeypatch.setattr(recorded_candles, "restore_recorded_partitions", recorded_restore)
+    report = await archive_training.restore_verified_months(
+        asset="BTC", months=["2026-09"], root=tmp_path, drive=object(),
+    )
+    assert report["excluded"]["okx"]["source_conflict"] == receipt
+    assert report["excluded"]["okx"]["reason"] == "NativeMonthConflictError"
+    assert "gate" in report["restored"]
+    assert report["restored"]["gate"] == []

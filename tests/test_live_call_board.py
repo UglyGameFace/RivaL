@@ -10,7 +10,12 @@ import discord
 import pytest
 
 from parlay_bot.discord_app import call_board
-from parlay_bot.discord_app.call_board import CallBoardService, live_calls_embed
+from parlay_bot.discord_app.call_board import (
+    CallBoardService,
+    build_kalshi_calls,
+    build_polymarket_calls,
+    live_calls_embed,
+)
 from parlay_bot.discord_app.targeting import TargetSnapshot
 from parlay_bot.storage.hot import SQLiteHotStore
 
@@ -132,7 +137,8 @@ async def test_live_calls_are_opt_in_channel_posts_and_edit_in_place(tmp_path, m
 
         assert await service.cycle() == 0
         state["hash"] = "b"
-        assert await service.cycle() == 1
+        # The live issuer calls request_refresh; no 60-second wait needed.
+        assert await service.cycle(force=True) == 1
         assert original.edit.await_count == 1
         assert service._rows()[0]["fingerprint"] == "b"
         assert await service.stop_owner(999) is False
@@ -172,5 +178,128 @@ async def test_calls_reject_dms_and_are_revoked_by_stop_all(tmp_path, monkeypatc
         )
         assert "Stopped all" in message
         assert not service._rows()
+    finally:
+        store.close()
+
+@pytest.mark.asyncio
+async def test_polymarket_uses_actual_current_next_contract_and_frozen_confidence(monkeypatch):
+    from parlay_bot.discord_app import polymarket_live_board
+
+    now = datetime.now(UTC)
+    call = SimpleNamespace(
+        direction="DOWN", probability_up=.21, model="contract_calib",
+        issued_at=now-timedelta(minutes=1),
+    )
+    obs = SimpleNamespace(
+        _observation=AsyncMock(return_value=(
+            discord.Embed(title="Actual Polymarket BTC 5m",
+                          description="Current and NEXT listed contract"), "existing",
+        )),
+        peek=lambda asset, horizon: (object(), call),
+    )
+    monkeypatch.setattr(polymarket_live_board, "matching_call",
+                        lambda *a, **kw: True)
+    card, digest = await build_polymarket_calls(obs, "BTC", 5)
+    assert "Polymarket" in card.title
+    assert "NEXT listed contract" in card.description
+    assert "DOWN · 79.0%" in card.fields[-1].value
+    assert "raw contract-model estimate" in card.fields[-1].value
+    assert "contract_calib" in card.fields[-1].value
+    assert len(digest) == 64
+    monkeypatch.setattr(polymarket_live_board, "matching_call",
+                        lambda *a, **kw: False)
+    card, _ = await build_polymarket_calls(obs, "BTC", 5)
+    assert "No verified matching" in card.fields[-1].value
+    assert "79.0%" not in card.fields[-1].value
+
+
+@pytest.mark.asyncio
+async def test_kalshi_uses_exact_listed_contract_rules_not_exchange_candle():
+    clock = datetime.now(UTC)
+    markets = (
+        SimpleNamespace(ticker="BTC-EXACT-A", title="Bitcoin above $100k?",
+                        close_time=clock+timedelta(hours=1)),
+        SimpleNamespace(ticker="BTC-EXACT-B", title="Bitcoin below $90k?",
+                        close_time=clock+timedelta(hours=2)),
+        SimpleNamespace(ticker="BTC-EXACT-C", title="Unobserved crypto?",
+                        close_time=clock+timedelta(hours=3)),
+    )
+    browser = SimpleNamespace(browse=AsyncMock(
+        return_value=SimpleNamespace(markets=markets),
+    ))
+    def preview(*, asset, market):
+        if market.ticker == "BTC-EXACT-C":
+            return None
+        return {"model": "kalshi_shad_v1",
+                "candidate_yes": .76 if market.ticker.endswith("A") else .31}
+    reader = SimpleNamespace(contract_preview=preview)
+    card, digest = await build_kalshi_calls(browser, reader, "BTC")
+    assert "Kalshi" in card.title
+    assert "YES · Confidence: 76.0%" in card.fields[0].value
+    assert "NO · Confidence: 69.0%" in card.fields[1].value
+    assert "NO ISSUED MODEL CALL" in card.fields[2].value
+    assert "5m" not in card.fields[0].value
+    assert len(digest) == 64
+
+
+@pytest.mark.asyncio
+async def test_new_exchange_issuance_refreshes_immediately_without_network_burst(tmp_path):
+    store = SQLiteHotStore(tmp_path / "fast-calls.sqlite")
+    try:
+        service = CallBoardService(SimpleNamespace(), store, object())
+        service.initialize()
+        service._save(100, "exchange", "BTC", 0, 101, 7, "old")
+        service._save(100, "polymarket", "BTC", 5, 102, 7, "old")
+        service._last_evaluated = {
+            ("exchange", "BTC", 0): datetime.now(UTC),
+            ("polymarket", "BTC", 5): datetime.now(UTC),
+        }
+        service._last_revision[("exchange", "BTC", 0)] = "original"
+        seen = []
+        async def render(kind, asset, horizon):
+            seen.append((kind, asset, horizon))
+            return discord.Embed(title=kind), "updated"
+        service._render = render
+        service._revision = lambda asset: "new-forecast"
+        service._edit = AsyncMock(return_value=True)
+        assert await service.cycle() == 1
+        assert seen == [("exchange", "BTC", 0)]
+        assert await service.cycle() == 0  # unchanged revisions never spam
+        service.request_refresh()
+        assert await service.wait_for_refresh() is True
+        assert await service.cycle(force=True) == 1
+        assert seen[-1] == ("exchange", "BTC", 0)
+        assert all(kind == "exchange" for kind, _, _ in seen)
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_market_and_horizon_are_persisted_separately(tmp_path, monkeypatch):
+    store = SQLiteHotStore(tmp_path / "market-identity.sqlite")
+    try:
+        service = CallBoardService(SimpleNamespace(), store, object())
+        async def render(kind, asset, horizon):
+            return discord.Embed(title=f"{kind}/{horizon}"), f"{kind}/{horizon}"
+        service._render = render
+        ids = iter((101, 102, 103))
+        channel = SimpleNamespace(id=777, send=AsyncMock(
+            side_effect=lambda **kw: SimpleNamespace(id=next(ids)),
+        ))
+        actor = SimpleNamespace(channel=channel, guild_id=1,
+                                user=SimpleNamespace(id=42))
+        for kind, horizon in (
+            ("exchange", 5), ("polymarket", 5), ("polymarket", 15),
+        ):
+            assert "Posted" in await service.start(
+                actor, "BTC", kind=kind, horizon=horizon,
+            )
+        rows = service._rows()
+        assert {(r["market_kind"], r["horizon_minutes"]) for r in rows} == {
+            ("exchange", 0), ("polymarket", 5), ("polymarket", 15),
+        }
+        assert "No source-matched" in await service.start(
+            actor, "BTC", kind="draftkings",
+        )
     finally:
         store.close()

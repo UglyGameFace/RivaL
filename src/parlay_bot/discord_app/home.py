@@ -1770,11 +1770,14 @@ class GuidedHome(discord.ui.View):
                 self._add("View Contract Call", "desk-call", 3, "🎯", True)
                 self._add("Track Market", "desk-track", 3, "🔔")
                 self._add("Live Panel", "live-poly", 4, "📡")
+                self._add("Post Live Calls", "call-board", 4, "📣")
             elif self.live_source == "exchange":
                 self._add("Get Exchange Forecast", "desk-call", 3, "🎯", True)
                 self._add("Follow Forecast", "desk-track", 3, "🔔")
+                self._add("Post Live Calls", "call-board", 4, "📡")
             elif self.live_source == "kalshi":
                 self._add("Check Kalshi Contracts", "desk-call", 3, "🔎", True)
+                self._add("Post Live Calls", "call-board", 4, "📡")
             elif self.live_source == "draftkings":
                 self._add("Find My Coin", "cdna-auto", 3, "🔎", True)
                 self._add("Check CDNA Quote", "cdna-quote", 3, "💱")
@@ -3315,7 +3318,11 @@ class GuidedHome(discord.ui.View):
             else:
                 try:
                     self.note = await asyncio.wait_for(
-                        self.call_board.start(interaction, self.coin), timeout=20,
+                        self.call_board.start(
+                            interaction, self.coin,
+                            kind=self.live_source or "exchange",
+                            horizon=self.horizon,
+                        ), timeout=25,
                     )
                 except Exception:  # noqa: BLE001 - no false posting claim
                     _LOG.exception("Creating requested Live Calls card failed")

@@ -86,6 +86,41 @@ def test_entry_funnel_separates_cash_live_and_elapsed_decisions(learning_store):
     assert later["entry_rows"] == 1  # a query never invents a late quote
 
 
+def test_recent_cohort_does_not_blame_new_feeds_for_old_forecasts(learning_store):
+    """New-source acceptance must not mix pre-deployment, expired opportunities."""
+    now = datetime.now(UTC).replace(microsecond=0)
+    observer = _observer(learning_store)
+    with learning_store.connect() as conn:
+        _forecast(conn, "xmarket_v1",
+                  issued=now-timedelta(minutes=46),
+                  target=now-timedelta(minutes=35))  # pre-deployment decision
+        _forecast(conn, "xmarket_v1",
+                  issued=now-timedelta(minutes=40),
+                  target=now-timedelta(minutes=30), probability=.5)
+        _forecast(conn, "xmarket_v1",
+                  issued=now-timedelta(seconds=30),
+                  target=now+timedelta(minutes=10))
+    assert observer.observe(_book(now), now=now)["opened"] == 1
+    with learning_store.connect() as conn:
+        _forecast(conn, "xmarket_v1",
+                  issued=now-timedelta(seconds=10),
+                  target=now+timedelta(minutes=15))  # awaits a future book
+    row = _hyper(read_xmarket_quotes(learning_store, now, PROGRESS))
+    assert row["forecast_rows"] == 4
+    assert row["decisive_forecast_rows"] == 3
+    assert row["elapsed_unmatched_decisive_rows"] == 1
+    assert row["recent_30m_decisive_forecast_rows"] == 2
+    assert row["recent_30m_entry_rows"] == 1
+    assert row["recent_30m_elapsed_unmatched_decisive_rows"] == 0
+    after = _hyper(read_xmarket_quotes(
+        learning_store, now+timedelta(seconds=91), PROGRESS))
+    assert after["recent_30m_decisive_forecast_rows"] == 2
+    assert after["recent_30m_entry_rows"] == 1
+    assert after["recent_30m_elapsed_unmatched_decisive_rows"] == 1
+    assert after["elapsed_unmatched_decisive_rows"] == 2
+    assert after["entry_rows"] == 1  # reading does not backfill a late quote
+
+
 def test_quote_receipt_selects_only_and_distinguishes_missing_ledger(learning_store):
     now = datetime.now(UTC)
     reads = []

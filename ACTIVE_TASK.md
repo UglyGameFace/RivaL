@@ -1,5 +1,18 @@
 # RivaL active bot work — November 16, 2026 UTC
 
+## Active user-selected Live Calls and XMarket model-quality continuation (2026-11-16)
+
+**Branch/PR:** `feat/channel-live-research-calls-20261116`, [PR #619](https://github.com/UglyGameFace/RivaL/pull/619), based on main `a35d7b1`. This extends the merged #613–616 exact-source quote infrastructure. Existing parallel Evidence Workers #618 and private Jarvis/LFM3 #608 remain independent and untouched.
+
+**User requirement:** Show model UP/DOWN (or exact-contract YES/NO) and numeric confidence per requested market even when not qualified. Fast updates to current and *next genuinely issued* target/contract on the **same channel card**, not unsolicited DMs. Show provenance, expiry, raw-vs-calibrated nature, and “NO TRADE CALL” for unqualified models. Do not synthesize entry/SL/TP1/TP2 or profitable P&L.
+
+**Implemented:** `discord_app/call_board.py` is one persistent, owner-controlled, opt-in message per market/asset(+Polymarket horizon). Exchange uses existing `target_snapshot` and `recent_watches` for all 5m/15m/60m horizons, actual model/venue/confidence and next previously-issued target; market-specific adapters reuse original Polymarket Gamma/CLOB frozen current/next contract `_observation` and independent Kalshi listed-contract `contract_preview`. Unsupported DraftKings declines rather than borrowing another market. `GuidedHome` selects market/asset/horizon; `/rival-stop` revokes cards. The dedicated `_call_board_loop` wakes after real `autonomous.cycle()` issuance and also checks the immutable exchange issuance ledger every 15 seconds; fallback full redraw 60s and 5-minute UTC expiry transitions; Polymarket 30s and Kalshi 45s native budget/caches. All market reads produce no real orders.
+
+**Tests:** `tests/test_live_call_board.py` covers displayed raw/calibrated scores, current and future-issued accuracy, Polymarket/Kalshi source identity, channel-only posting, owner-controlled Stop All, market/horizon separation, fast issuance refresh and expiry boundary. The first CI failed at lint BLE001 and was repaired in the same PR; later exact-PR CI must pass full SQLite/PostgreSQL tests before merge. After merge verify main CI, native Discloud release parity and a real channel card on host. Card delivery speed is a scheduling target contingent on actual data/provider latency, **not yet production verified**.
+
+**XMarket quality still unresolved:** Only five model fits imported, seven declined chronological/calibration/holdout gates, zero independently qualified profitable edges after costs. Binance book intake is healthy but its XMarket issuance gap is separate. Keep issues #6/#151/#299 open until independent >=150 targets, >=21 days, >=80% quote coverage and calibrated after-cost superiority prove an edge. Evidence Board #618 work is separate.
+
+
 ## Current continuation (2026-11-16 UTC) — bounded source-exact quote sampling
 
 Branch `fix/fair-bounded-quote-observer-20261116` extends merged #613–615 without touching separate Jarvis PR #608. `main@46f4f9b` passed [full CI](https://github.com/UglyGameFace/RivaL/actions/runs/43792111472) and [native release parity](https://github.com/UglyGameFace/RivaL/actions/runs/43792807328). [02:34 UTC production receipt](https://github.com/UglyGameFace/RivaL/actions/runs/43792927860) contains genuine source-exact evidence: seven live native book sources fresh on BTC/ETH/SOL/XRP; Bitget 34/34, OKX 30/30, Hyperliquid 36/39, Gate 7/23, Deribit 6/19, Lighter 10/29 matched XMarket directional-entry rows in a rolling two-hour window. Binance books are fresh but its XMarket forecast count remains zero. No source has proven profitable XMarket edge.

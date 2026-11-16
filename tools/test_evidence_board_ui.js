@@ -241,6 +241,66 @@ assert.match(cx.opsCommand(),/Live public venue quotes are unavailable/);
 assert.match(source,/RIVAL_MARKET_FEED\.fetch/);
 assert.match(source,/\/api\/market\/perps/);
 assert.match(source,/\/api\/market\/predictions/);
+
+// Signed scoring version must be disclosed without pretending it is an XMarket artifact.
+cx.state.evidence.performance.model='prospective-logistic-persistent-v3';
+assert.equal(cx.opsModelId(),'prospective-logistic-persistent-v3');
+assert.match(cx.opsModels(),/Scored incumbent model/);
+assert.match(cx.opsModels(),/prospective-logistic-persistent-v3/);
+assert.match(cx.opsModelCard(cx.state.evidence.performance.scopes[0]),/prospective-logistic-persistent-v3/);
+assert.match(cx.opsCommand(),/Which actual model is scored/);
+assert.match(cx.opsCommand(),/XMarket challengers are separate/);
+assert.match(cx.opsXMarket(),/no signed import-artifact-to-served-model identity/);
+cx.opsOpenScore('BTC',15);
+assert.match(document.drawer,/Scored model version/);
+assert.match(document.drawer,/prospective-logistic-persistent-v3/);
+cx.state.evidence.performance.model='<unsafe-html>';
+assert.equal(cx.opsModelId(),null,'Untrusted source model IDs must never render as markup');
+assert.doesNotMatch(cx.opsModels(),/unsafe-html/);
+cx.state.evidence.performance.model='prospective-logistic-persistent-v3';
+
+const lastGoodTime=new Date(Date.now()-120000).toISOString();
+const lastGoodCall={
+ asset:'BTC',horizon:15,venue:'hyperliquid',quote:'USDC',
+ model_version:'prospective-logistic-persistent-v3',
+ issued_at:new Date(Date.now()-180000).toISOString(),
+ target_close_at:new Date(Date.now()+300000).toISOString(),
+ probability_up:0.64,baseline_up:0.51,direction:'UP',status:'open',outcome_up:null
+};
+cx.state.history={source:'signed-github-actions',points:[
+ {run_id:'43801752054',captured_at:lastGoodTime,
+  host:{status:'verified',forecast_issued:102,learning_settled:103,
+   xmarket_fresh_inputs:8,xmarket_expected_inputs:8,
+   xmarket_imported_scopes:5,xmarket_shadow_rows:4092,
+   recent_forward_calls:{status:'observed',captured_at:lastGoodTime,rows:[lastGoodCall]}},
+  database:{status:'verified_read',qualified_paper_scopes:0,evaluated_paper_scopes:12}},
+ {run_id:'43801822488',captured_at:new Date().toISOString(),
+  host:{status:'unavailable',forecast_issued:null},
+  database:{status:'unavailable',qualified_paper_scopes:null}}
+]};
+cx.state.evidence.host={status:'unavailable',forecast_status:'read_unavailable',
+ recent_forward_calls:{status:'read_unavailable',rows:[]}};
+cx.state.evidence.database={status:'unavailable',qualified_paper_scopes:null};
+const oldHost=cx.opsHomeObservation();
+assert.equal(oldHost.historical,true);
+assert.equal(oldHost.run_id,'43801752054');
+assert.equal(oldHost.host.forecast_issued,102);
+assert.equal(oldHost.database.qualified_paper_scopes,0);
+assert.match(cx.opsCommand(),/Latest signed host read failed/);
+assert.match(cx.opsCommand(),/Previous verified call snapshot, not current/);
+assert.match(cx.opsCommand(),/prospective-logistic-persistent-v3/);
+assert.match(cx.opsAlerts(),/Latest signed host\/database read unavailable/);
+assert.match(cx.opsForecastSection(3),/64.0%/);
+assert.match(cx.opsForecastSection(3),/prospective-logistic-persistent-v3/);
+cx.state.history.points=[{run_id:'stale',captured_at:new Date(Date.now()-2*86400000).toISOString(),
+ host:oldHost.host,database:oldHost.database}];
+assert.equal(cx.opsHomeObservation().historical,false,'Two-day-old host data must never be offered as recent fallback');
+assert.match(cx.opsCommand(),/Read unavailable/);
+assert.doesNotMatch(cx.opsCommand(),/Latest signed host read failed/);
+cx.state.evidence.host={...oldHost.host};
+cx.state.evidence.database={...oldHost.database};
+assert.equal(cx.opsHomeObservation().historical,false,'A verified current host read must supersede historical fallback');
+
 console.log('RivaL operations dashboard UI regressions passed');
 
 console.log('Evidence Board source-backed UI smoke passed');

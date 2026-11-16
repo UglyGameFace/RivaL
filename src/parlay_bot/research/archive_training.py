@@ -596,7 +596,6 @@ def load_frames_manifests(root: Path, *, target_asset: str | None = None,
 
     from parlay_bot.research.learning import assemble
     from parlay_bot.research.recorded_candles import latest_recorded_snapshots
-
     from parlay_bot.research.source_native import OKX_SOURCE_INTEGRITIES
 
     if (okx_source_integrity is not None

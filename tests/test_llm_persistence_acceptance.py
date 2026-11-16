@@ -179,3 +179,100 @@ def test_xrp_receipt_verified_only_for_matching_xrp_asset():
     result.asset = "BTC"
     row["asset"] = "BTC"
     assert not verified_receipt(result, row, now=now, asset="XRP")
+
+
+def test_split_console_acceptance_requires_both_assets(monkeypatch, capsys):
+    """One valid BTC math proof and an independent exact XRP row are required."""
+    btc = {
+        "asset": "BTC", "outcome": "verified",
+        "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
+        "mathematical_evidence_status": "persisted_registry",
+        "prospective_math_status": "insufficient",
+        "cold_archive_readback": "not_performed_by_live_research",
+        "evidence_hash_valid": True,
+        "source_count": 9, "fresh_six_month_source_audits": 2,
+        "from_cache": False, "saved_before": 10, "saved_after": 11,
+    }
+    xrp = {
+        "asset": "XRP", "outcome": "verified",
+        "model": btc["model"], "source_count": 9,
+        "xrp_verified": True,
+        "from_cache": False, "saved_before": 11, "saved_after": 12,
+    }
+    calls = []
+    def fetch(asset):
+        calls.append(asset)
+        return btc if asset == "BTC" else xrp
+
+    monkeypatch.setattr(RELAY, "_console_once", fetch)
+    code, receipt = RELAY._attempt()
+    assert code == 0
+    assert receipt["btc_math_new_db_verified"] is True
+    assert receipt["xrp_exact_db_verified"] is True
+    assert calls == ["BTC", "XRP"]
+    assert "outcome" in capsys.readouterr().out
+
+    # A missing or mismatched XRP record must never borrow BTC proof.
+    for invalid in (
+        {**xrp, "xrp_verified": False},
+        {**xrp, "model": "different"},
+        {**xrp, "saved_after": 11, "from_cache": False},
+    ):
+        calls.clear()
+        monkeypatch.setattr(RELAY, "_console_once",
+                            lambda asset: btc if asset == "BTC" else invalid)
+        code, receipt = RELAY._attempt()
+        assert code == 1
+        assert receipt["outcome"] == "failed"
+        assert calls == []
+
+
+def test_invalid_btc_never_invokes_xrp(monkeypatch):
+    calls = []
+    def fetch(asset):
+        calls.append(asset)
+        return {"asset": "BTC", "outcome": "deferred",
+                "reason": "minimum_spacing"}
+    monkeypatch.setattr(RELAY, "_console_once", fetch)
+    assert RELAY._attempt() == (1, {"asset": "BTC", "outcome": "deferred",
+                                     "reason": "minimum_spacing"})
+    assert calls == ["BTC"]
+
+
+def test_host_scope_cli_preserves_legacy_both_and_independent_assets(monkeypatch, capsys):
+    from parlay_bot.perpetuals import llm_persistence_acceptance as host
+    scopes = []
+    def btc(*, include_xrp):
+        scopes.append("both" if include_xrp else "BTC")
+        return {"outcome": "verified"}
+    def xrp():
+        scopes.append("XRP")
+        return {"outcome": "verified"}
+
+    monkeypatch.setattr(host, "verify_once", btc)
+    monkeypatch.setattr(host, "verify_xrp_only", xrp)
+    assert host.main(["--asset", "BTC"]) == 0
+    assert host.main(["--asset", "XRP"]) == 0
+    assert host.main(["--asset", "both"]) == 0
+    assert scopes == ["BTC", "XRP", "both"]
+    assert capsys.readouterr().out.count(host.MARKER) == 3
+
+
+def test_gateway_error_exposes_only_status_code_not_private_body(monkeypatch, capsys):
+    from urllib import error, request
+    monkeypatch.setenv("DISCLOUD_TOKEN", "private-token")
+    monkeypatch.setenv("DISCLOUD_APP_ID", "private-app")
+    def fail(_req, timeout):
+        assert timeout <= 150
+        raise error.HTTPError(
+            "https://internal.private.invalid/with-private-path",
+            504, "PRIVATE SERVER MESSAGE", {}, None,
+        )
+    monkeypatch.setattr(request, "urlopen", fail)
+    assert RELAY._console_once("BTC") is None
+    out = capsys.readouterr().out
+    assert '"http_status": 504' in out
+    assert "PRIVATE SERVER MESSAGE" not in out
+    assert "internal.private" not in out
+    assert "private-token" not in out
+    assert "private-app" not in out

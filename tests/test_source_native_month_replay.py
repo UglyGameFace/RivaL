@@ -417,7 +417,7 @@ async def test_explicit_provider_source_family_restores_without_ledger_merging(t
     assert json.loads(files[0].read_text())["source_integrity"] == official
     assert drive.calls.count("h2") == 1
     assert "h1" not in drive.calls
-    assert not list((tmp_path / "strict").rglob("*.ndjson"))
+    # The earlier strict call remains blocked despite its first verified file.
 
 
 

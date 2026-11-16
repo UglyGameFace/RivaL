@@ -379,7 +379,7 @@ class CallBoardService:
                     horizon if kind == "polymarket" else 0,
                     msg.id, interaction.user.id, key,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - a failed post must be rolled back
                 _LOG.exception("RivaL Live Calls persistence failed")
                 try:
                     await msg.delete()

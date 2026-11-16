@@ -1,5 +1,15 @@
 # RivaL active bot work — November 16, 2026 UTC
 
+## Current correction: XMarket research-only source-selection causality
+
+**Main checkpoint:** #624 merged at `b957d2e0`. Its GitHub one-shot train-only workflow has been installed; no provider-backed completion evidence is established in this task record. The earlier PR #623 had 3,566 passing SQLite/PostgreSQL tests but no claimed qualified edge.
+
+**Identified root cause:** Shared `_select_dispersion_venues` chose optional cross-venue inputs using the source availability of outer validation/test folds even in `research_only=True`. This did not expose their outcome labels or change live models, but it leaked future *availability* into exploratory training feature selection. A previously uploaded #624 run artifact must not be used to pick a challenger without this correction.
+
+**Branch:** `fix/xmarket-research-train-only-venue-selection-20261116`, starting from main. **Repair:** confine research selector market/venue timestamps to the horizon-purged original training period and require enough inner-fit/independent-time evaluation capacity. Keep the serving/production all-splits selector unchanged. Tests demonstrate future availability changes cannot alter the training-only selected feature contract, while production still requires validation/test coverage. Docs identify original #624 results as diagnostics only. Never restart weekly training or silently re-run a multi-asset research job.
+
+**Acceptance:** exact-head Ruff and full SQLite/PostgreSQL CI, reconciled merge/main check, then explicitly authorized fresh one-shot report under corrected SHA, verify all twelve research scopes and native-source gap counts. Continue source-authentic issued forecasts and after-cost gates separately. Do not close #6/#299/#295/#138 on code CI.
+
 ## Following merged #623: source-verified research run
 
 **Merged baseline:** #623 is on main at `c158cd4a` (full PR SQLite/PostgreSQL CI: 3,566 passed). This branch `research/xmarket-train-only-one-shot-20261116` adds an owner-directed, one-time GitHub Actions read-only research run for all four assets and 5/15/60m, without model publication. Existing weekly archive push gates remain in effect; do not revive unattended weekly training.

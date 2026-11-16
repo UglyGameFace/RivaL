@@ -276,3 +276,29 @@ def test_gateway_error_exposes_only_status_code_not_private_body(monkeypatch, ca
     assert "internal.private" not in out
     assert "private-token" not in out
     assert "private-app" not in out
+
+
+def test_xrp_spacing_retry_never_replays_verified_btc(monkeypatch):
+    model = "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
+    btc = {"asset": "BTC", "outcome": "verified", "model": model}
+    pending = {"asset": "XRP", "outcome": "deferred", "reason": "minimum_spacing"}
+    xrp = {"asset": "XRP", "outcome": "verified", "model": model,
+           "xrp_verified": True, "source_count": 9, "from_cache": False,
+           "saved_before": 10, "saved_after": 11}
+    calls, slept = [], []
+
+    def fetch(asset):
+        calls.append(asset)
+        if asset == "BTC":
+            return btc
+        return pending if calls.count("XRP") == 1 else xrp
+
+    monkeypatch.setattr(RELAY, "integrated_receipt",
+                        lambda report: report is btc)
+    monkeypatch.setattr(RELAY, "_console_once", fetch)
+    monkeypatch.setattr(RELAY.time, "sleep", slept.append)
+    status, receipt = RELAY._attempt()
+    assert status == 0
+    assert receipt["outcome"] == "verified"
+    assert calls == ["BTC", "XRP", "XRP"]
+    assert slept == [RELAY.RESTART_WAIT_SECONDS]

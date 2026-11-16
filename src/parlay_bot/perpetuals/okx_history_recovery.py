@@ -162,7 +162,9 @@ class OkxHistoryRecovery(GateHistoryRecovery):
             return 0
         symbol = f"{asset}-USDT-SWAP"
         try:
-            multiplier = await self._multiplier(asset, symbol, clock)
+            # Keep exact linear-contract metadata and size-change checks.
+            # Do not derive base volume from contracts when OKX provides it.
+            await self._multiplier(asset, symbol, clock)
             data = await self._public(
                 "market/history-candles", {
                     "instId": symbol, "bar": "5m",
@@ -208,11 +210,13 @@ class OkxHistoryRecovery(GateHistoryRecovery):
                 )
                 if low > min(op, close) or high < max(op, close):
                     raise MarketDataError("inconsistent OKX historical OHLC")
+                _num(row[5])  # Validate contract-count volume.
+                _num(row[7])  # Validate quote-currency volume.
                 candles.append(MarketCandle(
                     "okx", symbol, "USDT", 5, opened,
                     opened + _STEP - timedelta(milliseconds=1),
                     observed, op, high, low, close,
-                    _num(row[5]) * multiplier, -1,
+                    _num(row[6]), -1,  # Official V5 base-currency volCcy.
                 ))
             if oldest is None:
                 # Never move cursor on an empty or unsupported history page.

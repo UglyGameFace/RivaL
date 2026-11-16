@@ -20,13 +20,20 @@ from parlay_bot.perpetuals.markets import ASSETS, HORIZONS
 _LOG = logging.getLogger(__name__)
 MAX_BOARDS = 24
 MAX_OWNER_BOARDS = 4
+MARKETS = ("exchange", "polymarket", "kalshi")
+# Check promptly for new exchange forecasts. The full model/contract reader
+# runs on a slower, market-specific bounded cadence or when issuance changes.
+CHECK_SECONDS = 15
+FULL_REFRESH_SECONDS = {"exchange": 60, "polymarket": 30, "kalshi": 45}
 SCHEMA = """CREATE TABLE IF NOT EXISTS rival_live_call_board (
     channel_id TEXT NOT NULL,
+    market_kind TEXT NOT NULL,
     asset TEXT NOT NULL,
+    horizon_minutes INTEGER NOT NULL,
     message_id TEXT NOT NULL UNIQUE,
     owner_id TEXT NOT NULL,
     fingerprint TEXT NOT NULL,
-    PRIMARY KEY(channel_id,asset)
+    PRIMARY KEY(channel_id,market_kind,asset,horizon_minutes)
 )"""
 
 
@@ -125,6 +132,99 @@ def live_calls_embed(market, asset: str, now: datetime | None = None):
     return embed, hashlib.sha256("|".join(fingerprint).encode()).hexdigest()
 
 
+
+def polymarket_calls_embed(service, asset: str, horizon: int):
+    """Use the existing actual contract/current-next board, never perp candles."""
+    raise RuntimeError("Polymarket calls are read asynchronously")
+
+
+async def build_polymarket_calls(service, asset: str, horizon: int):
+    from parlay_bot.discord_app.polymarket_live_board import matching_call
+
+    embed, _ = await service._observation(asset, horizon)
+    current = service.peek(asset, horizon)
+    board, call = current if current is not None else (None, None)
+    if matching_call(board, call, asset=asset, horizon=horizon):
+        probability = call.probability_up
+        if (call.direction in ("UP", "DOWN")
+                and isinstance(probability, (int, float))
+                and math.isfinite(probability) and 0 < probability < 1):
+            confidence = (probability if call.direction == "UP" else 1 - probability)
+            embed.add_field(
+                name="📊 Frozen model confidence",
+                value=(
+                    f"**{call.direction} · {confidence:.1%}** "
+                    "(raw contract-model estimate, NOT verified win rate)\n"
+                    f"Model: `{call.model}` · recorded "
+                    + discord.utils.format_dt(call.issued_at, style="R")
+                ),
+                inline=False,
+            )
+    else:
+        embed.add_field(
+            name="📊 Frozen model confidence",
+            value="No verified matching, prospectively issued contract call.",
+            inline=False,
+        )
+    embed.set_footer(
+        text="Polymarket contract price-to-beat ≠ exchange candle/TP · No orders"
+    )
+    return embed, hashlib.sha256(str(embed.to_dict()).encode()).hexdigest()
+
+
+async def build_kalshi_calls(browser, reader, asset: str):
+    """Kalshi YES/NO applies only to its titled market, not an invented 5m."""
+    snapshot = await browser.browse(asset)
+    embed = discord.Embed(
+        title=f"RivaL Live Calls · Kalshi · {asset}",
+        description=(
+            "Real Kalshi crypto contracts, independent of Polymarket/perps. "
+            "YES/NO reflects the exact listed contract's rules. "
+            "Never assume a contract shares the 5/15/60-minute candle horizon."
+        ),
+        color=discord.Color.blurple(),
+    )
+    for market in snapshot.markets[:3]:
+        try:
+            preview = (
+                await asyncio.to_thread(
+                    reader.contract_preview, asset=asset, market=market,
+                ) if reader is not None else None
+            )
+        except (ValueError, KeyError, TypeError):
+            preview = None
+        title = market.title[:140]
+        name = f"{title} · {market.ticker}"
+        text = (
+            f"Closes {discord.utils.format_dt(market.close_time, style='R')}\n"
+        )
+        p = preview.get("candidate_yes") if preview is not None else None
+        if isinstance(p, (int, float)) and math.isfinite(p) and 0 < p < 1:
+            side = "YES" if p > .5 else "NO" if p < .5 else "TIED"
+            if side == "TIED":
+                text += "No directional contract call (50/50 model)."
+            else:
+                text += (
+                    f"**{side} · Confidence: {max(p, 1 - p):.1%}** "
+                    "(raw frozen model estimate, not verified accuracy)\n"
+                    f"Model: `{preview['model']}` · "
+                    "**UNQUALIFIED RESEARCH; NO TRADE CALL**"
+                )
+        else:
+            text += "NO ISSUED MODEL CALL · Contract outcome not predicted."
+        embed.add_field(name=name[:256], value=text[:1024], inline=False)
+    if not snapshot.markets:
+        embed.add_field(
+            name="Current contracts",
+            value="No exact, verified Kalshi crypto contracts currently listed.",
+            inline=False,
+        )
+    embed.set_footer(
+        text="No synthetic strikes/TP or cross-venue prices · No real orders"
+    )
+    return embed, hashlib.sha256(str(embed.to_dict()).encode()).hexdigest()
+
+
 class CallBoardView(discord.ui.View):
     def __init__(self, service) -> None:
         super().__init__(timeout=None)
@@ -149,11 +249,18 @@ class CallBoardView(discord.ui.View):
 class CallBoardService:
     """Restart-safe, one message per channel/asset, owner controlled."""
 
-    def __init__(self, bot, store, market) -> None:
+    def __init__(self, bot, store, market, *, polymarket=None, kalshi=None,
+                 kalshi_forward=None) -> None:
         self.bot, self.store, self.market = bot, store, market
+        self.polymarket = polymarket
+        self.kalshi = kalshi
+        self.kalshi_forward = kalshi_forward
         self.view = CallBoardView(self)
         self._lock = asyncio.Lock()
         self._ready = False
+        self._last_evaluated: dict[tuple, datetime] = {}
+        self._last_revision: dict[tuple, str | None] = {}
+        self._refresh_event = asyncio.Event()
 
     def initialize(self) -> None:
         if not self._ready:
@@ -165,15 +272,18 @@ class CallBoardService:
         self.initialize()
         with self.store.connect() as conn:
             return [dict(r) for r in conn.execute(
-                "SELECT * FROM rival_live_call_board ORDER BY channel_id,asset"
+                "SELECT * FROM rival_live_call_board "
+                "ORDER BY channel_id,market_kind,asset,horizon_minutes"
             ).fetchall()]
 
-    def _save(self, channel, asset, message, owner, fingerprint) -> None:
+    def _save(self, channel, kind, asset, horizon, message, owner, fingerprint) -> None:
         with self.store.connect() as conn:
             conn.execute(
                 """INSERT INTO rival_live_call_board
-                (channel_id,asset,message_id,owner_id,fingerprint) VALUES (?,?,?,?,?)""",
-                (str(channel), asset, str(message), str(owner), fingerprint),
+                (channel_id,market_kind,asset,horizon_minutes,
+                 message_id,owner_id,fingerprint) VALUES (?,?,?,?,?,?,?)""",
+                (str(channel), kind, asset, horizon, str(message),
+                 str(owner), fingerprint),
             )
 
     def _touch(self, row: dict, fingerprint: str) -> None:
@@ -192,23 +302,77 @@ class CallBoardService:
                 (row["channel_id"], row["asset"], row["message_id"]),
             )
 
-    async def start(self, interaction: discord.Interaction, asset: str) -> str:
-        if asset not in ASSETS:
-            raise ValueError("Unsupported calls asset")
+    async def _render(self, kind: str, asset: str, horizon: int):
+        if kind == "exchange":
+            return await asyncio.to_thread(live_calls_embed, self.market, asset)
+        if kind == "polymarket":
+            if self.polymarket is None:
+                raise ValueError("Polymarket research not configured")
+            return await build_polymarket_calls(self.polymarket, asset, horizon)
+        if kind == "kalshi":
+            if self.kalshi is None:
+                raise ValueError("Kalshi research not configured")
+            return await build_kalshi_calls(
+                self.kalshi, self.kalshi_forward, asset,
+            )
+        raise ValueError("Unsupported call board market")
+
+    def _revision(self, asset: str) -> str | None:
+        """Cheap indexed check; a new immutable forecast triggers instant redraw."""
+        if self.market is None:
+            return None
+        with self.market.store.connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(issued_at) AS latest FROM perp_forward_audit WHERE asset=?",
+                (asset,),
+            ).fetchone()
+        return str(row["latest"]) if row and row["latest"] else None
+
+    def request_refresh(self) -> None:
+        """Called by the real forecast worker after successful new issuance."""
+        self._refresh_event.set()
+
+    async def wait_for_refresh(self) -> bool:
+        try:
+            await asyncio.wait_for(self._refresh_event.wait(), timeout=CHECK_SECONDS)
+        except TimeoutError:
+            return False
+        self._refresh_event.clear()
+        return True
+
+    async def start(self, interaction: discord.Interaction, asset: str,
+                    *, kind: str = "exchange", horizon: int = 5) -> str:
+        if asset not in ASSETS or horizon not in HORIZONS:
+            raise ValueError("Unsupported calls asset or horizon")
+        if kind not in MARKETS:
+            return (
+                "No source-matched live calls for this market. "
+                "Its independent market research panel remains available."
+            )
         channel = interaction.channel
         if channel is None or getattr(interaction, "guild_id", None) is None:
             return "Use a server channel to start Live Calls. No DM was sent."
         async with self._lock:
             rows = await asyncio.to_thread(self._rows)
-            if any(r["channel_id"] == str(channel.id) and r["asset"] == asset
-                   for r in rows):
-                return f"{asset} already has a Live Calls card here."
+            if any(
+                r["channel_id"] == str(channel.id) and r["asset"] == asset
+                and r["market_kind"] == kind
+                and r["horizon_minutes"] == (horizon if kind == "polymarket" else 0)
+                for r in rows
+            ):
+                return f"{asset} {kind} already has a Live Calls card here."
             if len(rows) >= MAX_BOARDS:
                 return "Live Calls capacity reached; stop an old panel first."
             if sum(r["owner_id"] == str(interaction.user.id)
                    for r in rows) >= MAX_OWNER_BOARDS:
                 return "You already have four Live Calls panels. Stop one first."
-            embed, key = await asyncio.to_thread(live_calls_embed, self.market, asset)
+            try:
+                embed, key = await asyncio.wait_for(
+                    self._render(kind, asset, horizon), timeout=20,
+                )
+            except (ValueError, TimeoutError, Exception):  # noqa: BLE001
+                _LOG.warning("Requested market Live Calls unavailable", exc_info=True)
+                return "Cannot verify fresh calls for this market; no panel posted."
             try:
                 msg = await asyncio.wait_for(channel.send(embed=embed, view=self.view),
                                              timeout=8)
@@ -216,7 +380,9 @@ class CallBoardService:
                 return "Cannot post here; check Send Messages permission."
             try:
                 await asyncio.to_thread(
-                    self._save, channel.id, asset, msg.id, interaction.user.id, key,
+                    self._save, channel.id, kind, asset,
+                    horizon if kind == "polymarket" else 0,
+                    msg.id, interaction.user.id, key,
                 )
             except Exception:
                 _LOG.exception("RivaL Live Calls persistence failed")
@@ -225,8 +391,10 @@ class CallBoardService:
                 except (discord.HTTPException, AttributeError):
                     pass
                 return "Could not save this panel; no active tracking created."
-            return (f"Posted {asset} 5m/15m/60m Live Calls in this channel. "
-                    "One message updates automatically, without DMs.")
+            return (
+                f"Posted {asset} {kind} Live Calls in this channel. "
+                "One message updates automatically, without DMs."
+            )
 
     async def _edit(self, row: dict, card, key: str, *, force: bool = False) -> bool:
         if not force and row["fingerprint"] == key:
@@ -242,24 +410,47 @@ class CallBoardService:
         await asyncio.to_thread(self._touch, row, key)
         return True
 
-    async def cycle(self) -> int:
-        """Use the existing target-refresh loop; one read per asset per cycle."""
+    async def cycle(self, *, force: bool = False) -> int:
+        """Refresh on issuance and market boundaries, without DB query storms."""
         async with self._lock:
             rows = await asyncio.to_thread(self._rows)
+            if not rows:
+                return 0
+            now = datetime.now(UTC)
             cards = {}
-            count = 0
+            updated = 0
             for row in rows:
+                kind, asset = row["market_kind"], row["asset"]
+                horizon = int(row["horizon_minutes"])
+                key = (kind, asset, horizon)
                 try:
-                    if row["asset"] not in cards:
-                        cards[row["asset"]] = await asyncio.to_thread(
-                            live_calls_embed, self.market, row["asset"],
+                    if key not in cards:
+                        recent = self._last_evaluated.get(key)
+                        stale = (
+                            recent is None or
+                            (now - recent).total_seconds() >= FULL_REFRESH_SECONDS[kind]
                         )
-                    count += await self._edit(row, *cards[row["asset"]])
+                        revision = self._last_revision.get(key)
+                        new_issuance = False
+                        if kind == "exchange" and (not force):
+                            checked = await asyncio.to_thread(self._revision, asset)
+                            new_issuance = checked != revision
+                            self._last_revision[key] = checked
+                        if force or stale or new_issuance:
+                            cards[key] = await asyncio.wait_for(
+                                self._render(kind, asset, horizon), timeout=20,
+                            )
+                            self._last_evaluated[key] = datetime.now(UTC)
+                        else:
+                            cards[key] = None
+                    if cards[key] is not None:
+                        updated += await self._edit(row, *cards[key])
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001 - one channel never stops others
-                    _LOG.warning("Live Calls update failed", exc_info=True)
-            return count
+                except Exception:  # noqa: BLE001 - one venue cannot stop others
+                    _LOG.warning("Live Calls update failed kind=%s asset=%s",
+                                 kind, asset, exc_info=True)
+            return updated
 
     async def _stop(self, row: dict) -> None:
         await asyncio.to_thread(self._delete, row)
@@ -300,8 +491,9 @@ class CallBoardService:
                 result = "Live Calls panel stopped."
             elif action == "refresh":
                 try:
-                    card, key = await asyncio.to_thread(
-                        live_calls_embed, self.market, row["asset"],
+                    card, key = await self._render(
+                        row["market_kind"], row["asset"],
+                        int(row["horizon_minutes"]),
                     )
                     await self._edit(row, card, key, force=True)
                     result = "Live Calls refreshed."

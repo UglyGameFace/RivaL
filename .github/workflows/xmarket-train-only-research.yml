@@ -1,0 +1,74 @@
+name: RivaL one-shot verified XMarket train-only research
+
+# Explicit owner-directed research after PR #623. No cron, deployments,
+# archive source backfill, Drive writes, model imports, or sealed test scoring.
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/xmarket-train-only-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-xmarket-train-only-research
+  cancel-in-progress: false
+
+jobs:
+  train-only:
+    # The push hook runs once only when this new workflow is merged
+    # immediately after the already verified #623 source commit.
+    # Manual dispatch remains an explicit user action, never automatic.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' &&
+        github.event.before == 'c158cd4a46449468c1aac800bf3eb00f62df5042'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install research tools
+        run: python -m pip install -e ".[ml-research]" "pandas>=2.2" "numpy>=1.26"
+      - name: Restore already verified original market candles
+        run: |
+          python tools/restore_archive_months.py --asset ${{ matrix.asset }} \
+            --root data/archive-v1-restore
+      - name: Research XMarket feature subsets without publishing models
+        run: |
+          python tools/run_xmarket_train_only_research.py \
+            --asset ${{ matrix.asset }} \
+            --manifests-dir data/archive-v1-restore \
+            --train-end "2026-09-19T00:00:00+00:00" \
+            --test-start "2026-10-17T00:00:00+00:00" \
+            --trained-through "2026-11-13T23:55:00+00:00" \
+            --out "xmarket-research/${{ matrix.asset }}.json"
+      - name: Upload only sanitized research results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xmarket-train-only-${{ matrix.asset }}-${{ github.run_id }}
+          path: xmarket-research/${{ matrix.asset }}.json
+          if-no-files-found: warn
+          retention-days: 30

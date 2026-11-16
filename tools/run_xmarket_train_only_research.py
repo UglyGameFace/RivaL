@@ -29,14 +29,27 @@ async def _read_originals(asset: str) -> dict:
 
 
 def run(*, asset: str, manifests: Path, train_end: str,
-        test_start: str, trained_through: str) -> dict:
+        test_start: str, trained_through: str,
+        okx_source_integrity: str | None = None) -> dict:
     # Never expose authenticated Drive identifiers or returned native quotes.
     result = {"schema": "rival-xmarket-train-only-evidence-v1",
               "asset": asset, "research_only": True,
               "source_archives_modified": False,
               "models_published": 0, "trades_placed": 0, "scopes": []}
     try:
-        frames, provenance = load_frames_manifests(manifests, target_asset=asset)
+        frame_options = (
+            {"okx_source_integrity": okx_source_integrity}
+            if okx_source_integrity is not None else {}
+        )
+        frames, provenance = load_frames_manifests(
+            manifests, target_asset=asset, **frame_options,
+        )
+        result["okx_selected_source_integrity"] = provenance.get(
+            "okx_selected_source_integrity"
+        )
+        result["okx_unselected_manifests"] = provenance.get(
+            "okx_unselected_manifests", 0
+        )
         if not provenance.get("provider_sha256_by_month"):
             raise ValueError("no verified provider-origin candle manifests")
         market_data = asyncio.run(_read_originals(asset))
@@ -81,6 +94,13 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Read-only XMarket training-only feature research")
     parser.add_argument("--asset", required=True, choices=("BTC", "ETH", "SOL", "XRP"))
     parser.add_argument("--manifests-dir", type=Path, required=True)
+    parser.add_argument(
+        "--okx-source-integrity",
+        choices=("okx-v5-public-history-5m-v1",
+                 "okx-v5-official-1m-zip-derived-5m-v1"),
+        default=None,
+        help="Use only the explicitly restored SHA-verified OKX native provider family",
+    )
     parser.add_argument("--train-end", required=True)
     parser.add_argument("--test-start", required=True)
     parser.add_argument("--trained-through", required=True)

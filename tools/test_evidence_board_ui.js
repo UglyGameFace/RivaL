@@ -188,6 +188,7 @@ assert.match(cx.opsSignals(),/Target closes \(5m candle\)/);
 assert.match(cx.opsSignals(),/not a guarantee of a 60-minute-ahead forecast/);
 assert.match(cx.opsCommand(),/Latest research forecasts/);
 assert.match(cx.opsCommand(),/Persistent Logistic v3/);
+assert.match(cx.opsCommand(),/XMarket shadow rows · 24h/);
 assert.match(cx.opsCommand(),/prospective-logistic-persistent-v3/);
 assert.match(cx.opsCommand(),/Baseline is the comparator, not another RivaL AI model/);
 assert.match(cx.opsModels(),/Scored model: Persistent Logistic v3/);

@@ -1,10 +1,9 @@
 name: RivaL one-shot verified XMarket train-only research
 
-# Explicit owner-directed research after PR #623. No cron, deployments,
-# archive source backfill, Drive writes, model imports, or sealed test scoring.
-# One corrected source-selection rerun is allowed immediately after #624 on
-# the exact main SHA below. Concurrency serializes this with the original
-# research job, and unrelated commits cannot re-trigger it.
+# One-shot, source-authenticated training-only research after the OKX V5
+# provenance repair. No cron, deployment, archive backfill, Drive writes,
+# model imports, promotion or sealed test scoring. A merged workflow-file
+# update or explicit manual dispatch triggers the bounded research job.
 on:
   push:
     branches: [main]
@@ -21,15 +20,14 @@ concurrency:
 
 jobs:
   train-only:
-    # The push hook runs once only on the exact main transition from
-    # merged #624 to its causality-corrected successor. Original #624 run
-    # remains independent; no weekly or recurring retraining is introduced.
-    # Later reruns require an explicit manual dispatch.
+    # A workflow-file change triggers exactly one authenticated, read-only
+    # four-asset pass after a merged main update. No cron, live model import,
+    # unbounded history collection or ongoing training schedule.
+    # Manual dispatch remains available for a later *new-source* recheck.
     if: >-
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' &&
-        github.event.before == 'b957d2e05aeb7bba833a021c32a7187a8ebce507'))
+       github.event_name == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -58,12 +56,14 @@ jobs:
       - name: Restore already verified original market candles
         run: |
           python tools/restore_archive_months.py --asset ${{ matrix.asset }} \
-            --root data/archive-v1-restore
+            --root data/archive-v1-restore \
+            --okx-source-integrity okx-v5-public-history-5m-v1
       - name: Research XMarket feature subsets without publishing models
         run: |
           python tools/run_xmarket_train_only_research.py \
             --asset ${{ matrix.asset }} \
             --manifests-dir data/archive-v1-restore \
+            --okx-source-integrity okx-v5-public-history-5m-v1 \
             --train-end "2026-09-19T00:00:00+00:00" \
             --test-start "2026-10-17T00:00:00+00:00" \
             --trained-through "2026-11-13T23:55:00+00:00" \

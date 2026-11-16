@@ -33,9 +33,15 @@ from parlay_bot.perpetuals.live_quotes import (
 
 _LOG = logging.getLogger(__name__)
 HYPERLIQUID_WS = "wss://api.hyperliquid.xyz/ws"
-BINANCE_WS = "wss://fstream.binance.com/market/stream?streams=" + "/".join(
-    f"{symbol.lower()}@bookTicker" for symbol in ASSETS.values()
-)
+# Binance USD-M migrated high-frequency bookTicker to /public in 2026.
+# Build default and scoped subscriptions from one canonical route.
+def binance_book_stream_url(assets: tuple[str, ...]) -> str:
+    return "wss://fstream.binance.com/public/stream?streams=" + "/".join(
+        f"{ASSETS[asset].lower()}@bookTicker" for asset in assets
+    )
+
+
+BINANCE_WS = binance_book_stream_url(tuple(ASSETS))
 VENUES = tuple(SOURCE_QUOTE_CURRENCIES)
 RECONNECT_CAP_SECONDS = 60.0
 BOOK_SILENCE_SECONDS = 120
@@ -281,13 +287,11 @@ class StreamingBookHub:
         return True
 
     async def _run(self, venue: str) -> None:
-        url = HYPERLIQUID_WS if venue == "hyperliquid" else (
-            "wss://fstream.binance.com/market/stream?streams="
-            + "/".join(
-                f"{ASSETS[asset].lower()}@bookTicker" for asset in self.assets
-            )
-        )
-        if venue == "okx":
+        if venue == "hyperliquid":
+            url = HYPERLIQUID_WS
+        elif venue == "binance":
+            url = binance_book_stream_url(self.assets)
+        elif venue == "okx":
             url = OKX_PUBLIC_WS
         elif venue == "bitget":
             url = BITGET_PUBLIC_WS
@@ -297,6 +301,8 @@ class StreamingBookHub:
             url = DERIBIT_PUBLIC_WS
         elif venue == "lighter":
             url = LIGHTER_PUBLIC_WS
+        else:
+            raise ValueError("Unsupported quote stream venue")
         attempts = 0
         while True:
             backoff_override = 0.0

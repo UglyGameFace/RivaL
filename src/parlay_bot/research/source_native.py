@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from parlay_bot.research.free_history import HistoryImportError, _persist
@@ -65,6 +66,38 @@ def _source_manifest_receipt(manifest: dict, manifest_sha: str) -> dict:
     }
 
 
+# Only known source-native column names can appear in a public conflict receipt.
+# Additional original JSON fields still participate in hashing, but their
+# names are redacted so the receipt cannot expose arbitrary source metadata.
+_PUBLIC_CANDLE_COLUMNS = frozenset({
+    "venue", "contract", "quote", "interval_minutes", "opened_at", "closed_at",
+    "first_observed_at", "open", "high", "low", "close", "volume_base",
+    "volume_quote", "volume_contracts", "trades",
+})
+_PRICE_FIELDS = frozenset({"open", "high", "low", "close"})
+_VOLUME_FIELDS = frozenset({"volume_base", "volume_quote", "volume_contracts"})
+_GRID_FIELDS = frozenset({
+    "venue", "contract", "quote", "interval_minutes", "opened_at", "closed_at",
+})
+
+
+def _field_value_token(value: object) -> bytes:
+    """Normalize JSON number spelling for *diagnostic* field comparisons.
+
+    The source's actual bytes and strict canonical SHA tests remain unchanged.
+    Do not coerce numeric strings, booleans or the first-observed clock.
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("non-finite source-native field")
+        token = {"number": str(Decimal(str(value)).normalize())}
+    else:
+        token = {"value": value}
+    return json.dumps(
+        token, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")
+
+
 def _canonical_month_record_signatures(payload: bytes) -> dict:
     """Compare source-normalized history without exposing prices or timestamps.
 
@@ -76,14 +109,21 @@ def _canonical_month_record_signatures(payload: bytes) -> dict:
     full = hashlib.sha256()
     without_observation = hashlib.sha256()
     count = 0
+    per_field: dict[str, object] = {}
     for raw in payload.splitlines():
         count += 1
         if count > 10_000:
             raise HistoryImportError("native conflict comparison exceeds row cap")
         try:
             record = json.loads(raw)
-            if not isinstance(record, dict):
-                raise TypeError("not a JSON object")
+            if (not isinstance(record, dict) or len(record) > 64
+                or any(not isinstance(key, str) or len(key) > 128
+                       for key in record)):
+                raise TypeError("invalid record columns")
+            for key, value in record.items():
+                digest = per_field.setdefault(key, hashlib.sha256())
+                digest.update(count.to_bytes(4, "big"))
+                digest.update(_field_value_token(value) + b"\n")
             all_fields = json.dumps(
                 record, sort_keys=True, separators=(",", ":"), allow_nan=False,
             ).encode("utf-8")
@@ -104,6 +144,8 @@ def _canonical_month_record_signatures(payload: bytes) -> dict:
         "rows": count,
         "canonical_all_fields_sha256": full.hexdigest(),
         "canonical_without_first_observed_sha256": without_observation.hexdigest(),
+        "field_signatures": {key: digest.hexdigest()
+                             for key, digest in per_field.items()},
     }
 
 
@@ -812,6 +854,21 @@ async def restore_verified_source_months(
                     comparable_rows = (
                         first_signature["rows"] == second_signature["rows"]
                     )
+                    first_fields = first_signature["field_signatures"]
+                    second_fields = second_signature["field_signatures"]
+                    differing_fields = {
+                        key for key in first_fields.keys() | second_fields.keys()
+                        if first_fields.get(key) != second_fields.get(key)
+                    }
+                    public_fields = sorted({
+                        key if key in _PUBLIC_CANDLE_COLUMNS else "other_record_field"
+                        for key in differing_fields
+                    })
+                    all_fields_equal = (
+                        comparable_rows and
+                        first_signature["canonical_all_fields_sha256"] ==
+                        second_signature["canonical_all_fields_sha256"]
+                    )
                     raise NativeMonthConflictError({
                         "schema": "rival-native-month-conflict-v2",
                         "venue": identity[0], "contract": identity[1],
@@ -830,11 +887,15 @@ async def restore_verified_source_months(
                         "comparison": {
                             "first_rows": first_signature["rows"],
                             "second_rows": second_signature["rows"],
-                            "all_candle_fields_identical": (
-                                comparable_rows and
-                                first_signature["canonical_all_fields_sha256"] ==
-                                second_signature["canonical_all_fields_sha256"]
+                            "all_candle_fields_identical": all_fields_equal,
+                            "differing_fields": public_fields,
+                            "price_fields_differ": bool(differing_fields & _PRICE_FIELDS),
+                            "volume_fields_differ": bool(differing_fields & _VOLUME_FIELDS),
+                            "trade_count_differs": "trades" in differing_fields,
+                            "grid_or_identity_fields_differ": bool(
+                                differing_fields & _GRID_FIELDS
                             ),
+                            "semantic_fields_equal": comparable_rows and not differing_fields,
                             "identical_except_first_observed_at": (
                                 comparable_rows and
                                 first_signature["canonical_without_first_observed_sha256"] ==

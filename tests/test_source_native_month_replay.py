@@ -157,6 +157,12 @@ async def test_native_replay_different_manifest_provenance_fails_closed(tmp_path
         "second_rows": 1,
         "all_candle_fields_identical": True,
         "identical_except_first_observed_at": True,
+        "differing_fields": [],
+        "price_fields_differ": False,
+        "volume_fields_differ": False,
+        "trade_count_differs": False,
+        "grid_or_identity_fields_differ": False,
+        "semantic_fields_equal": True,
     }
     assert "m1" not in json.dumps(evidence)
     assert "m2" not in json.dumps(evidence)
@@ -192,6 +198,12 @@ async def test_conflicting_source_sha_can_be_observation_only(tmp_path):
         "first_rows": 1, "second_rows": 1,
         "all_candle_fields_identical": False,
         "identical_except_first_observed_at": True,
+        "differing_fields": ["first_observed_at"],
+        "price_fields_differ": False,
+        "volume_fields_differ": False,
+        "trade_count_differs": False,
+        "grid_or_identity_fields_differ": False,
+        "semantic_fields_equal": False,
     }
     assert proof["verification"]["second_history_readback_verified"] is True
     assert proof["first"]["claimed_history_sha256"] != proof["second"]["claimed_history_sha256"]
@@ -211,6 +223,12 @@ async def test_conflicting_sources_with_price_changes_remain_blocked(tmp_path):
             months=["2026-09"], root=tmp_path,
         )
     assert caught.value.evidence["comparison"]["identical_except_first_observed_at"] is False
+    assert caught.value.evidence["comparison"]["differing_fields"] == [
+        "close", "first_observed_at",
+    ]
+    assert caught.value.evidence["comparison"]["price_fields_differ"] is True
+    assert caught.value.evidence["comparison"]["volume_fields_differ"] is False
+    assert caught.value.evidence["comparison"]["grid_or_identity_fields_differ"] is False
     assert caught.value.evidence["resolution"] == "blocked_divergent_manifest_bytes"
 
 
@@ -281,3 +299,87 @@ async def test_archive_restore_retains_credential_free_conflict_evidence(tmp_pat
     assert report["excluded"]["okx"]["reason"] == "NativeMonthConflictError"
     assert "gate" in report["restored"]
     assert report["restored"]["gate"] == []
+
+
+@pytest.mark.asyncio
+async def test_conflicting_sources_identify_volume_and_trade_fields(tmp_path):
+    first = _observation_row(observed_at="2026-10-01T00:00:00+00:00")
+    row = json.loads(first)
+    row["volume_base"] = 2
+    row["trades"] = 17
+    second = _bytes(row) + bytes((10,))
+    drive = _Drive(changed_manifest=True, first_data=first, second_data=second)
+    with pytest.raises(NativeMonthConflictError) as caught:
+        await restore_verified_source_months(
+            drive, venue="okx", contract="BTC-USDT-SWAP",
+            months=["2026-09"], root=tmp_path,
+        )
+    comparison = caught.value.evidence["comparison"]
+    assert comparison["differing_fields"] == ["trades", "volume_base"]
+    assert comparison["volume_fields_differ"] is True
+    assert comparison["trade_count_differs"] is True
+    assert comparison["price_fields_differ"] is False
+
+
+@pytest.mark.asyncio
+async def test_conflicting_sources_diagnose_numeric_serialization_without_promotion(
+    tmp_path,
+):
+    first = _observation_row(observed_at="2026-10-01T00:00:00+00:00")
+    # Same actual JSON numeric value, different textual representation.
+    second = first.replace(b'"close":101', b'"close":101.0')
+    drive = _Drive(changed_manifest=True, first_data=first, second_data=second)
+    with pytest.raises(NativeMonthConflictError) as caught:
+        await restore_verified_source_months(
+            drive, venue="okx", contract="BTC-USDT-SWAP",
+            months=["2026-09"], root=tmp_path,
+        )
+    comparison = caught.value.evidence["comparison"]
+    assert comparison["all_candle_fields_identical"] is False
+    assert comparison["differing_fields"] == []
+    assert comparison["semantic_fields_equal"] is True
+    assert caught.value.evidence["resolution"] == "blocked_divergent_manifest_bytes"
+
+
+@pytest.mark.asyncio
+async def test_conflicting_sources_redact_arbitrary_extra_field_names(tmp_path):
+    first = _observation_row(observed_at="2026-10-01T00:00:00+00:00")
+    row = json.loads(first)
+    row["private_internal_record_label"] = "a"
+    second_row = dict(row)
+    second_row["private_internal_record_label"] = "b"
+    drive = _Drive(
+        changed_manifest=True,
+        first_data=_bytes(row) + bytes((10,)),
+        second_data=_bytes(second_row) + bytes((10,)),
+    )
+    with pytest.raises(NativeMonthConflictError) as caught:
+        await restore_verified_source_months(
+            drive, venue="okx", contract="BTC-USDT-SWAP",
+            months=["2026-09"], root=tmp_path,
+        )
+    evidence = caught.value.evidence
+    assert evidence["comparison"]["differing_fields"] == ["other_record_field"]
+    assert "private_internal_record_label" not in json.dumps(evidence)
+
+
+@pytest.mark.asyncio
+async def test_provider_volume_extension_is_not_mislabeled_as_price_change(tmp_path):
+    first = _observation_row(observed_at="2026-10-01T00:00:00+00:00")
+    second_row = json.loads(first)
+    second_row["volume_contracts"] = 4
+    second_row["trades"] = -1
+    second = _bytes(second_row) + bytes((10,))
+    drive = _Drive(changed_manifest=True, first_data=first, second_data=second)
+    with pytest.raises(NativeMonthConflictError) as caught:
+        await restore_verified_source_months(
+            drive, venue="okx", contract="BTC-USDT-SWAP",
+            months=["2026-09"], root=tmp_path,
+        )
+    comparison = caught.value.evidence["comparison"]
+    assert comparison["differing_fields"] == ["trades", "volume_contracts"]
+    assert comparison["price_fields_differ"] is False
+    assert comparison["volume_fields_differ"] is True
+    assert comparison["trade_count_differs"] is True
+    assert comparison["grid_or_identity_fields_differ"] is False
+    assert caught.value.evidence["resolution"] == "blocked_divergent_manifest_bytes"

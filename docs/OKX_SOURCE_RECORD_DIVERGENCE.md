@@ -61,3 +61,43 @@ families before implementing any source-family archive separation.
 distinct inner evaluation UTC days compared with required **seven**;
 there are still 7 unimported XMarket fits and zero proven after-cost edges.
 Do not retrain against a previously examined holdout or relax the gates.
+
+## Actual post-#629 source comparison (November 16, 2026)
+
+Authenticated [main run #43916036555](https://github.com/UglyGameFace/RivaL/actions/runs/43916036555)
+used merged SHA `ad1a0b13` and produced `okx-bulk-source-progress`.
+All four original conflicts have **both** normalized history objects SHA-readback
+verified, equal row counts, and `identical_except_first_observed_at=false`:
+
+- BTC July 2026: 8,928 rows per version.
+- ETH, SOL, and XRP September 2026: 8,640 rows per version.
+
+The source families are PostgreSQL first-observed ledger exports versus the
+independent OKX v5 public-history backfill. Code review independently shows
+an important schema distinction: the PostgreSQL exporter writes `volume_base`
+and `trades`, while the OKX public-history/ZIP exporters also write
+`volume_contracts` and `volume_quote` and use `trades=-1` when unavailable.
+These **known extra fields** can change the full-record signature even if
+OHLC prices happen to be identical. This is not yet an observed claim that
+those actual four-month price series are equal. Both manifest byte hashes and
+normalized file byte hashes are verified, **not** independent exchange-published
+raw evidence. The observations refute an observation-clock-only discrepancy
+but do not prove prices specifically changed: volume, trade counts, candle
+time, identity fields or numeric serialization could also explain it.
+
+## Bounded field-level conflict receipt
+
+The next diagnostic retains the strict import block and adds
+`comparison.differing_fields` with only known, safe column names and boolean
+flags for price, volume, trade count, and candle-grid/identity differences.
+Other unknown record keys appear only as `other_record_field`. Per-field
+streaming SHA signatures distinguish original records by indexed rows and
+normalize numeric *spelling* (e.g. 101 and 101.0) for diagnostics only.
+Full original SHA-256, full-record identity and observation-excluding identity
+are **not** relaxed. No candles, times, Drive IDs, source URLs or per-row values
+are included in the report.
+
+Acceptance requires another authentic four-asset OKX run from the diagnostic
+commit, followed by source-family and provider witness reconciliation based
+on which fields actually differ. Even a semantically identical result does
+not automatically select, merge, promote or backdate either original.

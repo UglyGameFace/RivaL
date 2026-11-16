@@ -96,8 +96,8 @@ def _canonical_month_record_signatures(payload: bytes) -> dict:
             raise HistoryImportError(
                 "invalid source-native history comparison row"
             ) from exc
-        full.update(all_fields + b"\\n")
-        without_observation.update(without + b"\\n")
+        full.update(all_fields + b"\n")
+        without_observation.update(without + b"\n")
     if count == 0:
         raise HistoryImportError("empty source-native conflict history")
     return {

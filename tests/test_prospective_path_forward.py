@@ -97,6 +97,20 @@ def test_unscoreable_old_paths_cannot_starve_new_complete_paths(learning_store, 
     assert sample["status"]=="sampled" and sample["read_only"]
     assert sample["sample_only_not_backlog_census"] and sample["sides_are_correlated"]
     assert sample["by_reason"]["ready_for_settlement"]>=1
+    if blocked == "missing":
+        old_gap = next(
+            example for example in sample["examples"]
+            if example["reason"] == "missing_source_candles"
+        )
+        assert old_gap["missing_candle_opened_at"] == [
+            (old[0].opened_at + timedelta(minutes=minutes)).isoformat()
+            for minutes in (10, 15, 20)
+        ]
+    else:
+        assert all(
+            not example["missing_candle_opened_at"]
+            for example in sample["examples"]
+        )
     assert sample["by_reason"][{
         "missing": "missing_source_candles",
         "observed_before_issue": "source_seen_before_issuance",

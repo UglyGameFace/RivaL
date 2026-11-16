@@ -1,5 +1,16 @@
 # RivaL active bot work — November 16, 2026 UTC
 
+## Current continuation (2026-11-16 UTC) — bounded source-exact quote sampling
+
+Branch `fix/fair-bounded-quote-observer-20261116` extends merged #613–615 without touching separate Jarvis PR #608. `main@46f4f9b` passed [full CI](https://github.com/UglyGameFace/RivaL/actions/runs/43792111472) and [native release parity](https://github.com/UglyGameFace/RivaL/actions/runs/43792807328). [02:34 UTC production receipt](https://github.com/UglyGameFace/RivaL/actions/runs/43792927860) contains genuine source-exact evidence: seven live native book sources fresh on BTC/ETH/SOL/XRP; Bitget 34/34, OKX 30/30, Hyperliquid 36/39, Gate 7/23, Deribit 6/19, Lighter 10/29 matched XMarket directional-entry rows in a rolling two-hour window. Binance books are fresh but its XMarket forecast count remains zero. No source has proven profitable XMarket edge.
+
+The last receipt overall failed because the latest fresh learning heartbeat recorded `math_ok=false` and 0 issued/settled immediately after boot. Do not call learning healthy until later source evidence confirms recovery. The observed misses on newer feeds may include rows issued before feed activation. Root code risk: `_stream_shadow_loop` always sampled 7 venues x 4 assets serially with the three new venues last; occasional slow PostgreSQL operations can exhaust the unchanged 90-second quote-entry window.
+
+This branch keeps native clocks, costs, exact-source ledgers, no-order policy and qualification gates intact, but interleaves/rotates venue sampling, limits simultaneous database writers to three (eight-slot shared pool), and adds read-only 30-minute per-source decisive/entry/expired cohort counts to distinguish pre-deploy misses. Regression tests cover concurrency, tail-source fairness, rotation, and original PostgreSQL/SQLite quote identity/read-only proof.
+
+Acceptance: exact PR and merged-main full CI; native Discloud release parity; a post-deployment authenticated quote receipt with healthy source intake, real new-cohort entries/exits and `math_ok=true`; no increased pool/lock pressure. Still missing seven XMarket fits and empirical independent 150-target/21-day/80%-coverage, calibrated baseline and after-cost superiority.
+
+
 ## Objective
 Continue all eleven areas in [RIVAL_REMAINING_BACKLOG.md](docs/RIVAL_REMAINING_BACKLOG.md); website repair remains paused and independent Jarvis/LFM3 PR #608 stays separate. Current production outcome: extend the shared native quote pipeline to Gate, Deribit linear-USDC and Lighter, including exact-source entry/exit, fee, review scheduling, signal access and host evidence. No orders, inferred quotes, retrospective forecasts or relaxed qualification gates.
 

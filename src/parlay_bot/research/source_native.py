@@ -46,6 +46,8 @@ def _source_manifest_receipt(manifest: dict, manifest_sha: str) -> dict:
         "drive-daily-records-first-observed-at-v1",
         "gate-official-gzip-with-v4-api-reconciliation-v1",
         "bitget-v3-original-api-5m-v1",
+        "okx-v5-public-history-5m-v1",
+        "okx-v5-official-1m-zip-derived-5m-v1",
     }:
         integrity = None
     transport = manifest.get("source_transport")
@@ -56,6 +58,7 @@ def _source_manifest_receipt(manifest: dict, manifest_sha: str) -> dict:
     return {
         "manifest_sha256": manifest_sha,
         "claimed_history_sha256": sha("data_sha256"),
+        "claimed_provider_source_sha256": sha("source_sha256"),
         "claimed_original_archive_sha256": sha("source_archive_sha256"),
         "source_integrity": integrity,
         "source_transport": transport,

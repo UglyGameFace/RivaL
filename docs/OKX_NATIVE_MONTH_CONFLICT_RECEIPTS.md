@@ -10,7 +10,7 @@
 `restore_verified_source_months` now raises a typed `NativeMonthConflictError`, which retains its ordinary `HistoryImportError` parent and original fail-closed message. On a second **different** SHA-verified manifest for the same `(venue,contract,quote,month)`, the exception carries:
 
 - exact venue, contract, quote, year-month;
-- both full manifest SHA-256 digests, claimed original history SHA-256 and, when present, claimed provider archive SHA-256;
+- both full manifest SHA-256 digests, each claimed history SHA-256 (`data_sha256`), the original provider response SHA-256 (`source_sha256`), and, when present, the additional source archive SHA-256;
 - the validated source-integrity family and sanitized bounded source transport;
 - explicit proof flags: **both manifest bytes have been SHA checked**, first manifest's original history was read back and checked; **the second manifest's original history has not been independently read back** at the point of rejection;
 - `blocked_divergent_manifest_bytes` as the only outcome.

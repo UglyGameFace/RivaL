@@ -426,11 +426,23 @@ def read_advance_receipt(store, now):
                              "scopes": [dict(r) for r in cards]}
         except Exception:  # noqa: BLE001 - no card requested is not a forecast failure
             channel_cards = {"status": "read_unavailable", "active": None}
+        # A missing opt-in panel is not a Discord delivery failure. A running
+        # forecast worker cannot post to a channel the owner never selected.
+        # Keep this distinct from an active panel without confirmed writes.
+        if channel_cards["status"] != "recorded":
+            delivery_state = "subscription_inventory_unavailable"
+        elif channel_cards["active"] == 0:
+            delivery_state = "no_active_channel_subscriptions"
+        elif deliveries:
+            delivery_state = "accepted_delivery_recorded"
+        else:
+            delivery_state = "subscribed_no_recent_delivery_receipt"
         return {"status": "recorded", "model": MODEL, "target_contract": TARGET_CONTRACT,
                 "scopes": [dict(r) for r in rows], "readiness": [dict(r) for r in readiness],
                 "deliveries": [dict(r) for r in deliveries], "window_hours": 2,
                 "recent_forecasts": samples, "recent_deliveries": delivery_samples,
                 "channel_cards": channel_cards,
+                "delivery_state": delivery_state,
                 "read_only": True, "qualified": False,
                 "does_not_prove_prediction_edge": True,
                 "discord_delivery_is_api_acceptance_not_independent_observation": True}

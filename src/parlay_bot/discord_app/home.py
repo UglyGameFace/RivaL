@@ -3077,21 +3077,23 @@ class GuidedHome(discord.ui.View):
             await self.redraw(interaction)
             return
         if action == "api-limits":
-            # Owner lookup is a remote Discord request. Acknowledge
-            # immediately, then use the followup to open the settings.
+            # Use RivaL's authoritative private owner gate, not an extra
+            # application.owner lookup. Discord team members and explicitly
+            # configured RIVAL_OWNER_USER_IDS are legitimate private owners;
+            # application.owner may be a different user or absent for teams.
+            # Acknowledge before the lookup/database access, fail closed when
+            # the gate is unavailable, and scope the modal to the tapper.
             await interaction.response.defer(ephemeral=True, thinking=True)
-            application = await asyncio.wait_for(
-                interaction.client.application_info(), timeout=3,
-            )
-            owner = application.owner
-            if owner is None or owner.id != interaction.user.id:
+            gate = getattr(interaction.client, "owner_gate", None)
+            if gate is None or not await gate.allows(interaction):
                 await interaction.followup.send(
-                    "Only the application owner can edit API limits.", ephemeral=True,
+                    "API limits require an account authorized by RivaL's private owner gate.",
+                    ephemeral=True,
                 )
                 return
             limits = OwnerLimitStore(interaction.client.store)
             view = OwnerLimitsView(
-                store=limits, owner_id=owner.id,
+                store=limits, owner_id=interaction.user.id,
                 odds_provider=getattr(interaction.client, "oddspapi_provider", None),
                 sports_provider=getattr(interaction.client, "current_provider", None),
             )

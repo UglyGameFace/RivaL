@@ -9,7 +9,11 @@ from types import SimpleNamespace
 import pytest
 
 from parlay_bot.research.free_history import HistoryImportError
-from parlay_bot.research.source_native import SOURCE, restore_verified_source_months
+from parlay_bot.research.source_native import (
+    SOURCE,
+    NativeMonthConflictError,
+    restore_verified_source_months,
+)
 
 
 def _bytes(document):
@@ -96,10 +100,27 @@ async def test_native_replay_same_manifest_sha_is_safe_and_idempotent(tmp_path):
 @pytest.mark.asyncio
 async def test_native_replay_different_manifest_provenance_fails_closed(tmp_path):
     drive = _Drive(changed_manifest=True)
-    with pytest.raises(HistoryImportError, match="conflicting native month snapshots"):
+    with pytest.raises(NativeMonthConflictError,
+                       match="conflicting native month snapshots") as caught:
         await restore_verified_source_months(
             drive, venue="okx", contract="BTC-USDT-SWAP",
             months=["2026-09"], root=tmp_path)
+    evidence = caught.value.evidence
+    assert (evidence["venue"], evidence["contract"], evidence["quote"],
+            evidence["month"]) == ("okx", "BTC-USDT-SWAP", "USDT", "2026-09")
+    assert evidence["schema"] == "rival-native-month-conflict-v1"
+    assert evidence["resolution"] == "blocked_divergent_manifest_bytes"
+    assert evidence["first"]["manifest_sha256"] != evidence["second"]["manifest_sha256"]
+    assert evidence["first"]["claimed_history_sha256"] == hashlib.sha256(drive.data).hexdigest()
+    assert evidence["second"]["claimed_history_sha256"] == hashlib.sha256(drive.data).hexdigest()
+    assert evidence["verification"] == {
+        "both_manifests_sha_verified": True,
+        "first_history_readback_verified": True,
+        "second_history_readback_verified": False,
+    }
+    assert "m1" not in json.dumps(evidence)
+    assert "m2" not in json.dumps(evidence)
+    assert "source_url" not in json.dumps(evidence)
     assert drive.calls.count("m2") == 1
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pandas as pd
 import pytest
 
 from parlay_bot.perpetuals import flow_challenger_v3
@@ -40,6 +41,7 @@ def test_research_only_never_opens_outer_validation_test_scores_or_model(monkeyp
     assert measured["status"] == "measured_train_only"
     assert measured["uses_outer_validation_or_test"] is False
     assert measured["can_publish_model"] is False
+    assert report["dispersion_selection"]["uses_outer_holdout_availability"] is False
 
 
 def test_research_only_is_mutually_exclusive_with_admission_mode():
@@ -95,3 +97,48 @@ def test_read_only_bundle_restore_refuses_cross_asset_readback():
 
     with pytest.raises(ValueError, match="cross-asset"):
         asyncio.run(xmarket_history.read_verified_inputs_only(CrossAssetDrive(), asset="BTC"))
+
+
+def test_train_only_dispersion_selection_never_reads_outer_period_availability():
+    # A third venue has excellent source coverage during training but
+    # disappears for validation/test. Production still requires every
+    # chronological split; exploratory research must not look at them.
+    times = pd.date_range("2026-01-01", periods=13_500, freq="5min", tz="UTC")
+    both = {
+        "polymarket": {t: {"price": 0.54} for t in times},
+        "kalshi": {t: {"price": 0.51} for t in times},
+    }
+    full = pd.DataFrame({"ret_1": 0.1, "ret_5": 0.1}, index=times)
+    subset = full.iloc[:9_700]
+    dispersion = {
+        "bitget|BTC": (full, full),
+        "okx|BTC": (full, full),
+        "gate|BTC": (subset, subset),
+    }
+    args = {
+        "asset": "BTC", "live_venues": ["bitget", "okx", "gate"],
+        "bars": both, "train_end": times[10_000],
+        "test_start": times[11_700],
+        "trained_through": times[-1], "horizon": 60,
+    }
+    production, prod_evidence = xmarket_training._select_dispersion_venues(
+        dispersion, **args, train_only=False,
+    )
+    research, train_evidence = xmarket_training._select_dispersion_venues(
+        dispersion, **args, train_only=True,
+    )
+    assert production == ("bitget", "okx")
+    assert prod_evidence["uses_outer_holdout_availability"] is True
+    assert research == ("bitget", "okx", "gate")
+    assert train_evidence["uses_outer_holdout_availability"] is False
+    assert set(train_evidence["joint_split_rows"]) == {"train"}
+    assert train_evidence["all_split_capacity_present"] is True
+
+    # Changing only the future venue rows must never alter the features
+    # selected for the already-fixed research training period.
+    dispersion["gate|BTC"] = (full, full)
+    same_research, same_receipt = xmarket_training._select_dispersion_venues(
+        dispersion, **args, train_only=True,
+    )
+    assert same_research == research
+    assert same_receipt == train_evidence

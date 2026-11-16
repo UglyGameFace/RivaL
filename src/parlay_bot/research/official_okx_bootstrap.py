@@ -365,12 +365,16 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
     blocks = [recent] + [older[i:i + 6] for i in range(0, len(older), 6)]
     from parlay_bot.research.audit import audit_catalog
 
+    # Inventory the two official OKX provider formats separately from
+    # RivaL's immutable PostgreSQL first-observed ledger. Conflicting
+    # *provider* originals for the same month still fail closed.
+    provider_root = Path(root) / "source-families" / "okx_official"
     for block in blocks:
         await restore_verified_source_months(
-            drive, venue="okx", months=block, root=root,
-            contract=f"{asset}-USDT-SWAP",
+            drive, venue="okx", months=block, root=provider_root,
+            contract=f"{asset}-USDT-SWAP", source_family="okx_official",
         )
-        inventory = audit_catalog(root, months=block, sources=(SOURCE,))
+        inventory = audit_catalog(provider_root, months=block, sources=(SOURCE,))
         verified = {
             row["month"] for row in inventory["partitions"]
             if row["venue"] == "okx"
@@ -476,6 +480,7 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
                 receipt = await run_native_research(
                     drive=drive, venue="okx", months=block, root=root,
                     report_dir=report_dir, publish=True,
+                    source_integrity=INTEGRITY,
                 )
             except (HistoryImportError, OSError, RuntimeError, ValueError) as exc:
                 # Model publication can be blocked independently of already

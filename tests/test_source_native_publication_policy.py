@@ -160,3 +160,44 @@ def test_archive_only_cli_needs_verified_screening_counts(monkeypatch, capsys):
     report["actual_registry_screening"]["retrospective_passed"] = 0
     report["archived_rejected_models"] = 0
     assert native.main(["--venue", "okx", "--publish"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_okx_pinned_research_uses_isolated_local_root_and_stays_unqualified(
+    tmp_path, monkeypatch,
+):
+    from parlay_bot.research.free_history import HistoryImportError
+
+    integrity = "okx-v5-public-history-5m-v1"
+    months = [f"2026-{m:02d}" for m in range(5, 11)]
+    calls = []
+
+    async def restore(*args, **kwargs):
+        calls.append(("restore", kwargs))
+        return []
+
+    def audit(root, *, months, sources):
+        calls.append(("audit", {"root": root}))
+        return {"streams": [], "partitions": [], "validation_failures": []}
+
+    monkeypatch.setattr(native, "restore_verified_source_months", restore)
+    monkeypatch.setattr(native, "audit_catalog", audit)
+    result = await native.run_native_research(
+        drive=object(), venue="okx", months=months, root=tmp_path,
+        report_dir=tmp_path / "reports", publish=False,
+        source_integrity=integrity,
+    )
+    scoped = tmp_path / "source-families" / integrity
+    assert calls[0][1]["source_integrity"] == integrity
+    assert calls[0][1]["root"] == scoped
+    assert calls[1][1]["root"] == scoped
+    assert result["source_integrity"] == integrity
+    assert result["status"] == "source_months_incomplete"
+    assert result["published_models"] == 0
+    assert result["promoted_live"] is False
+    with pytest.raises(HistoryImportError, match="provenance"):
+        await native.run_native_research(
+            drive=object(), venue="gate", months=months, root=tmp_path,
+            report_dir=tmp_path / "reports", publish=False,
+            source_integrity=integrity,
+        )

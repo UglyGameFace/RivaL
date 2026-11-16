@@ -26,6 +26,7 @@ class _Drive:
     def __init__(
         self, *, changed_manifest=False, corrupt_replay=False,
         first_data=None, second_data=None, corrupt_second_history=False,
+        second_integrity=None,
     ):
         self.folders = SimpleNamespace(manifests="manifests", history="history")
         self.data = (first_data if first_data is not None
@@ -52,6 +53,13 @@ class _Drive:
         }
         if changed_manifest:
             second_doc["different_provenance"] = "new"
+        if second_integrity is not None:
+            second_doc.update({
+                "source_integrity": second_integrity,
+                "source_transport": "official_public_https",
+                "source_url": "https://www.okx.com/api/v5/market/history-candles",
+                "provider_signed_checksum": False,
+            })
         first = _bytes(doc)
         second = _bytes(second_doc)
         self.blobs = {
@@ -383,3 +391,75 @@ async def test_provider_volume_extension_is_not_mislabeled_as_price_change(tmp_p
     assert comparison["trade_count_differs"] is True
     assert comparison["grid_or_identity_fields_differ"] is False
     assert caught.value.evidence["resolution"] == "blocked_divergent_manifest_bytes"
+
+
+@pytest.mark.asyncio
+async def test_explicit_provider_source_family_restores_without_ledger_merging(tmp_path):
+    first = _observation_row(observed_at="2026-10-01T00:00:00+00:00")
+    second = _observation_row(observed_at="2026-11-01T00:00:00+00:00", close=102)
+    official = "okx-v5-public-history-5m-v1"
+    drive = _Drive(
+        changed_manifest=True, first_data=first, second_data=second,
+        second_integrity=official,
+    )
+    with pytest.raises(NativeMonthConflictError):
+        await restore_verified_source_months(
+            drive, venue="okx", contract="BTC-USDT-SWAP",
+            months=["2026-09"], root=tmp_path / "strict",
+        )
+    drive.calls.clear()
+    files = await restore_verified_source_months(
+        drive, venue="okx", contract="BTC-USDT-SWAP",
+        months=["2026-09"], root=tmp_path / "official",
+        source_integrity=official,
+    )
+    assert len(files) == 1
+    assert json.loads(files[0].read_text())["source_integrity"] == official
+    assert drive.calls.count("h2") == 1
+    assert "h1" not in drive.calls
+    # The official-provider acquisition path also rejects PostgreSQL copies,
+    # without relying on a preferred Drive listing order.
+    drive.calls.clear()
+    official_family = await restore_verified_source_months(
+        drive, venue="okx", contract="BTC-USDT-SWAP",
+        months=["2026-09"], root=tmp_path / "official-family",
+        source_family="okx_official",
+    )
+    assert len(official_family) == 1
+    assert json.loads(official_family[0].read_text())["source_integrity"] == official
+    assert "h1" not in drive.calls
+    assert drive.calls.count("h2") == 1
+    # The earlier strict call remains blocked despite its first verified file.
+
+
+
+@pytest.mark.asyncio
+async def test_provider_source_pin_rejects_unknown_and_cross_venue(tmp_path):
+    drive = _Drive()
+    for venue, integrity in (
+        ("okx", "postgres-first-observed-at-v1"),
+        ("okx", "unverified-family"),
+        ("gate", "okx-v5-public-history-5m-v1"),
+    ):
+        with pytest.raises(HistoryImportError, match="explicit native source"):
+            await restore_verified_source_months(
+                drive, venue=venue, months=["2026-09"], root=tmp_path,
+                source_integrity=integrity,
+            )
+    assert drive.calls == []
+
+
+@pytest.mark.asyncio
+async def test_official_provider_family_rejects_invalid_modes(tmp_path):
+    drive = _Drive()
+    for venue, family, integrity in (
+        ("okx", "unverified", None),
+        ("gate", "okx_official", None),
+        ("okx", "okx_official", "okx-v5-public-history-5m-v1"),
+    ):
+        with pytest.raises(HistoryImportError, match="provider source family"):
+            await restore_verified_source_months(
+                drive, venue=venue, months=["2026-09"], root=tmp_path,
+                source_family=family, source_integrity=integrity,
+            )
+    assert drive.calls == []

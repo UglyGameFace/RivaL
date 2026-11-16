@@ -113,6 +113,12 @@ jobs:
           fi
           echo "Researching actual warehouse source: $VENUE"
           args=(--venue "$VENUE" --months 6 --publish)
+          if [[ "$VENUE" == "okx" ]]; then
+            # Explicit research-only provider family. A PostgreSQL export is
+            # independently retained but never silently pooled with OKX API
+            # historical candle volumes or observation timestamps.
+            args+=(--source-integrity okx-v5-public-history-5m-v1)
+          fi
           # Read private post-issuance LFM3 feature proposals from the real
           # Discloud PostgreSQL bot, never from GitHub branch text or a guess.
           # Missing/disabled local AI leaves ordinary ML training intact.
@@ -153,6 +159,7 @@ jobs:
               python tools/discloud_feature_hypotheses.py --venue okx \
                 --output "$proposal_file"
               python -m parlay_bot.research.source_native_offline --venue okx --months 6 --publish \
+                --source-integrity okx-v5-public-history-5m-v1 \
                 --llm-hypotheses-file "$proposal_file"
             else
               exit "$exit_code"

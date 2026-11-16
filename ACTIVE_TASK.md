@@ -1,5 +1,15 @@
 # RivaL active bot work — November 16, 2026 UTC
 
+## Current objective: XMarket rejected-fit quality research (November 16, 2026)
+
+**Branch:** `research/xmarket-purged-feature-ablation-20261116`. Start from verified `main@fe88d8c` after merged advance-call #622; parallel open Jarvis PR #608 is unrelated. Do not replay the November 14 holdout, promote an unqualified model, or stop the five issuing XMarket shadows.
+
+**Verified root causes:** Actual original-source run [43647037069](https://github.com/UglyGameFace/RivaL/actions/runs/43647037069) had seven genuine offline quality rejections (four 5m, ETH 15/60m, SOL 60m), not missing training code. Each exact gate failure is recorded in `docs/XMARKET_REJECTED_FIT_RESEARCH.md`. The existing five fitted scopes remain independently subject to future source-matched and after-cost gates.
+
+**Implementation:** For rejected trained scopes, append four predeclared logistic feature-ablation comparisons to the existing research report using only the training partition with a second horizon purge. Fold statistics count distinct target timestamps rather than multiplying correlated venue rows. No new model is automatically selected or imported, no new source/worker, no threshold relaxation and no production inference change. Added focused unit tests and the existing train-run rejection integration assertion.
+
+**Verification required:** Exact-PR full PostgreSQL/SQLite CI, merged-main CI if authorized to merge, one actual new Drive training report with `train_only_feature_ablation` (not a historical re-export), and future locked-period validation. **A measured inner Brier gain is not independently validated predictive improvement.** Next candidate development must pre-register the winner against a new untouched future period; keep #6/#151/#299/#295 open. The existing five XMarket scopes and fresh advance-target Discord delivery need separate production acceptance.
+
 ## Advance next-target calls — active implementation
 
 **Objective/branch:** `feat/advance-next-target-calls-20261116`, based on

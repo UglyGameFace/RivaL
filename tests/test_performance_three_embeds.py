@@ -177,7 +177,7 @@ def test_three_embeds_carry_every_number_from_the_old_card():
     how = fields["How to read this table"]
     assert "Day = days of results" in how and "Res = graded results" in how
     assert "vol = volatility" in how and "learning speed, not accuracy" in how
-    assert "All markets: 115 on trial · 0 passed · 102 cut early for losing" in how
+    assert "All markets: 115 active trial comparisons · 0 qualified · 102 early-stop records" in how
     best = fields["🏆 Best model per timeframe (BTC)"]
     assert "**5m** · **Trend learn** +7.1 edge · 140 results over 3 days, not proven yet" in best
     assert "**15m** · **6-year** +8.0 edge · 696 results over 8 days, not proven yet" in best

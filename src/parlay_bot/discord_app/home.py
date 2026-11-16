@@ -1099,12 +1099,17 @@ def _trials_sections(reports: dict) -> dict:
                            "this is a slow read, not missing results."),
                 "table": "", "missing": "", "how_to_read": "", "count": None}
     rows = board.get("rows") or []
-    all_markets = (f"-# All markets: {int(board.get('trials') or 0)} on trial · "
-                   f"{int(board.get('passed') or 0)} passed · "
-                   f"{int(board.get('stops') or 0)} cut early for losing")
+    # A stop is recorded per model/exchange/contract, not necessarily one
+    # globally retired model. Distinguish live comparisons from those records.
+    cut_here = int(board.get("cut_here") or 0)
+    all_markets = (f"-# All markets: {int(board.get('trials') or 0)} active trial comparisons · "
+                   f"{int(board.get('passed') or 0)} qualified · "
+                   f"{int(board.get('stops') or 0)} early-stop records")
     if not rows:
+        inactive = (f" {cut_here} fully stopped comparison(s) hidden from active trials."
+                    if cut_here else "")
         return {"name": "🧪 Models on trial here (0)",
-                "leader": "No test models have scored results here yet.",
+                "leader": "No active scored model comparisons here." + inactive,
                 "table": "", "missing": "", "how_to_read": all_markets, "count": 0}
     from parlay_bot.discord_app.data_dashboard import VENUE_NAMES
 
@@ -1122,7 +1127,9 @@ def _trials_sections(reports: dict) -> dict:
                    f"{trial_board.MIN_DAYS} days, {trial_board.MIN_RESULTS} results and a win "
                    "after fees.\n-# Lab: vol = volatility; RSI/MACD includes Bollinger. "
                    "Slow/steady/fast/rapid = learning speed, not accuracy.\n"
-                   f"{all_markets}")
+                   f"{all_markets}"
+                   + (f"\n-# {cut_here} fully stopped model(s) hidden from this active table."
+                      if cut_here else ""))
     return {"name": f"🧪 Models on trial here ({len(rows)})",
             "leader": trial_board.leader_line(rows),
             "table": trial_board.table(rows),
@@ -3077,21 +3084,23 @@ class GuidedHome(discord.ui.View):
             await self.redraw(interaction)
             return
         if action == "api-limits":
-            # Owner lookup is a remote Discord request. Acknowledge
-            # immediately, then use the followup to open the settings.
+            # Use RivaL's authoritative private owner gate, not an extra
+            # application.owner lookup. Discord team members and explicitly
+            # configured RIVAL_OWNER_USER_IDS are legitimate private owners;
+            # application.owner may be a different user or absent for teams.
+            # Acknowledge before the lookup/database access, fail closed when
+            # the gate is unavailable, and scope the modal to the tapper.
             await interaction.response.defer(ephemeral=True, thinking=True)
-            application = await asyncio.wait_for(
-                interaction.client.application_info(), timeout=3,
-            )
-            owner = application.owner
-            if owner is None or owner.id != interaction.user.id:
+            gate = getattr(interaction.client, "owner_gate", None)
+            if gate is None or not await gate.allows(interaction):
                 await interaction.followup.send(
-                    "Only the application owner can edit API limits.", ephemeral=True,
+                    "API limits require an account authorized by RivaL's private owner gate.",
+                    ephemeral=True,
                 )
                 return
             limits = OwnerLimitStore(interaction.client.store)
             view = OwnerLimitsView(
-                store=limits, owner_id=owner.id,
+                store=limits, owner_id=interaction.user.id,
                 odds_provider=getattr(interaction.client, "oddspapi_provider", None),
                 sports_provider=getattr(interaction.client, "current_provider", None),
             )

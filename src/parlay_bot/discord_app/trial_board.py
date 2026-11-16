@@ -170,7 +170,13 @@ def fold(evidence_rows, stops, *, retired=frozenset()) -> list[TrialRow]:
         )
         key = family if family.startswith("lab_") else row.name
         best = rows.get(key)
-        if best is None or (row.days, row.results) > (best.days, best.results):
+        # Several generations share a display name (for example 6-year).
+        # A stopped older version must not hide an active newer challenger,
+        # and a qualified version must never be masked by an unqualified one.
+        priority = (row.passed, row.status != "cut", row.days, row.results)
+        previous = ((best.passed, best.status != "cut", best.days, best.results)
+                    if best is not None else None)
+        if previous is None or priority > previous:
             rows[key] = row
     from parlay_bot.perpetuals.model_lab import family_names
 
@@ -356,7 +362,12 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
     load_family_designs(store, {family for entry, _, _ in everywhere
                                for family in (entry[2] if isinstance(entry[2], dict) else {})
                                if str(family).startswith("lab_")})
-    rows = fold(here, stops_here, retired=retired)
+    all_rows = fold(here, stops_here, retired=retired)
+    cut_here = sum(r.status == "cut" for r in all_rows)
+    # A family stopped on all observed scopes cannot be presented as
+    # currently "on trial". Preserve the immutable evidence and count it
+    # separately, without touching actual candidate retirement policy.
+    rows = [r for r in all_rows if r.status != "cut"]
     # Right % is counted on the SAME exchanges as Day, Res and Edge (the ones
     # the hourly promotion check judged), so one row never mixes scopes.
     venues = sorted({venue for venue, _contract in contracts})
@@ -370,12 +381,17 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
     by_market: dict[tuple[str, int], list] = {}
     for entry, a, h in everywhere:
         by_market.setdefault((a, h), []).append(entry)
-    for entries in by_market.values():
-        folded = fold(entries, [], retired=retired)
-        total += len(folded)
-        passed += sum(r.passed for r in folded)
+    for (a, h), entries in by_market.items():
+        present = {(venue, contract) for venue, contract, _info in entries}
+        market_stops = [(r["venue"], r["contract"], r["family"]) for r in stop_rows
+                        if int(r["horizon_minutes"]) == h
+                        and (str(r["venue"]), str(r["contract"])) in present]
+        folded = fold(entries, market_stops, retired=retired)
+        total += sum(row.status != "cut" for row in folded)
+        passed += sum(row.passed for row in folded)
     return {"rows": rows, "markets": len(by_market), "trials": total, "passed": passed,
-            "stops": len(stop_rows), "venues": venues, "partial": partial}
+            "cut_here": cut_here, "stops": len(stop_rows),
+            "venues": venues, "partial": partial}
 
 
 HIT_DAYS = 7

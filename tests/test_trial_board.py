@@ -210,3 +210,86 @@ def test_an_edge_on_few_results_says_few_and_a_long_record_outranks_a_lucky_one(
                     exchanges=1, stopped=0, passed=False, after_fees_bps=None)
     assert best([lucky, steady, tiny]) is steady
     assert _grouped(table([tiny]))[0] == ("early", ["Fast", "trend", "3/21", "10", "—", "few"])
+
+
+def test_retired_older_pooled_generation_never_hides_active_successor():
+    old = "pooled_5m_aaaaaaaaaaaa"
+    next_version = "pooled_5m_bbbbbbbbbbbb"
+    rows = fold([("okx", "BTC", {
+        old: _info(21, 800, -.004),
+        next_version: _info(3, 180, .001),
+    })], [("okx", "BTC", old)])
+    assert len(rows) == 1
+    assert rows[0].name == "6-year"
+    assert rows[0].family == next_version
+    assert rows[0].status == "ahead"
+
+
+def test_qualified_generation_precedes_unqualified_older_display_name():
+    rows = fold([("okx", "BTC", {
+        "pooled_5m_cccccccccccc": _info(21, 900, -.002),
+        "pooled_5m_dddddddddddd": _info(21, 300, .007, qualified=True),
+    })], [])
+    assert len(rows) == 1
+    assert rows[0].family == "pooled_5m_dddddddddddd"
+    assert rows[0].status == "PASSED"
+
+
+def test_trial_board_excludes_fully_stopped_rows_from_active_counts(tmp_path):
+    import json
+    from datetime import UTC, datetime
+
+    from parlay_bot.perpetuals.early_stop import SCHEMA
+    from parlay_bot.perpetuals.family_governance import FAMILY_PROMOTION_SCHEMA
+    from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
+    from parlay_bot.storage.hot import SQLiteHotStore
+
+    now = datetime.now(UTC)
+    store = SQLiteHotStore(tmp_path / "trial_active_truth.sqlite")
+    try:
+        ShadowModelCompetition(store).initialize()
+        with store.connect() as conn:
+            conn.executescript(FAMILY_PROMOTION_SCHEMA)
+            conn.execute(SCHEMA)
+            for asset, evidence in (
+                ("BTC", {
+                    "gaussian_nb_v1": _info(17, 800, -.006),
+                    "regime_live_v1": _info(4, 90, .001),
+                }),
+                ("ETH", {"knn21_v1": _info(17, 800, -.007)}),
+            ):
+                contract = asset + "-okx"
+                conn.execute(
+                    """INSERT INTO rival_family_promotion
+                       (venue,contract,quote,asset,horizon_minutes,evaluated_at,
+                        selected_family,status,reason,evidence_json)
+                       VALUES (?,?,?,?,?,?,NULL,'held','test',?)""",
+                    ("okx", contract, "USDT", asset, 5, now.isoformat(),
+                     json.dumps(evidence)),
+                )
+            for asset, family in (("BTC", "gaussian_nb_v1"),
+                                  ("ETH", "knn21_v1")):
+                conn.execute(
+                    """INSERT INTO rival_family_early_stop
+                       (venue,contract,quote,horizon_minutes,family,
+                        stopped_at,rule_version,targets,days,model_brier,
+                        incumbent_brier,loss,loss_lower)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ("okx", asset + "-okx", "USDT", 5, family,
+                     now.isoformat(), "paired-loss-z258-v1",
+                     800, 17, .28, .22, .06, .04),
+                )
+        board = trial_board.read(store, asset="BTC", horizon=5, now=now)
+        assert board["trials"] == 1
+        assert board["passed"] == 0
+        assert board["cut_here"] == 1
+        assert board["stops"] == 2
+        assert [r.family for r in board["rows"]] == ["regime_live_v1"]
+        from parlay_bot.discord_app.home import _trials_sections
+
+        section = _trials_sections({"trials": board})
+        assert "1 active trial comparisons" in section["how_to_read"]
+        assert "2 early-stop records" in section["how_to_read"]
+        assert "1 fully stopped model" in section["how_to_read"]
+    finally:
+        store.close()

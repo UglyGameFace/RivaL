@@ -243,6 +243,7 @@ assert.match(source,/\/api\/market\/perps/);
 assert.match(source,/\/api\/market\/predictions/);
 
 // Signed scoring version must be disclosed without pretending it is an XMarket artifact.
+cx.state.evidence.performance.status='observed';
 cx.state.evidence.performance.model='prospective-logistic-persistent-v3';
 assert.equal(cx.opsModelId(),'prospective-logistic-persistent-v3');
 assert.match(cx.opsModels(),/Scored incumbent model/);

@@ -220,7 +220,7 @@ def test_split_console_acceptance_requires_both_assets(monkeypatch, capsys):
     ):
         calls.clear()
         monkeypatch.setattr(RELAY, "_console_once",
-                            lambda asset: btc if asset == "BTC" else invalid)
+                            lambda asset, invalid=invalid: btc if asset == "BTC" else invalid)
         code, receipt = RELAY._attempt()
         assert code == 1
         assert receipt["outcome"] == "failed"

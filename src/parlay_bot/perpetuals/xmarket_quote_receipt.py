@@ -64,12 +64,12 @@ def read_xmarket_quotes(store,now: datetime,progress: dict) -> dict:
                            SUM(CASE WHEN {signal} AND q.family IS NULL
                                     AND s.issued_at<=? THEN 1 ELSE 0 END)
                                AS elapsed_unmatched_decisive_rows,
-                           SUM(CASE WHEN s.issued_at>=? AND ${signal} THEN 1 ELSE 0 END)
+                           SUM(CASE WHEN s.issued_at>=? AND {signal} THEN 1 ELSE 0 END)
                                AS recent_30m_decisive_forecast_rows,
-                           SUM(CASE WHEN s.issued_at>=? AND ${signal}
+                           SUM(CASE WHEN s.issued_at>=? AND {signal}
                                     AND q.family IS NOT NULL THEN 1 ELSE 0 END)
                                AS recent_30m_entry_rows,
-                           SUM(CASE WHEN s.issued_at>=? AND ${signal}
+                           SUM(CASE WHEN s.issued_at>=? AND {signal}
                                     AND q.family IS NULL AND s.issued_at<=?
                                     THEN 1 ELSE 0 END)
                                AS recent_30m_elapsed_unmatched_decisive_rows,

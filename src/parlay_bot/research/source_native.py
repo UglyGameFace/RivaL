@@ -83,7 +83,7 @@ def _canonical_month_record_signatures(payload: bytes) -> dict:
         try:
             record = json.loads(raw)
             if not isinstance(record, dict):
-                raise ValueError("not a JSON object")
+                raise TypeError("not a JSON object")
             all_fields = json.dumps(
                 record, sort_keys=True, separators=(",", ":"), allow_nan=False,
             ).encode("utf-8")

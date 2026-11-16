@@ -181,6 +181,11 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
             "attempted_exact_gaps_14d": None,
             "bulk_upstream_empty_assets": None,
         },
+        "live_call_delivery": {
+            "status": "unavailable", "active_channels": None,
+            "recent_accepted_delivery_rows": None,
+            "advance_model": None,
+        },
         "recent_forward_calls": _recent_forecast_summary(None),
     }
     db = {
@@ -252,6 +257,25 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
                         row.get("bulk_status") == "upstream_empty"
                         for row in assets),
                 }
+
+    # The channel opt-in and API-accepted message receipts are observable,
+    # unlike whether a Discord user actually saw the call. Never publish IDs.
+    advance = report.get("advance_forecasts")
+    if isinstance(advance, dict):
+        cards = advance.get("channel_cards")
+        delivered = advance.get("recent_deliveries")
+        if (isinstance(cards, dict) and cards.get("status") == "recorded"
+                and _nonnegative(cards.get("active")) is not None
+                and isinstance(delivered, list) and len(delivered) <= 100):
+            model = advance.get("model")
+            host["live_call_delivery"] = {
+                "status": "recorded",
+                "active_channels": cards["active"],
+                "recent_accepted_delivery_rows": len(delivered),
+                "advance_model": (model if isinstance(model, str)
+                                  and re.fullmatch(r"[a-z][a-z0-9-]{1,79}", model)
+                                  else None),
+            }
 
     host["recent_forward_calls"] = _recent_forecast_summary(
         report.get("recent_forward_calls")

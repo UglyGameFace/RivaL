@@ -413,57 +413,91 @@ class CallBoardService:
         return True
 
     async def cycle(self, *, force: bool = False) -> int:
-        """Refresh on issuance and market boundaries, without DB query storms."""
+        """Keep later markets fast even when one contract API is slow.
+
+        A bounded shared read budget prevents a slow source from serially
+        starving the other requested markets. Each unique market/asset slot
+        is read once no matter how many channels subscribe to its card.
+        """
         async with self._lock:
             rows = await asyncio.to_thread(self._rows)
             if not rows:
                 return 0
             now = datetime.now(UTC)
-            cards = {}
-            updated = 0
-            for row in rows:
-                kind, asset = row["market_kind"], row["asset"]
-                horizon = int(row["horizon_minutes"])
-                key = (kind, asset, horizon)
+            keys = list(dict.fromkeys(
+                (r["market_kind"], r["asset"], int(r["horizon_minutes"]))
+                for r in rows
+            ))
+            due = []
+            for key in keys:
+                kind, asset, _horizon = key
                 try:
-                    if key not in cards:
-                        recent = self._last_evaluated.get(key)
-                        stale = (
-                            recent is None or
-                            (now - recent).total_seconds() >= FULL_REFRESH_SECONDS[kind]
-                        )
-                        revision = self._last_revision.get(key)
-                        new_issuance = False
-                        if kind == "exchange" and not force and not stale:
-                            checked = await asyncio.to_thread(self._revision, asset)
-                            new_issuance = checked != revision
-                            self._last_revision[key] = checked
-                        # Actual exchange forward targets resolve on UTC
-                        # five-minute candle boundaries; never leave an old
-                        # UP/DOWN card frozen beyond that transition.
-                        boundary_changed = False
-                        if kind == "exchange":
-                            bucket = int(now.timestamp()) // 300
-                            boundary_changed = self._last_boundary.get(key) != bucket
-                            self._last_boundary[key] = bucket
-                        # An exchange issuance wake must not cause a Gamma/CLOB
-                        # or Kalshi REST burst unrelated to that new forecast.
-                        if ((force and kind == "exchange") or stale
-                                or new_issuance or boundary_changed):
-                            cards[key] = await asyncio.wait_for(
-                                self._render(kind, asset, horizon), timeout=20,
-                            )
-                            self._last_evaluated[key] = datetime.now(UTC)
-                        else:
-                            cards[key] = None
-                    if cards[key] is not None:
-                        updated += await self._edit(row, *cards[key])
+                    recent = self._last_evaluated.get(key)
+                    stale = (recent is None or
+                             (now-recent).total_seconds() >= FULL_REFRESH_SECONDS[kind])
+                    revision = self._last_revision.get(key)
+                    new_issuance = False
+                    if kind == "exchange" and not force and not stale:
+                        checked = await asyncio.to_thread(self._revision, asset)
+                        new_issuance = checked != revision
+                        self._last_revision[key] = checked
+                    boundary_changed = False
+                    if kind == "exchange":
+                        bucket = int(now.timestamp()) // 300
+                        boundary_changed = self._last_boundary.get(key) != bucket
+                        self._last_boundary[key] = bucket
+                    if ((force and kind == "exchange") or stale
+                            or new_issuance or boundary_changed):
+                        due.append(key)
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001 - one venue cannot stop others
-                    _LOG.warning("Live Calls update failed kind=%s asset=%s",
-                                 kind, asset, exc_info=True)
-            return updated
+                except Exception:  # noqa: BLE001 - another source may still work
+                    _LOG.warning("Live Calls issuance check unavailable", exc_info=True)
+
+            results = {}
+            budget = asyncio.Semaphore(3)
+
+            async def read(key):
+                async with budget:
+                    kind, asset, horizon = key
+                    try:
+                        result = await asyncio.wait_for(
+                            self._render(kind, asset, horizon), timeout=20,
+                        )
+                        self._last_evaluated[key] = datetime.now(UTC)
+                        return result
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - no cross-market fallback
+                        _LOG.warning(
+                            "Live Calls source unavailable kind=%s asset=%s",
+                            kind, asset, exc_info=True,
+                        )
+                        return None
+
+            if due:
+                fetched = await asyncio.gather(*(read(key) for key in due))
+                results = dict(zip(due, fetched, strict=True))
+            if not results:
+                return 0
+            edit_budget = asyncio.Semaphore(4)
+
+            async def deliver(row):
+                key = (row["market_kind"], row["asset"], int(row["horizon_minutes"]))
+                render = results.get(key)
+                if render is None:
+                    return 0
+                async with edit_budget:
+                    try:
+                        return int(await self._edit(row, *render))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - independent channel post
+                        _LOG.warning("Live Calls Discord edit unavailable",
+                                     exc_info=True)
+                        return 0
+
+            return sum(await asyncio.gather(*(deliver(row) for row in rows)))
 
     async def _stop(self, row: dict) -> None:
         await asyncio.to_thread(self._delete, row)
@@ -485,9 +519,12 @@ class CallBoardService:
         async with self._lock:
             rows = [r for r in await asyncio.to_thread(self._rows)
                     if r["owner_id"] == str(owner_id)]
-            for row in rows:
-                await self._stop(row)
-            return bool(rows)
+            if not rows:
+                return False
+            # Stop at most four authored cards concurrently: sequential 8s
+            # Discord edits could exceed Stop All's existing 10s deadline.
+            await asyncio.gather(*(self._stop(row) for row in rows))
+            return True
 
     async def handle(self, interaction: discord.Interaction, action: str) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)

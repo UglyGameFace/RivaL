@@ -145,9 +145,23 @@ def _attempt() -> tuple[int, dict | None]:
     # Never accept a healthy BTC model as evidence that the historically
     # regression-prone XRP persistence path works. Separate gateway execution,
     # same full original-source/DB confirmation requirement.
-    xrp = _console_once("XRP")
-    if xrp is None:
-        return 1, None
+    # After BTC has proved a NEW persisted row, do not rerun BTC merely
+    # because the serialized local model asks XRP to honor minimum spacing.
+    # Retrying both would often turn BTC into a cache hit, invalidating the
+    # originally correct first-party proof.
+    xrp = None
+    for attempt in range(1, RESTART_ATTEMPTS + 1):
+        xrp = _console_once("XRP")
+        if xrp is None:
+            return 1, None
+        if (xrp.get("outcome") == "deferred"
+                and xrp.get("reason") in RESTART_REASONS
+                and attempt < RESTART_ATTEMPTS):
+            print("LFM3 XRP still warming up (verified BTC retained); "
+                  f"retrying attempt {attempt + 1}/{RESTART_ATTEMPTS}")
+            time.sleep(RESTART_WAIT_SECONDS)
+            continue
+        break
     if xrp.get("outcome") != "verified":
         print("LFM3 XRP host proof:", json.dumps({
             "outcome": xrp.get("outcome"), "reason": xrp.get("reason"),

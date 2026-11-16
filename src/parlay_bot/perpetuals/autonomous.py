@@ -15,6 +15,7 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals.advance_forecasts import AdvanceForecastMonitor
 from parlay_bot.perpetuals.ai_types import ResearchUnavailable
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence, build_evidence
 from parlay_bot.perpetuals.event_intelligence import EventIntelligence
@@ -93,6 +94,7 @@ class AutonomousResearch:
         self.market = market
         self.store = market.store
         self.forward = ForwardAccuracyMonitor(market)
+        self.advance_forward = AdvanceForecastMonitor(market)
         self.events = EventIntelligence(self.store)
         self.multi = MultiExchangeResearch(self.store)
         self.ai = ai
@@ -575,6 +577,16 @@ class AutonomousResearch:
         task.add_done_callback(_consume_result)
         threads[name] = task
         return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+
+    async def advance_cycle(self) -> tuple[int, int]:
+        """Run before optional spike/research work on the existing collector.
+
+        _in_thread shields and remembers unfinished work: timing out never
+        starts another copy of the same learner on the following cycle.
+        """
+        return await self._in_thread(
+            "advance.run_once", self.advance_forward.run_once, timeout=90,
+        )
 
     async def cycle(self) -> tuple[int, int, int]:
         """Five-minute automatic research, with durable proof of each stage."""

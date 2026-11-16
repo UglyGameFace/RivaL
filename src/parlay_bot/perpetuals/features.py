@@ -165,7 +165,7 @@ class WindowFeatureMemo:
 
 def live_examples(
     candles: Sequence[MarketCandle], *, horizon_minutes: int,
-    feature_cache: dict | None = None,
+    feature_cache: dict | None = None, lead_minutes: int = 0,
 ) -> tuple[LabeledExample, ...]:
     """Return only outcomes that could genuinely be predicted from prior observations.
 
@@ -175,15 +175,22 @@ def live_examples(
     ``feature_cache``: pass the same dict for every horizon of ONE candle list.
     A window's inputs do not depend on the horizon, so they are computed once
     instead of three times (this was most of the forecast cycle's CPU).
+
+    ``lead_minutes=5`` is a separately trained advance head: its target
+    opens one bar later and UP means that target's close exceeds its OWN
+    opening, which is not known at issuance. It never borrows the incumbent's
+    reference-close label or checkpoint. The distinct target contract
+    identifies the lead head; samples still carry the selected user horizon.
     """
-    if horizon_minutes not in HORIZONS:
+    if horizon_minutes not in HORIZONS or lead_minutes not in (0, 5):
         raise ValueError("unsupported forecast horizon")
     if not candles:
         return ()
     ordered = sorted(candles, key=lambda c: utc(c.opened_at))
     first = ordered[0]
     interval = first.interval_minutes
-    if interval <= 0 or horizon_minutes % interval:
+    if (interval <= 0 or horizon_minutes % interval
+            or (lead_minutes and interval != 5)):
         raise ValueError("incompatible source resolution for horizon")
     seconds = interval * 60
     identity = (first.venue, first.contract, first.quote, interval)
@@ -206,7 +213,7 @@ def live_examples(
             raise ValueError("invalid candle chronology, provenance or prices")
         prev_open = opened
 
-    horizon_bars = horizon_minutes // interval
+    horizon_bars = (horizon_minutes + lead_minutes) // interval
     # A batch can reveal several historical candles at the same instant.
     # They are not independent live issuance opportunities. Keep only the
     # latest causally eligible window per real observation timestamp.
@@ -221,6 +228,8 @@ def live_examples(
         available = utc(target.observed_at)
         # A backfill that reveals both sides together cannot be scored as live.
         if available <= issued or utc(target.closed_at) <= issued:
+            continue
+        if lead_minutes and issued >= utc(target.opened_at):
             continue
         if int((utc(target.opened_at) - utc(current.opened_at)).total_seconds()) != (
             horizon_bars * seconds
@@ -254,7 +263,9 @@ def live_examples(
             venue=first.venue, contract=first.contract, quote=first.quote,
             horizon_minutes=horizon_minutes, issued_at=issued,
             label_known_at=available, features=features,
-            label_up=int(target.close_price > current.close_price),
+            label_up=int(target.close_price > (
+                target.open_price if lead_minutes else current.close_price
+            )),
         )
         # Retain the most recent candle among windows visible at this instant.
         # Do not rewrite observed_at or create synthetic earlier predictions.

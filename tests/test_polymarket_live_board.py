@@ -297,7 +297,9 @@ def test_live_market_and_model_predictions_are_clearly_separate():
     assert "hyperliquid" not in full and "59.0%" not in full
     assert next_window.slug in full
     assert "⏭️ Next contract" in full
-    assert "No call yet: it gets its own call" in full
+    assert "NEXT NOT ISSUED" in full
+    assert "published price to beat" in full
+    assert "current call is never reused" in full
     assert "first call is locked" in embed.footer.text
 
 

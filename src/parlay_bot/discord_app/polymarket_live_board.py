@@ -305,10 +305,16 @@ def live_polymarket_embed(
         ), inline=False)
     if board is not None and board.next_window is not None:
         next_window = board.next_window
+        pending = (
+            "NEXT NOT ISSUED · Awaiting the next contract's published price to beat "
+            "and its own contract-native forecast."
+            if next_window.price_to_beat is None else
+            "NEXT NOT ISSUED · No frozen forecast for this exact next contract."
+        )
         embed.add_field(name="⏭️ Next contract", value=(
             f"[Next event]({next_window.url}) • opens "
             f"<t:{int(next_window.opens.timestamp())}:R>\n"
-            "No call yet: it gets its own call after it opens; this one is never reused."
+            + pending + " This contract's current call is never reused."
         ), inline=False)
     embed.set_footer(text="Live prices • RivaL's first call is locked • No orders placed")
     return embed

@@ -222,6 +222,50 @@ async def _fast_collect() -> None:
     return None
 
 
+async def test_advance_head_runs_before_optional_spikes_and_incumbent(monkeypatch):
+    phases = []
+
+    async def collect():
+        phases.append("collect")
+
+    async def advance():
+        phases.append("advance")
+        return 0, 0
+
+    async def spikes():
+        phases.append("spikes")
+
+    async def incumbent():
+        phases.append("incumbent")
+        return 0, 0, 0
+
+    client = _perp_client(monkeypatch, collector=collect,
+                          autonomous=SimpleNamespace(advance_cycle=advance, cycle=incumbent))
+    client._spike_stage = spikes
+    assert await _run_loop(monkeypatch, client) == [HEARTBEAT_SLUG]
+    assert phases == ["collect", "advance", "spikes", "incumbent"]
+
+
+async def test_advance_timeout_preserves_incumbent_and_heartbeat(monkeypatch, caplog):
+    blocked = asyncio.Event()
+    completed = []
+
+    async def advance():
+        await blocked.wait()
+
+    async def incumbent():
+        completed.append(True)
+        return 0, 0, 0
+
+    client = _perp_client(monkeypatch, collector=_fast_collect,
+                          autonomous=SimpleNamespace(advance_cycle=advance, cycle=incumbent))
+    monkeypatch.setattr(bot_module, "PERP_ADVANCE_TIMEOUT_SECONDS", .05)
+    with caplog.at_level(logging.WARNING, logger="parlay_bot.discord_app.bot"):
+        assert await _run_loop(monkeypatch, client) == [HEARTBEAT_SLUG]
+    assert completed == [True]
+    assert "advance stage timed out" in caplog.text
+
+
 def _research(monkeypatch, *, forward=None, auto_ai=None):
     """AutonomousResearch with stubbed stages; _save_cycle captures its flags."""
     saved: dict[str, object] = {}

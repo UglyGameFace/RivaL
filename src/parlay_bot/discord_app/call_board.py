@@ -15,7 +15,9 @@ import discord
 
 from parlay_bot.discord_app.opportunities import recent_watches
 from parlay_bot.discord_app.targeting import target_snapshot
+from parlay_bot.perpetuals.advance_forecasts import read_advance
 from parlay_bot.perpetuals.markets import ASSETS, HORIZONS
+from parlay_bot.perpetuals.readiness import _source_identity
 
 _LOG = logging.getLogger(__name__)
 MAX_BOARDS = 24
@@ -37,6 +39,24 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS rival_live_call_board (
 )"""
 
 
+class CallEmbed(discord.Embed):
+    """Original rows actually included in this rendered card, for delivery proof."""
+    __slots__ = ("advance_forecasts",)
+
+
+def _advance_text(row):
+    p = float(row["probability_up"])
+    side = "UP" if p > .5 else "DOWN" if p < .5 else "TIED"
+    return (
+        f"**NEXT · {side} · Confidence: {max(p, 1-p):.1%}** (raw, research only)\n"
+        f"Target {discord.utils.format_dt(row['target'], style='t')}–"
+        f"{discord.utils.format_dt(row['target']+timedelta(minutes=5), style='t')} · "
+        f"issued {discord.utils.format_dt(row['issued'], style='t')}\n"
+        f"Model: `{row['model_version']}` · {row['venue']}\n"
+        "Predicts that candle's close vs its own open. NO TRADE CALL."
+    )
+
+
 def live_calls_embed(market, asset: str, now: datetime | None = None):
     """Use the same prospective forecast snapshot as /rival's manual screen."""
     if asset not in ASSETS:
@@ -56,7 +76,7 @@ def live_calls_embed(market, asset: str, now: datetime | None = None):
     except Exception:  # noqa: BLE001 - future-issuance check is independent
         _LOG.warning("RivaL next call lookup unavailable", exc_info=True)
         next_rows = None
-    embed = discord.Embed(
+    embed = CallEmbed(
         title=f"RivaL Live Calls · {asset} · 5m / 15m / 60m",
         description=(
             "Prospectively issued UP/DOWN forecasts show numeric confidence, "
@@ -65,6 +85,7 @@ def live_calls_embed(market, asset: str, now: datetime | None = None):
         ),
         color=discord.Color.blurple(),
     )
+    embed.advance_forecasts = []
     fingerprint = [asset]
     for h, snapshot in zip(HORIZONS, snapshots, strict=True):
         if (snapshot.direction in ("UP", "DOWN")
@@ -119,6 +140,26 @@ def live_calls_embed(market, asset: str, now: datetime | None = None):
                     + f" · {direction} · Confidence: {max(p, 1 - p):.1%}"
                     + " (raw, research only)"
                 )
+        source = _source_identity(snapshot.venue, asset) if snapshot.venue else None
+        advance = read_advance(
+            market, asset=asset, horizon=h, now=clock,
+            venue=snapshot.venue, contract=source[0] if source else None,
+            quote=source[1] if source else None,
+            next_target_at=snapshot.ends_at,
+        )
+        if advance["next"] is not None:
+            next_line = _advance_text(advance["next"])
+            embed.advance_forecasts.append(advance["next"])
+        elif next_line == "Next issued target: not yet available":
+            next_line += "\n**NEXT NOT ISSUED** · " + advance["reason"]
+        previous = advance["previous"]
+        if previous is not None:
+            p = float(previous["probability_up"])
+            side = "UP" if p > .5 else "DOWN" if p < .5 else "TIED"
+            next_line += (
+                f"\nPrior advance for {discord.utils.format_dt(previous['target'], style='t')}: "
+                f"{side} {max(p, 1-p):.1%} (unchanged)."
+            )
         embed.add_field(name=f"{h}-minute call", value=text + "\n" + next_line,
                         inline=False)
         fingerprint.extend((str(h), snapshot.fingerprint, next_line))
@@ -322,7 +363,39 @@ class CallBoardService:
                 "SELECT MAX(issued_at) AS latest FROM perp_forward_audit WHERE asset=?",
                 (asset,),
             ).fetchone()
-        return str(row["latest"]) if row and row["latest"] else None
+            # The priority advance pass may finish while heavyweight incumbent
+            # work is still running. Detect that commit on the 15-second poll.
+            try:
+                advance = conn.execute(
+                    "SELECT MAX(issued_at) AS latest FROM rival_advance_forecasts WHERE asset=?",
+                    (asset,),
+                ).fetchone()
+            except Exception:  # noqa: BLE001 - pre-upgrade host keeps incumbent checks
+                advance = None
+        return "|".join((str(row["latest"]) if row and row["latest"] else "",
+                         str(advance["latest"]) if advance and advance["latest"] else ""))
+
+    def _record_delivery(self, row, card, fingerprint):
+        """Persist only after Discord accepts this exact rendered message."""
+        forecasts = getattr(card, "advance_forecasts", ())
+        if not forecasts:
+            return
+        delivered = datetime.now(UTC).isoformat()
+        try:
+            with self.store.connect() as conn:
+                for forecast in forecasts:
+                    conn.execute(
+                        """INSERT INTO rival_advance_deliveries
+                        (channel_id,message_id,venue,contract,quote,asset,horizon_minutes,
+                         target_opened_at,model_version,issued_at,delivered_at,card_fingerprint)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                        (str(row["channel_id"]), str(row["message_id"]), forecast["venue"],
+                         forecast["contract"], forecast["quote"], forecast["asset"],
+                         forecast["horizon_minutes"], forecast["target_opened_at"],
+                         forecast["model_version"], forecast["issued_at"], delivered, fingerprint),
+                    )
+        except Exception:  # noqa: BLE001 - telemetry cannot undo a delivered message
+            _LOG.warning("RivaL advance delivery evidence unavailable", exc_info=True)
 
     def request_refresh(self) -> None:
         """Called by the real forecast worker after successful new issuance."""
@@ -380,6 +453,10 @@ class CallBoardService:
                     horizon if kind == "polymarket" else 0,
                     msg.id, interaction.user.id, key,
                 )
+                await asyncio.to_thread(
+                    self._record_delivery,
+                    {"channel_id": channel.id, "message_id": msg.id}, embed, key,
+                )
             except Exception:  # noqa: BLE001 - a failed post must be rolled back
                 _LOG.exception("RivaL Live Calls persistence failed")
                 try:
@@ -409,6 +486,7 @@ class CallBoardService:
         except discord.NotFound:
             await asyncio.to_thread(self._delete, row)
             return False
+        await asyncio.to_thread(self._record_delivery, row, card, key)
         await asyncio.to_thread(self._touch, row, key)
         return True
 

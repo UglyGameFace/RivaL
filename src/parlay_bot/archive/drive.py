@@ -613,31 +613,92 @@ class GoogleDriveArchiveClient:
         if self.folders.staging not in staged.parents:
             raise DriveArchiveError("History object is not in RivaL staging")
 
-        response = await self._client.patch(
-            f"{self.DRIVE_URL}/files/{staged.file_id}",
-            params={
-                "addParents": self.folders.history,
-                "removeParents": self.folders.staging,
-                "fields": "id,name,size,md5Checksum,parents",
-            },
-            headers=await self._headers(),
-        )
-        if response.status_code >= 400:
-            raise DriveArchiveError(
-                f"Drive history promotion failed with {response.status_code}"
-            )
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise DriveArchiveError("Drive history promotion returned invalid metadata")
+        # A timed-out metadata PATCH may already have moved the ORIGINAL
+        # object. The upload itself is SHA-bound and must never be repeated
+        # merely because the parent move lost its HTTP response. Reconcile
+        # the exact batch + file ID in both allowed folders first.
+        for attempt in range(MAX_TRANSIENT_UPLOAD_RETRIES + 1):
+            try:
+                response = await self._client.patch(
+                    f"{self.DRIVE_URL}/files/{staged.file_id}",
+                    params={
+                        "addParents": self.folders.history,
+                        "removeParents": self.folders.staging,
+                        "fields": "id,name,size,md5Checksum,parents",
+                    },
+                    headers=await self._headers(),
+                )
+            except httpx.TransportError:
+                response = None
 
-        promoted = self._object(payload)
-        if (
-            self.folders.history not in promoted.parents
-            or self.folders.staging in promoted.parents
-        ):
-            raise DriveArchiveError("Drive history promotion did not preserve boundary")
-        self._verify_artifact(promoted, artifact)
-        return promoted
+            if response is not None and response.status_code == 200:
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise DriveArchiveError(
+                        "Drive history promotion returned invalid metadata"
+                    )
+                promoted = self._object(payload)
+                if (promoted.file_id != staged.file_id
+                    or self.folders.history not in promoted.parents
+                    or self.folders.staging in promoted.parents):
+                    raise DriveArchiveError(
+                        "Drive history promotion changed source identity or boundary"
+                    )
+                self._verify_artifact(promoted, artifact)
+                return promoted
+
+            # 404 can occur when a move committed before a stale repeat
+            # PATCH. It is NOT proof of success; reconcile the original by
+            # its batch and file identity. 4xx auth/permission denials still
+            # fail immediately without a new request.
+            code = response.status_code if response is not None else None
+            if code is not None and code not in {
+                404, 429, *TRANSIENT_UPLOAD_STATUSES,
+            }:
+                raise DriveArchiveError(
+                    f"Drive history promotion failed with {code}"
+                )
+
+            try:
+                promoted = await self._find_batch_object(
+                    parent_id=self.folders.history,
+                    batch_id=batch_id, kind="history",
+                )
+                pending = await self._find_batch_object(
+                    parent_id=self.folders.staging,
+                    batch_id=batch_id, kind="history",
+                )
+            except httpx.TransportError:
+                # A second lost response means remote move state remains
+                # unknown. Do not retry or emit request URL/credentials.
+                raise DriveArchiveError(
+                    "Drive history promotion reconciliation unavailable; original preserved"
+                ) from None
+            if promoted is not None:
+                self._verify_artifact(promoted, artifact)
+                if (promoted.file_id != staged.file_id
+                    or self.folders.staging in promoted.parents
+                    or pending is not None):
+                    raise DriveArchiveError(
+                        "Drive history promotion has ambiguous source identity"
+                    )
+                return promoted
+            if pending is None:
+                raise DriveArchiveError(
+                    "Drive history promotion state unknown; original preserved"
+                )
+            self._verify_artifact(pending, artifact)
+            if pending.file_id != staged.file_id:
+                raise DriveArchiveError(
+                    "Drive history promotion staged source identity changed"
+                )
+            if attempt == MAX_TRANSIENT_UPLOAD_RETRIES:
+                raise DriveArchiveError(
+                    "Drive history promotion recovery budget exhausted"
+                )
+            await asyncio.sleep(min(2 ** (attempt + 1), 16))
+
+        raise DriveArchiveError("Drive history promotion remained unverified")
 
 
     async def verify_downloaded_artifact(

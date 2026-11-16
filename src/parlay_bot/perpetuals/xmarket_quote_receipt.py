@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from parlay_bot.perpetuals.family_quotes import SUPPORTED_QUOTE_SOURCES
+from parlay_bot.perpetuals.family_quotes import SCORE_THRESHOLD, SUPPORTED_QUOTE_SOURCES
 from parlay_bot.perpetuals.live_quotes import source_contract
+from parlay_bot.perpetuals.profit_proof import ENTRY_GRACE
 
 _BASE = {"read_only": True,"does_not_prove_prediction_edge": True,
          "counts_are_independent_targets": False}
@@ -17,9 +18,11 @@ _BASE = {"read_only": True,"does_not_prove_prediction_edge": True,
 def read_xmarket_quotes(store,now: datetime,progress: dict) -> dict:
     """At most 84 indexed recent-stream reads for fitted asset/horizon scopes.
 
-    Use the same canonical instruments accepted by the existing quote
-    observers' canonical native instruments and quote currencies. Join the
-    original forecast, artifact SHA and issue time before counting a quote.
+    Use the source registry's native instruments and quote currencies. Join
+    the original forecast, artifact SHA and issue time before counting a quote.
+    Also report the observer's real CASH/decisive threshold and whether a
+    decisive row's 90-second opportunity elapsed without a matched entry.
+    No missing quote is treated as a filled trade or a model loss.
     An absent/unreadable ledger is never reported as zero recorded quotes.
     """
     try:
@@ -39,12 +42,25 @@ def read_xmarket_quotes(store,now: datetime,progress: dict) -> dict:
         rows = []
         since = (now-timedelta(hours=2)).isoformat()
         until = now.isoformat()
+        elapsed_entry_cutoff = (now-ENTRY_GRACE).isoformat()
+        # The source observer opens only when the candidate OR incumbent
+        # leaves CASH. Quote depth and book freshness remain separate gates.
+        # Reuse its threshold, and do not reinterpret an absent quote as a loss.
+        signal = ("(s.probability_up>=? OR s.probability_up<=? "
+                  "OR s.incumbent_up>=? OR s.incumbent_up<=?)")
+        signal_args = (SCORE_THRESHOLD, 1-SCORE_THRESHOLD,
+                       SCORE_THRESHOLD, 1-SCORE_THRESHOLD)
         with store.connect() as conn:
             for asset,horizon in fits:
                 for venue,currency in sorted(SUPPORTED_QUOTE_SOURCES):
                     contract = source_contract(venue, asset)
                     row = conn.execute(
-                        """SELECT COUNT(*) AS forecast_rows,
+                        f"""SELECT COUNT(*) AS forecast_rows,
+                           SUM(CASE WHEN {signal} THEN 1 ELSE 0 END)
+                               AS decisive_forecast_rows,
+                           SUM(CASE WHEN {signal} AND q.family IS NULL
+                                    AND s.issued_at<=? THEN 1 ELSE 0 END)
+                               AS elapsed_unmatched_decisive_rows,
                            SUM(CASE WHEN q.family IS NOT NULL THEN 1 ELSE 0 END) AS entry_rows,
                            SUM(CASE WHEN q.state='EXIT_QUOTED' AND q.exit_at<=?
                                     THEN 1 ELSE 0 END) AS closed_exit_rows,
@@ -62,13 +78,28 @@ def read_xmarket_quotes(store,now: datetime,progress: dict) -> dict:
                            WHERE s.asset=? AND s.horizon_minutes=? AND s.family='xmarket_v1'
                              AND s.issued_at>=? AND s.issued_at<=?
                              AND s.venue=? AND s.contract=? AND s.quote=?""",
-                        (until,until,until,asset,horizon,since,until,venue,contract,currency),
+                        (*signal_args,*signal_args,elapsed_entry_cutoff,
+                         until,until,until,asset,horizon,since,until,
+                         venue,contract,currency),
                     ).fetchone()
+                    counts = {key:int(row[key] or 0) for key in (
+                        "forecast_rows","decisive_forecast_rows",
+                        "elapsed_unmatched_decisive_rows",
+                        "entry_rows","closed_exit_rows","missed_exit_rows",
+                    )}
+                    # Snapshot counts are diagnostic observations, not
+                    # independent targets, model wins or expected trades.
+                    counts["cash_only_forecast_rows"] = (
+                        counts["forecast_rows"]-counts["decisive_forecast_rows"]
+                    )
+                    counts["recent_unmatched_decisive_rows"] = max(
+                        0, counts["decisive_forecast_rows"]
+                        -counts["entry_rows"]
+                        -counts["elapsed_unmatched_decisive_rows"]
+                    )
                     rows.append({"asset":asset,"horizon_minutes":horizon,
                                  "venue":venue,"contract":contract,"quote":currency,
-                                 **{key:int(row[key] or 0) for key in (
-                                     "forecast_rows","entry_rows","closed_exit_rows","missed_exit_rows",
-                                 )},
+                                 **counts,
                                  "latest_entry_at":row["latest_entry_at"],
                                  "latest_exit_at":row["latest_exit_at"]})
         return {**_BASE,"status":"recorded","window_start":since,"captured_at":until,

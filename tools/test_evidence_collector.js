@@ -90,6 +90,10 @@ async function main(){
  assert.equal(receipt.host.xmarket_stage,'waiting_for_completed_day_export');
  assert.equal(receipt.host.xmarket_exports.published[0].latest_exported_day,'2026-11-12');
  assert.equal(receipt.drive.reports[0].reason,'insufficient_exact_pairs');
+ assert.equal(receipt.performance.model,'prospective-logistic-persistent-v3');
+ assert.equal(receipt.performance.status,'observed');
+ assert.equal(receipt.performance.after_cost_qualified,false,
+  'The scoring model name does not authorize a trading edge');
  assert.equal(receipt.performance.scopes[0].horizon,5);
  assert.equal(receipt.performance.scopes[0].unique_target_windows,20);
  assert.equal(receipt.performance.sampling_policy,'per-asset-horizon-close-v3');
@@ -103,6 +107,8 @@ async function main(){
  assert.equal(unavailable.host.recent_forward_calls.status,'read_unavailable');
  assert.equal(unavailable.host.xmarket_imported_scopes,null);
  assert.equal(unavailable.performance.status,'unavailable');
+ assert.equal(unavailable.performance.scopes.length,0,
+  'A model ID must not be mistaken for an observed scored outcome');
  console.log('Evidence collector signed round-trip, redaction and rejection regressions passed');
 }
 main().catch(error=>{console.error(error);process.exitCode=1});

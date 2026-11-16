@@ -472,7 +472,8 @@ def test_xmarket_proof_handoff_fails_closed_for_stale_invalid_and_missing():
     ) == {"status": "unavailable", "does_not_prove_edge": True}
 
 
-def test_kucoin_gap_receipt_distinguishes_bulk_backoff_from_exact_due_gaps(
+@pytest.mark.asyncio
+async def test_kucoin_gap_receipt_distinguishes_bulk_backoff_from_exact_due_gaps(
     learning_store,
 ):
     from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
@@ -517,7 +518,7 @@ def test_kucoin_gap_receipt_distinguishes_bulk_backoff_from_exact_due_gaps(
         )["assets"] == receipt["assets"]
     finally:
         # No provider requests are made by this receipt.
-        learning_store.close()
+        await worker.aclose()
 
 
 def test_kucoin_gap_receipt_fails_closed_if_persistence_unavailable():

@@ -96,6 +96,7 @@ class TargetSnapshot:
     live_lean_probability: float | None = None
     live_lean_as_of: datetime | None = None
     calibrated: bool = False
+    model_version: str | None = None
 
     @property
     def fingerprint(self) -> str:
@@ -117,6 +118,7 @@ class TargetSnapshot:
             "lean_as_of": (self.live_lean_as_of.isoformat()
                            if self.live_lean_as_of else None),
             "calibrated": self.calibrated,
+            "model_version": self.model_version,
         }, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -209,6 +211,7 @@ def target_snapshot(
                 issued_at=watch["issued"],
                 ends_at=ends,
                 status="weak_model",
+                model_version=watch.get("model_version"),
                 **lean_fields,
             )
         try:
@@ -250,6 +253,7 @@ def target_snapshot(
                 issued_at=watch["issued"],
                 ends_at=ends,
                 status="unqualified_model",
+                model_version=watch.get("model_version"),
                 **lean_fields,
             )
         return TargetSnapshot(
@@ -264,6 +268,7 @@ def target_snapshot(
             ends_at=ends,
             status="ok",
             evidence_qualified=True,
+            model_version=watch.get("model_version"),
             training_evaluated=(
                 int(watch["training_evaluated"])
                 if int(watch.get("training_evaluated") or 0) > 0

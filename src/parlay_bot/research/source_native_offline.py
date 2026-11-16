@@ -28,7 +28,9 @@ from parlay_bot.research.llm_feature_ablation import (
 )
 from parlay_bot.research.production import _report
 from parlay_bot.research.publish import _artifact, _drive
-from parlay_bot.research.source_native import SOURCE, VENUES, restore_verified_source_months
+from parlay_bot.research.source_native import (
+    OKX_SOURCE_INTEGRITIES, SOURCE, VENUES, restore_verified_source_months,
+)
 
 
 def select_training_months(*, now: datetime, first_month: str | None) -> list[str]:
@@ -144,11 +146,22 @@ async def run_native_research(
     *, drive, venue: str, months: list[str], root: Path,
     report_dir: Path, publish: bool, asset: str | None = None,
     llm_hypotheses: list[dict] | None = None,
+    source_integrity: str | None = None,
 ) -> dict:
     """Research-only. A successful run is NOT forward accuracy or profitability."""
     checked_at = datetime.now(UTC).isoformat()
     if venue not in VENUES or len(months) != 6:
         raise HistoryImportError("six exact consecutive months and active venue required")
+    if source_integrity is not None and (
+        venue != "okx" or source_integrity not in OKX_SOURCE_INTEGRITIES
+    ):
+        raise HistoryImportError("unsupported exact source provenance selection")
+    # Research into a pinned source never shares local artifacts with a
+    # different publisher. Original Drive SHA identities stay unchanged.
+    research_root = (
+        Path(root) / "source-families" / source_integrity
+        if source_integrity is not None else Path(root)
+    )
     # Contiguous calendar months and one venue only; never stitch distant
     # periods into a fake six-month learning window.
     from parlay_bot.research.audit import _next_month
@@ -165,15 +178,17 @@ async def run_native_research(
         )
 
         artifacts = await restore_verified_bitget_market_months(
-            drive, months=months, root=root, asset=asset or "BTC",
+            drive, months=months, root=research_root, asset=asset or "BTC",
         )
     else:
         if asset is not None:
             raise HistoryImportError("asset selection applies only to Bitget")
         artifacts = await restore_verified_source_months(
-            drive, venue=venue, months=months, root=root,
+            drive, venue=venue, months=months, root=research_root,
+            **({"source_integrity": source_integrity}
+               if source_integrity is not None else {}),
         )
-    quality = audit_catalog(root, months=months, sources=(SOURCE,))
+    quality = audit_catalog(research_root, months=months, sources=(SOURCE,))
     requested = [s for s in quality["streams"] if s["venue"] == venue]
     # The general history audit permits small research-grade gaps. This
     # acceptance milestone is stricter: every one of the six *source-native*
@@ -213,6 +228,7 @@ async def run_native_research(
             "schema_version": "rival-native-source-research-v1",
             "checked_at": checked_at,
             "status": "source_months_incomplete", "venue": venue,
+            "source_integrity": source_integrity,
             "asset": asset if venue == "bitget" else None,
             "requested_months": months, "restored_manifests": len(artifacts),
             "qualified_source_scopes": 0, "published_models": 0,
@@ -241,14 +257,14 @@ async def run_native_research(
         }
         _report(report_dir / f"source-{venue}-research.json", blocked)
         return blocked
-    logistic = evaluate_logistic(root, qualified_streams=qualified)
+    logistic = evaluate_logistic(research_root, qualified_streams=qualified)
     boosted = evaluate_boosters(
-        root, qualified_streams=qualified,
+        research_root, qualified_streams=qualified,
         artifact_dir=report_dir / "source-native-boosted",
     )
     llm_candidates = []
     llm_trials = evaluate_hypothesis_ablations(
-        root, qualified_streams=qualified,
+        research_root, qualified_streams=qualified,
         proposals=llm_hypotheses or [],
         candidate_sink=llm_candidates,
     )
@@ -261,6 +277,7 @@ async def run_native_research(
         "schema_version": "rival-native-source-research-v1",
         "checked_at": checked_at,
         "venue": venue, "months": months,
+        "source_integrity": source_integrity,
         "coverage_scopes": coverage_scopes,
         "asset": asset if venue == "bitget" else None,
         "source_scopes": sorted(
@@ -362,6 +379,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--months", type=int, choices=(6,), default=6)
     parser.add_argument("--first-month", default=None)
     parser.add_argument("--asset", choices=("BTC", "ETH", "SOL", "XRP"))
+    parser.add_argument("--source-integrity", choices=sorted(OKX_SOURCE_INTEGRITIES),
+                        default=None, help="Explicit isolated OKX history family")
     parser.add_argument("--root", type=Path, default=Path("data/native-research"))
     parser.add_argument("--report-dir", type=Path, default=Path("data/native-reports"))
     parser.add_argument("--publish", action="store_true")
@@ -391,6 +410,7 @@ def main(argv: list[str] | None = None) -> int:
                 root=args.root, report_dir=args.report_dir,
                 publish=args.publish, asset=args.asset,
                 llm_hypotheses=llm_hypotheses,
+                source_integrity=args.source_integrity,
             )
         finally:
             await drive.aclose()
@@ -404,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
             "schema_version": "rival-native-source-research-v1", "status": "run_failed",
             "checked_at": datetime.now(UTC).isoformat(),
             "venue": args.venue, "asset": args.asset, "requested_months": months,
+            "source_integrity": args.source_integrity,
             "reason_code": reason, "error_class": type(exc).__name__,
             "published_models": 0, "live_approved": False,
         })

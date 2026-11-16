@@ -23,11 +23,17 @@ on:
     paths:
       - ".github/workflows/xmarket-source-recovery.yml"
       - "src/parlay_bot/research/xmarket_history.py"
+      # A history promotion timeout previously blocked the ETH source cursor.
+      # Re-run bounded original-source recovery after archive transport fixes.
+      - "src/parlay_bot/archive/drive.py"
   pull_request:
     paths:
       - ".github/workflows/xmarket-source-recovery.yml"
       - "src/parlay_bot/research/xmarket_history.py"
       - "src/parlay_bot/research/xmarket_training.py"
+      - "src/parlay_bot/archive/drive.py"
+      - "tests/test_drive_archive.py"
+      - "tests/test_drive_history_promotion_reconciliation.py"
       - "tests/test_xmarket_history.py"
 
 permissions:

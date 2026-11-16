@@ -22,6 +22,12 @@ VENUES = frozenset({
 })
 SOURCE = "verified_venue_perp_klines"
 STEP = timedelta(minutes=5)
+# Explicit provenance pinning is only available for the two documented OKX
+# source families. It does not imply independent raw-provider proof.
+OKX_SOURCE_INTEGRITIES = frozenset({
+    "okx-v5-public-history-5m-v1",
+    "okx-v5-official-1m-zip-derived-5m-v1",
+})
 
 
 class NativeMonthConflictError(HistoryImportError):
@@ -719,6 +725,7 @@ class NativeMonthlyPublisher:
 async def restore_verified_source_months(
     drive, *, venue: str, months: list[str], root: Path,
     contract: str | None = None,
+    source_integrity: str | None = None,
 ) -> list[Path]:
     """Restore only actual source/month files from our private Drive archive.
 
@@ -729,6 +736,10 @@ async def restore_verified_source_months(
     """
     if venue not in VENUES or not 1 <= len(months) <= 6:
         raise HistoryImportError("invalid or oversized native research request")
+    if source_integrity is not None and (
+        venue != "okx" or source_integrity not in OKX_SOURCE_INTEGRITIES
+    ):
+        raise HistoryImportError("invalid explicit native source provenance")
     if len(months) != len(set(months)):
         raise HistoryImportError("duplicate source research month")
     supported_contracts = (
@@ -830,6 +841,12 @@ async def restore_verified_source_months(
             month = info["file"].split("-5m-")[1][:7]
             identity = (info["venue"], info["contract"], info["quote"], month)
             if month not in months:
+                continue
+            # An explicit source pin chooses exactly one immutable family.
+            # Default restore remains fail-closed on any divergent original.
+            # Always authenticate the manifest before filtering its family.
+            if (source_integrity is not None
+                and info["source_integrity"] != source_integrity):
                 continue
             name = info["file"]
             if (not isinstance(name, str) or Path(name).name != name

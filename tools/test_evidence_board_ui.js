@@ -53,7 +53,7 @@ cx.state.evidence={
  drive:{status:'verified_reports',latest_report_at:at,reports:[{asset:'BTC',horizon:5,status:'blocked',
   pm_status:'unverified',kalshi_status:'unverified',pm_pairs:0,kalshi_pairs:0,eligible_rows:0,
   reason:'no_prospective_export',report_modified_at:at}]},
- performance:{scopes:[{asset:'BTC',horizon:15,paired_outcomes:285,model_brier:0.227,
+ performance:{status:'observed',model:'prospective-logistic-persistent-v3',captured_at:at,after_cost_qualified:false,scopes:[{asset:'BTC',horizon:15,paired_outcomes:285,model_brier:0.227,
   baseline_brier:0.235,after_cost_qualified:false}]},
  intelligence:{status:'verified',prs:[],runs:[]}
 };
@@ -178,14 +178,38 @@ cx.state.evidence.host.recent_forward_calls={
   issued_at:new Date(Date.now()-120000).toISOString(),
   target_close_at:new Date(Date.now()+180000).toISOString(),
   probability_up:0.62,baseline_up:0.52,direction:'UP',
-  status:'open',outcome_up:null,lead_seconds:300}]
+  status:'open',outcome_up:null,lead_seconds:300,model_version:'prospective-logistic-persistent-v3'}]
 };
 assert.match(cx.opsSignals(),/62.0%/);
+assert.match(cx.opsSignals(),/Model: prospective-logistic-persistent-v3/);
 assert.match(cx.opsSignals(),/52.0% UP/);
 assert.match(cx.opsSignals(),/Target pending/);
 assert.match(cx.opsSignals(),/Target closes \(5m candle\)/);
 assert.match(cx.opsSignals(),/not a guarantee of a 60-minute-ahead forecast/);
 assert.match(cx.opsCommand(),/Latest research forecasts/);
+assert.match(cx.opsCommand(),/Persistent Logistic v3/);
+assert.match(cx.opsCommand(),/prospective-logistic-persistent-v3/);
+assert.match(cx.opsCommand(),/Baseline is the comparator, not another RivaL AI model/);
+assert.match(cx.opsModels(),/Scored model: Persistent Logistic v3/);
+assert.match(cx.opsModels(),/Host model identity unavailable|Persistent Logistic v3/);
+assert.match(cx.opsSignals(),/Which RivaL model is being scored/);
+cx.opsOpenScore('BTC',15);
+assert.match(document.drawer,/prospective-logistic-persistent-v3/);
+assert.match(document.drawer,/Baseline identity/);
+const healthyHost = cx.state.evidence.host, healthyDatabase = cx.state.evidence.database;
+cx.state.evidence.host={status:'unavailable',forecast_issued:null,learning_settled:null,xmarket_imported_scopes:null,xmarket_shadow_rows:null};
+cx.state.evidence.database={status:'unavailable',weight_updates_observed:null,compared_streams:null,qualified_paper_scopes:null};
+assert.match(cx.opsCommand(),/Host read unavailable/);
+assert.match(cx.opsCommand(),/Discloud host and database receipt could not be read/);
+assert.match(cx.opsCommand(),/Persistent Logistic v3/);
+assert.match(cx.opsModels(),/Host read unavailable/);
+assert.match(cx.opsSignals(),/Host read unavailable/);
+assert.match(cx.opsXMarket(),/Host read unavailable/);
+assert.match(cx.opsAlerts(),/Discloud production telemetry unavailable/);
+assert.doesNotMatch(cx.opsCommand(),/Profitable scopes proven[\s\S]{0,90}>Unknown</);
+cx.state.evidence.host=healthyHost;
+cx.state.evidence.database=healthyDatabase;
+
 assert.match(cx.opsCommand(),/62.0%/);
 cx.state.evidence.host.recent_forward_calls.rows[0].status='settled';
 cx.state.evidence.host.recent_forward_calls.rows[0].outcome_up=1;

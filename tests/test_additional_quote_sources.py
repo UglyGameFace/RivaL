@@ -15,6 +15,7 @@ from parlay_bot.perpetuals.learning_health_receipt import _runtime_diagnostics
 from parlay_bot.perpetuals.live_quotes import (
     ASSETS,
     OKX_CONTRACT_SIZE,
+    SOURCE_QUOTE_CURRENCIES,
     PublicBestQuoteClient,
     quote_identity,
     source_contract,
@@ -89,20 +90,21 @@ def test_stale_future_crossed_wrong_instrument_and_empty_wire_never_enter_hub(ve
 
 def seed(store, venue, issued):
     contract = source_contract(venue, "BTC")
+    currency = SOURCE_QUOTE_CURRENCIES[venue]
     with store.connect() as conn:
         conn.execute("""INSERT INTO perp_forward_audit
             (venue,contract,quote,asset,horizon_minutes,model_version,
              reference_opened_at,reference_close,issued_at,target_opened_at,
              probability_up,baseline_up,training_evaluated)
-            VALUES (?,?,'USDT','BTC',5,?,?,100.,?,?,.7,.5,200)""",
-            (venue,contract,MODEL,(issued-timedelta(minutes=5)).isoformat(),
+            VALUES (?,?,?,'BTC',5,?,?,100.,?,?,.7,.5,200)""",
+            (venue,contract,currency,MODEL,(issued-timedelta(minutes=5)).isoformat(),
              issued.isoformat(),issued.isoformat()))
         conn.execute("""INSERT INTO rival_model_shadow_forecasts
             (venue,contract,quote,asset,horizon_minutes,family,reference_opened_at,
              issued_at,target_opened_at,probability_up,incumbent_up,baseline_up,
              training_count,training_sha256)
-            VALUES (?,?,'USDT','BTC',5,'xmarket_v1',?,?,?,.7,.6,.5,200,?)""",
-            (venue,contract,(issued-timedelta(minutes=5)).isoformat(),
+            VALUES (?,?,?,'BTC',5,'xmarket_v1',?,?,?,.7,.6,.5,200,?)""",
+            (venue,contract,currency,(issued-timedelta(minutes=5)).isoformat(),
              issued.isoformat(),issued.isoformat(),"a"*64))
 
 
@@ -206,7 +208,7 @@ async def test_one_okx_socket_supplies_quotes_and_existing_liquidity(monkeypatch
         assert names.count("okx") == 1
         assert names.count("bitget") == 1
         assert "okx-orderflow" not in names
-        assert len(names) == 7  # one new Bitget socket; existing OKX is reused
+        assert len(names) == 10  # seven native books plus three existing flow feeds
     finally:
         await asyncio.wait_for(hub.aclose(), timeout=1)
 

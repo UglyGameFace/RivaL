@@ -26,9 +26,10 @@ COST_SCENARIOS = (
     ("severe", 25.0 + 30.0 + 25.0),
 )
 # Existing policy includes 8 bps round-trip taker fees. Standard public fees
-# checked 2026-11-15 are 10 bps on OKX and 12 bps on Bitget. Preserve every
-# existing slippage/funding stress and add the venue difference to BOTH cases.
-VENUE_FEE_PREMIUM_BPS = {"okx": 2.0, "bitget": 4.0}
+# checked 2026-11-15/16 are 10 bps on OKX, 12 on Bitget and 15 on Gate
+# (public contract metadata). Deribit's 7 and Lighter's published public fees
+# do not reduce the existing 8-bps floor. Preserve all slippage/funding stress.
+VENUE_FEE_PREMIUM_BPS = {"okx": 2.0, "bitget": 4.0, "gate": 7.0}
 
 
 def cost_scenarios(venue: str) -> tuple[tuple[str, float], ...]:

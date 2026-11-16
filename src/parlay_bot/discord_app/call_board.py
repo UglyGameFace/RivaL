@@ -255,6 +255,7 @@ class CallBoardService:
         self._ready = False
         self._last_evaluated: dict[tuple, datetime] = {}
         self._last_revision: dict[tuple, str | None] = {}
+        self._last_boundary: dict[tuple, int] = {}
         self._refresh_event = asyncio.Event()
 
     def initialize(self) -> None:
@@ -386,9 +387,12 @@ class CallBoardService:
                 except (discord.HTTPException, AttributeError):
                     pass
                 return "Could not save this panel; no active tracking created."
-            self._last_evaluated[
-                (kind, asset, horizon if kind == "polymarket" else 0)
-            ] = datetime.now(UTC)
+            cache_key = (kind, asset, horizon if kind == "polymarket" else 0)
+            self._last_evaluated[cache_key] = datetime.now(UTC)
+            if kind == "exchange":
+                self._last_boundary[cache_key] = (
+                    int(datetime.now(UTC).timestamp()) // 300
+                )
             return (
                 f"Posted {asset} {kind} Live Calls in this channel. "
                 "One message updates automatically, without DMs."
@@ -434,9 +438,18 @@ class CallBoardService:
                             checked = await asyncio.to_thread(self._revision, asset)
                             new_issuance = checked != revision
                             self._last_revision[key] = checked
+                        # Actual exchange forward targets resolve on UTC
+                        # five-minute candle boundaries; never leave an old
+                        # UP/DOWN card frozen beyond that transition.
+                        boundary_changed = False
+                        if kind == "exchange":
+                            bucket = int(now.timestamp()) // 300
+                            boundary_changed = self._last_boundary.get(key) != bucket
+                            self._last_boundary[key] = bucket
                         # An exchange issuance wake must not cause a Gamma/CLOB
                         # or Kalshi REST burst unrelated to that new forecast.
-                        if (force and kind == "exchange") or stale or new_issuance:
+                        if ((force and kind == "exchange") or stale
+                                or new_issuance or boundary_changed):
                             cards[key] = await asyncio.wait_for(
                                 self._render(kind, asset, horizon), timeout=20,
                             )

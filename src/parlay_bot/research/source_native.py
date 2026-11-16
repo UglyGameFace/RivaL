@@ -726,6 +726,7 @@ async def restore_verified_source_months(
     drive, *, venue: str, months: list[str], root: Path,
     contract: str | None = None,
     source_integrity: str | None = None,
+    source_family: str | None = None,
 ) -> list[Path]:
     """Restore only actual source/month files from our private Drive archive.
 
@@ -740,6 +741,11 @@ async def restore_verified_source_months(
         venue != "okx" or source_integrity not in OKX_SOURCE_INTEGRITIES
     ):
         raise HistoryImportError("invalid explicit native source provenance")
+    if source_family is not None and (
+        source_family != "okx_official" or venue != "okx"
+        or source_integrity is not None
+    ):
+        raise HistoryImportError("invalid native provider source family")
     if len(months) != len(set(months)):
         raise HistoryImportError("duplicate source research month")
     supported_contracts = (
@@ -847,6 +853,9 @@ async def restore_verified_source_months(
             # Always authenticate the manifest before filtering its family.
             if (source_integrity is not None
                 and info["source_integrity"] != source_integrity):
+                continue
+            if (source_family == "okx_official"
+                and info["source_integrity"] not in OKX_SOURCE_INTEGRITIES):
                 continue
             name = info["file"]
             if (not isinstance(name, str) or Path(name).name != name

@@ -1,6 +1,7 @@
 """Visible calls remain separate from verified trade recommendations."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -307,5 +308,45 @@ async def test_market_and_horizon_are_persisted_separately(tmp_path, monkeypatch
         assert "No source-matched" in await service.start(
             actor, "BTC", kind="draftkings",
         )
+    finally:
+        store.close()
+
+@pytest.mark.asyncio
+async def test_slow_contract_market_does_not_delay_new_exchange_call(tmp_path):
+    store = SQLiteHotStore(tmp_path / "independent-markets.sqlite")
+    try:
+        service = CallBoardService(SimpleNamespace(), store, object())
+        service.initialize()
+        service._save(1, "exchange", "BTC", 0, 101, 42, "old")
+        service._save(1, "polymarket", "BTC", 5, 102, 42, "old")
+        poly_started = asyncio.Event()
+        release_poly = asyncio.Event()
+        exchange_delivered = asyncio.Event()
+        edits = []
+
+        async def render(kind, asset, horizon):
+            if kind == "polymarket":
+                poly_started.set()
+                await release_poly.wait()
+            return discord.Embed(title=kind), f"{kind}:new"
+
+        async def edit(row, _card, _digest):
+            edits.append(row["market_kind"])
+            if row["market_kind"] == "exchange":
+                exchange_delivered.set()
+            return True
+
+        service._render = render
+        service._edit = edit
+        running = asyncio.create_task(service.cycle())
+        try:
+            await asyncio.wait_for(poly_started.wait(), timeout=2)
+            await asyncio.wait_for(exchange_delivered.wait(), timeout=2)
+            assert not running.done()
+            assert edits == ["exchange"]
+        finally:
+            release_poly.set()
+        assert await asyncio.wait_for(running, timeout=2) == 2
+        assert set(edits) == {"exchange", "polymarket"}
     finally:
         store.close()

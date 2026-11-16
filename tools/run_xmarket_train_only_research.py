@@ -73,12 +73,21 @@ def run(*, asset: str, manifests: Path, train_end: str,
                 "status": "source_admission_blocked", "profiles": [],
                 "research_only": True, "can_publish_model": False,
             }
+            fold = ablation.get("fold") or {}
+            observed_days = fold.get("eval_days")
             result["scopes"].append({
                 "horizon_minutes": horizon, "training_status": report.get("training_status"),
                 "gate_failures": report.get("gate_failures", []),
                 "split_rows": report.get("split_rows", {}),
                 "original_overlap_eligible": report.get("overlap_evidence", {}).get("eligible", False),
                 "ablation": ablation,
+                "inner_train_only_eval_days": (
+                    observed_days if type(observed_days) is int else None
+                ),
+                "inner_train_only_missing_days": (
+                    max(0, 7 - observed_days) if type(observed_days) is int else None
+                ),
+                "required_inner_eval_days": 7,
                 "outer_validation_test_scored": False,
             })
         result["status"] = ("measured" if len(result["scopes"]) == 3 and
@@ -113,8 +122,12 @@ def main(argv=None) -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(receipt, sort_keys=True, indent=2), encoding="utf-8")
     print(json.dumps({"asset": args.asset, "status": receipt["status"],
+                      "okx_selected_source_integrity":
+                          receipt.get("okx_selected_source_integrity"),
                       "scopes": [{"horizon": s["horizon_minutes"],
-                                  "status": s["ablation"]["status"]}
+                                  "status": s["ablation"]["status"],
+                                  "inner_eval_days": s["inner_train_only_eval_days"],
+                                  "missing_days": s["inner_train_only_missing_days"]}
                                  for s in receipt.get("scopes", [])]}))
     return 0 if receipt["status"] == "measured" else 2
 

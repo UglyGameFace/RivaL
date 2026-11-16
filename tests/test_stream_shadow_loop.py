@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
 import threading
 import time
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from parlay_bot.discord_app.bot import RivalDiscordClient

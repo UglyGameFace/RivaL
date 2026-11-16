@@ -660,6 +660,13 @@ class RivalDiscordClient(discord.Client):
         # Live model watch posts (Detailed Research -> Watch live).
         from parlay_bot.discord_app.model_watch import ModelWatchService
         self.model_watch = ModelWatchService(self, self.store)
+        # Opt-in, one-message public research forecasts. Shared 60s target
+        # refresh loop; disabled Auto-Hunt DMs remain disabled.
+        from parlay_bot.discord_app.call_board import CallBoardService
+        self.call_board = CallBoardService(
+            self, self.store, self.perp_collector.market
+            if self.perp_collector is not None else None,
+        )
         self._model_watch_task: asyncio.Task[None] | None = None
         self._model_lab_task: asyncio.Task[None] | None = None
         self._retention_task: asyncio.Task[None] | None = None
@@ -701,6 +708,7 @@ class RivalDiscordClient(discord.Client):
             refresh_sports=self._request_sports_refresh,
             market=collector.market if collector is not None else None,
             targets=self.direction_targets,
+            call_board=self.call_board,
             auto_hunt=self.auto_hunt,
             paper=self.paper_ledger,
             quotes=self.public_quotes,
@@ -1463,6 +1471,7 @@ class RivalDiscordClient(discord.Client):
         self.add_view(self.polymarket_board.dm_view)
         # Watch posts keep their Refresh / Stop buttons across restarts.
         self.add_view(self.model_watch.view)
+        self.add_view(self.call_board.view)
         install_owner_gate(self.tree, self.owner_gate)
         # Resolve the owner now, not inside the first button tap after a
         # restart, where Discord's application lookup counts against the
@@ -1473,6 +1482,7 @@ class RivalDiscordClient(discord.Client):
             _LOG.warning("RivaL owner lookup at startup failed; will retry on first tap")
         _LOG.info("RivaL guided, research, data and hunt recovery views registered")
         await asyncio.to_thread(self.auto_hunt.store.initialize)
+        await asyncio.to_thread(self.call_board.initialize)
         await asyncio.to_thread(self.polymarket_board.store.initialize)
         await asyncio.to_thread(self.polymarket_research.initialize)
         await asyncio.to_thread(self.formula_test.initialize)
@@ -2424,7 +2434,7 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(REFRESH_SECONDS)
 
     async def _target_loop(self) -> None:
-        """Update user-opted-in private forecast cards without flooding DMs."""
+        """Update user-requested DM cards and channel call cards independently."""
         await self.wait_until_ready()
         while not self.is_closed():
             try:
@@ -2435,6 +2445,14 @@ class RivalDiscordClient(discord.Client):
                 raise
             except Exception:  # noqa: BLE001 - Discord uptime independent
                 _LOG.exception("RivaL target refresh cycle failed safely")
+            try:
+                edited = await self.call_board.cycle()
+                if edited:
+                    _LOG.info("RivaL channel call cards updated=%d", edited)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - one panel cannot stop the bot
+                _LOG.exception("RivaL channel calls refresh failed safely")
             await asyncio.sleep(60)
 
     def _request_sports_refresh(self) -> str:

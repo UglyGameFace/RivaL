@@ -33,8 +33,8 @@ def okx_response(request: httpx.Request) -> httpx.Response:
     c = cutoff() * 1000
     return httpx.Response(200, json={"code": "0", "data": [
         [str(c), "100", "110", "90", "105", "200", "2", "210", "0"],
-        [str(c - 300_000), "100", "110", "90", "105", "200", "2", "210", "1"],
-        [str(c - 600_000), "99", "110", "90", "100", "200", "2", "200", "1"],
+        [str(c - 300_000), "100", "110", "90", "105", "200", "3.5", "210", "1"],
+        [str(c - 600_000), "99", "110", "90", "100", "200", "3.5", "200", "1"],
     ]})
 
 
@@ -77,9 +77,10 @@ async def test_two_public_venues_store_exact_contract_and_base_volume(
         batch = await provider(raw).collect(assets=("BTC",), bars=2)
         assert batch.contexts == ()
         assert len(batch.candles) == 2
+        expected_base = 3.5 if name == "okx" else 2
         assert all(
             c.contract == contract and c.venue == name and c.quote == "USDT"
-            and c.trades == -1 and c.volume_base == pytest.approx(2)
+            and c.trades == -1 and c.volume_base == pytest.approx(expected_base)
             and c.closed_at < c.observed_at
             for c in batch.candles
         )
@@ -90,7 +91,7 @@ async def test_two_public_venues_store_exact_contract_and_base_volume(
             venue=name, contract=contract, quote="USDT", interval_minutes=5,
         )
         assert len(saved) == 2
-        assert saved[0]["volume_base"] == pytest.approx(2)
+        assert saved[0]["volume_base"] == pytest.approx(expected_base)
     finally:
         await raw.aclose()
         store.close()

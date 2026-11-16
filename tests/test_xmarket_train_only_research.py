@@ -136,9 +136,16 @@ def test_train_only_dispersion_selection_never_reads_outer_period_availability()
 
     # Changing only the future venue rows must never alter the features
     # selected for the already-fixed research training period.
-    dispersion["gate|BTC"] = (full, full)
+    train_cutoff = args["train_end"] - pd.Timedelta(minutes=args["horizon"])
+    # Keep the original pre-cutoff gap; add rows strictly after it only.
+    future_only = pd.concat((subset, full.loc[train_cutoff:]))
+    dispersion["gate|BTC"] = (future_only, future_only)
     same_research, same_receipt = xmarket_training._select_dispersion_venues(
         dispersion, **args, train_only=True,
     )
     assert same_research == research
     assert same_receipt == train_evidence
+    changed_production, _ = xmarket_training._select_dispersion_venues(
+        dispersion, **args, train_only=False,
+    )
+    assert changed_production == ("bitget", "okx", "gate")

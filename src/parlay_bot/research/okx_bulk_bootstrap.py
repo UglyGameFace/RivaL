@@ -20,6 +20,7 @@ from parlay_bot.config import Settings
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.official_okx_bootstrap import ASSETS, FIRST, bootstrap
 from parlay_bot.research.publish import _drive
+from parlay_bot.research.source_native import NativeMonthConflictError
 
 # Historical candles: 20 requests / 2 seconds / public IP. 0.16 seconds
 # allocates 12.5 requests / 2 seconds across ALL assets on one runner.
@@ -139,10 +140,6 @@ async def run_bulk(
                         )
                     except (HistoryImportError, httpx.HTTPError,
                             OSError, RuntimeError, ValueError) as exc:
-                        from parlay_bot.research.source_native import (
-                            NativeMonthConflictError,
-                        )
-
                         blocked = {
                             "status": "blocked", "asset": asset,
                             "error": str(exc)[:300],

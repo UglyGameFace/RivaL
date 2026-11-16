@@ -45,6 +45,9 @@ async function main(){
     {asset:'ETH',horizon:5,venue:'bad/PRIVATE',quote:'USD',issued_at:issued,target_close_at:target,
      probability_up:0.6,baseline_up:0.5,direction:'UP',status:'open',outcome_up:null,lead_seconds:300}]},
   xmarket_stage:'waiting_for_completed_day_export',
+  kucoin_gap_recovery:{status:'recorded',assets_observed:1,
+   queued_exact_gaps_14d:2,due_exact_gaps_14d:1,
+   attempted_exact_gaps_14d:1,bulk_upstream_empty_assets:1,contract:'PRIVATE'},
   xmarket_exports:{recent_completed_days_pending:4,eligible_before:now,
    published:[{asset:'BTC',exported_days:1,latest_exported_day:'2026-11-12',drive_file_id:'PRIVATE'}],
    pending_by_asset:[{asset:'ETH',days:1}],password:'PRIVATE'}},
@@ -88,6 +91,10 @@ async function main(){
 
  assert.equal(receipt.host.xmarket_exports.recent_completed_days_pending,4);
  assert.equal(receipt.host.xmarket_stage,'waiting_for_completed_day_export');
+ assert.equal(receipt.host.kucoin_gap_recovery.queued_exact_gaps_14d,2);
+ assert.equal(receipt.host.kucoin_gap_recovery.due_exact_gaps_14d,1);
+ assert.equal(receipt.host.kucoin_gap_recovery.does_not_prove_source_recovery,true);
+ assert.ok(!Object.hasOwn(receipt.host.kucoin_gap_recovery,'contract'));
  assert.equal(receipt.host.xmarket_exports.published[0].latest_exported_day,'2026-11-12');
  assert.equal(receipt.drive.reports[0].reason,'insufficient_exact_pairs');
  assert.equal(receipt.performance.model,'prospective-logistic-persistent-v3');

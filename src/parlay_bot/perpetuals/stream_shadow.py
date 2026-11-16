@@ -70,6 +70,10 @@ class StreamShadowLedger:
                 ON rival_stream_shadow (asset,venue,state,target_close_at);
                 """
             )
+        # expire() initializes before each live sweep. Eagerly initialize
+        # the companion family ledger here so bounded concurrent observers
+        # never race one another to CREATE its schema on the first quote.
+        self._family_quote_shadow.initialize()
         self._initialized = True
 
     def expire(self, *, now: datetime | None = None) -> int:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 import threading
 import time
 from types import SimpleNamespace
@@ -67,6 +68,17 @@ def test_a_book_gone_by_the_second_read_is_simply_not_sampled():
 
     asyncio.run(_client(snapshots, multi_observe)._stream_shadow_loop())
     assert seen == ["d"]
+
+
+def test_expire_prepares_family_schema_before_concurrent_quote_sampling(learning_store):
+    """The new worker cap must not race PostgreSQL/SQLite schema creation."""
+    from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
+
+    ledger = StreamShadowLedger(learning_store)
+    assert not ledger._family_quote_shadow._initialized
+    ledger.expire(now=datetime.now(UTC))
+    assert ledger._initialized
+    assert ledger._family_quote_shadow._initialized
 
 
 def test_tail_native_book_is_seen_even_while_first_exchange_is_slow():

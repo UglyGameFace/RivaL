@@ -114,11 +114,55 @@ def test_small_or_unverified_passes_keep_comparison_priority(native_provider, ma
         root=native_provider.root, before=native_provider.before, max_windows=max_windows,
         retry_gaps=0, chronological=windows, budget_report=budget,
     )
-    assert windows == before
-    assert budget["chronological_window_budgets"] == {"train": 0, "validation": 0}
     assert budget["contract_attempts"] <= budget["contract_attempt_limit"]
     if not verified:
+        # Comparing original live/archive source overlap still gets the
+        # full 64 required contracts, but the 40 spare history slots
+        # actually advance the immutable training/validation cursors.
         assert budget["overlap_contracts_selected"] == {"polymarket": 64, "kalshi": 64}
+        assert budget["chronological_window_budgets"] == {"train": 27, "validation": 13}
+        assert budget["sequential_window_budget"] == 24
+        for name in ("train", "validation"):
+            assert windows[name]["before"] == (
+                before[name]["before"]
+                - timedelta(minutes=15 * budget["chronological_window_budgets"][name])
+            )
+    else:
+        assert windows == before
+        assert budget["chronological_window_budgets"] == {"train": 0, "validation": 0}
+
+
+def test_unverified_fidelity_still_recovers_folds_in_bounded_remaining_history_budget(
+    native_provider,
+):
+    # Authentic host receipt: two sources each spent 96 overlap and 32
+    # sequential requests, zero chronological, for four assets. The repair
+    # MUST preserve all 96 overlap comparisons AND make both fold cursors
+    # progress within the same 128/source budget.
+    bundle = live_bundle(150)
+    _, windows = recovery.chronological_windows(None, now=NOW)
+    original = copy.deepcopy(windows)
+    budget = {}
+    history, publications, cursor, errors = recovery.backfill(
+        None, asset="BTC", bundles=[bundle], root=native_provider.root,
+        before=native_provider.before, max_windows=96, retry_gaps=0,
+        chronological=windows, budget_report=budget,
+    )
+    assert budget["overlap_contracts_selected"] == {
+        "polymarket": 96, "kalshi": 96,
+    }
+    assert budget["sequential_window_budget"] == 16
+    assert budget["chronological_window_budgets"] == {"train": 11, "validation": 5}
+    assert budget["contract_attempts"] == budget["contract_attempt_limit"] == 256
+    assert len(native_provider.collected) == len(publications) == 256
+    assert cursor == native_provider.before - timedelta(minutes=15 * 16)
+    for name, count in (("train", 11), ("validation", 5)):
+        assert windows[name]["before"] == original[name]["before"] - timedelta(minutes=15 * count)
+        assert budget["chronological_recovery"][name]["windows_advanced"] == count
+    # More source history is NOT automatically provider-fidelity approval.
+    check = recovery.compare_history(bundle["samples"], history)
+    assert all(value["status"] == "unverified" for value in check.values())
+    assert not errors and "model_approved" not in budget
 
 
 def test_completed_fold_reallocates_capacity_and_stops_at_its_real_floor(native_provider):

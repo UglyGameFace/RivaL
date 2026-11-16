@@ -534,12 +534,29 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90,
     sequential_limit = history_limit
     split_limits = {"train": 0, "validation": 0}
     if prioritize:
+        # Both fidelity gates already passed from immutable stored sources:
+        # old overlap checks are redundant; spend the freed requests on real
+        # chronological folds while retaining the usual old-history slice.
         sequential_limit = min(max_windows, RESERVED_HISTORY_WINDOWS)
+    elif active_windows and max_windows >= 2 * RESERVED_HISTORY_WINDOWS:
+        # Before fidelity passes, do NOT steal any of the independent
+        # overlap checks: they remain essential original-source comparisons.
+        # The old allocation gave all remaining requests to sequential
+        # backfill (96 overlap + 32 sequential on a 96-window pass), making
+        # both chronological cursors permanently 0 even when the *newly*
+        # verified overlap later passed. Reuse the existing, bounded history
+        # allocation for the required folds without increasing API calls or
+        # treating unverified comparisons as model-training eligibility.
+        sequential_limit = min(
+            RESERVED_HISTORY_WINDOWS,
+            max(1, history_limit // 2),
+        )
+    if active_windows:
         remaining = history_limit - sequential_limit
         if len(active_windows) == 2:
             split_limits["train"] = (2 * remaining + 2) // 3
             split_limits["validation"] = remaining - split_limits["train"]
-        else:
+        elif remaining:
             split_limits[next(iter(active_windows))] = remaining
     attempts = {stage: {source: 0 for source in PRICE_SEMANTICS}
                 for stage in ("overlap", "gap_repair", "backfill")}

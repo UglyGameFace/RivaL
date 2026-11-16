@@ -585,7 +585,8 @@ def load_frames_csv(frames_dir: Path) -> dict:
     return frames
 
 
-def load_frames_manifests(root: Path, *, target_asset: str | None = None) -> tuple[dict, dict]:
+def load_frames_manifests(root: Path, *, target_asset: str | None = None,
+                          okx_source_integrity: str | None = None) -> tuple[dict, dict]:
     """Load verified months restored under ``root`` via the existing
     restore paths (bitget_source_bridge / source_native), grouped per
     stream. Returns (frames, provenance). ``learning.assemble`` re-proves
@@ -595,8 +596,35 @@ def load_frames_manifests(root: Path, *, target_asset: str | None = None) -> tup
 
     from parlay_bot.research.learning import assemble
     from parlay_bot.research.recorded_candles import latest_recorded_snapshots
+    from parlay_bot.research.source_native import OKX_SOURCE_INTEGRITIES
 
+    if (okx_source_integrity is not None
+            and okx_source_integrity not in OKX_SOURCE_INTEGRITIES):
+        raise ValueError("unsupported exact OKX training provenance")
     manifests = sorted(Path(root).rglob("*.manifest.json"))
+    excluded_unselected = 0
+    if okx_source_integrity is not None:
+        # A manual re-run may retain a previously restored ledger-source OKX
+        # month beside the explicit, SHA-verified provider source. Never
+        # concatenate those different volumes or first-observation clocks.
+        chosen = Path(root) / "source-families" / okx_source_integrity
+        admitted = []
+        for path in manifests:
+            info = json.loads(path.read_text(encoding="utf-8"))
+            if info.get("venue") == "okx":
+                if chosen not in path.parents:
+                    excluded_unselected += 1
+                    continue
+                if info.get("source_integrity") != okx_source_integrity:
+                    raise TrainingDataUnavailable(
+                        "pinned OKX training manifest has wrong source identity"
+                    )
+            elif chosen in path.parents:
+                raise TrainingDataUnavailable(
+                    "non-OKX manifest in explicitly pinned OKX family"
+                )
+            admitted.append(path)
+        manifests = admitted
     if not manifests:
         raise TrainingDataUnavailable(f"no restored manifests under {root}")
     manifests = latest_recorded_snapshots(manifests)
@@ -611,6 +639,8 @@ def load_frames_manifests(root: Path, *, target_asset: str | None = None) -> tup
         "months_without_provider_hash": [],
         "manifest_sha256_by_month": {},
         "normalized_sha256_by_month": {},
+        "okx_selected_source_integrity": okx_source_integrity,
+        "okx_unselected_manifests": excluded_unselected,
     }
     for key, paths in groups.items():
         identity, rows, prov = assemble(paths)
@@ -666,7 +696,8 @@ async def restore_verified_months(*, asset: str, months: list[str], root: Path,
                                   records_since: date | None = None,
                                   records_through: date | None = None,
                                   now: datetime | None = None,
-                                  drive=None) -> dict:
+                                  drive=None,
+                                  okx_source_integrity: str | None = None) -> dict:
     """Restore verified months for one asset via the existing bridges.
 
     Bitget market months via restore_verified_bitget_market_months;
@@ -686,10 +717,14 @@ async def restore_verified_months(*, asset: str, months: list[str], root: Path,
     )
     from parlay_bot.research.publish import _drive
     from parlay_bot.research.source_native import (
+        OKX_SOURCE_INTEGRITIES,
         NativeMonthConflictError,
         restore_verified_source_months,
     )
 
+    if (okx_source_integrity is not None
+            and okx_source_integrity not in OKX_SOURCE_INTEGRITIES):
+        raise ValueError("unsupported exact OKX restoration provenance")
     owns_drive = drive is None
     if owns_drive:
         drive = _drive(Settings())
@@ -699,6 +734,7 @@ async def restore_verified_months(*, asset: str, months: list[str], root: Path,
         "months_requested": list(months),
         "restored": {},
         "excluded": {},
+        "okx_selected_source_integrity": okx_source_integrity,
     }
     try:
         assets = (asset,) if asset == "BTC" else (asset, "BTC")
@@ -715,8 +751,19 @@ async def restore_verified_months(*, asset: str, months: list[str], root: Path,
                 }
             for venue, contract in (("okx", f"{coin}-USDT-SWAP"), ("gate", f"{coin}_USDT")):
                 try:
+                    selected_root = (
+                        Path(root) / "source-families" / okx_source_integrity
+                        if venue == "okx" and okx_source_integrity is not None
+                        else root
+                    )
+                    source_pin = (
+                        {"source_integrity": okx_source_integrity}
+                        if venue == "okx" and okx_source_integrity is not None
+                        else {}
+                    )
                     paths = await restore_verified_source_months(
-                        drive, venue=venue, months=list(months), root=root, contract=contract,
+                        drive, venue=venue, months=list(months),
+                        root=selected_root, contract=contract, **source_pin,
                     )
                     report["restored"][venue + suffix] = [str(p) for p in paths]
                 except Exception as exc:  # noqa: BLE001 - record, do not skip silently

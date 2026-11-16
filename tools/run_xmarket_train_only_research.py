@@ -29,14 +29,27 @@ async def _read_originals(asset: str) -> dict:
 
 
 def run(*, asset: str, manifests: Path, train_end: str,
-        test_start: str, trained_through: str) -> dict:
+        test_start: str, trained_through: str,
+        okx_source_integrity: str | None = None) -> dict:
     # Never expose authenticated Drive identifiers or returned native quotes.
     result = {"schema": "rival-xmarket-train-only-evidence-v1",
               "asset": asset, "research_only": True,
               "source_archives_modified": False,
               "models_published": 0, "trades_placed": 0, "scopes": []}
     try:
-        frames, provenance = load_frames_manifests(manifests, target_asset=asset)
+        frame_options = (
+            {"okx_source_integrity": okx_source_integrity}
+            if okx_source_integrity is not None else {}
+        )
+        frames, provenance = load_frames_manifests(
+            manifests, target_asset=asset, **frame_options,
+        )
+        result["okx_selected_source_integrity"] = provenance.get(
+            "okx_selected_source_integrity"
+        )
+        result["okx_unselected_manifests"] = provenance.get(
+            "okx_unselected_manifests", 0
+        )
         if not provenance.get("provider_sha256_by_month"):
             raise ValueError("no verified provider-origin candle manifests")
         market_data = asyncio.run(_read_originals(asset))
@@ -60,12 +73,21 @@ def run(*, asset: str, manifests: Path, train_end: str,
                 "status": "source_admission_blocked", "profiles": [],
                 "research_only": True, "can_publish_model": False,
             }
+            fold = ablation.get("fold") or {}
+            observed_days = fold.get("eval_days")
             result["scopes"].append({
                 "horizon_minutes": horizon, "training_status": report.get("training_status"),
                 "gate_failures": report.get("gate_failures", []),
                 "split_rows": report.get("split_rows", {}),
                 "original_overlap_eligible": report.get("overlap_evidence", {}).get("eligible", False),
                 "ablation": ablation,
+                "inner_train_only_eval_days": (
+                    observed_days if type(observed_days) is int else None
+                ),
+                "inner_train_only_missing_days": (
+                    max(0, 7 - observed_days) if type(observed_days) is int else None
+                ),
+                "required_inner_eval_days": 7,
                 "outer_validation_test_scored": False,
             })
         result["status"] = ("measured" if len(result["scopes"]) == 3 and
@@ -81,6 +103,13 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Read-only XMarket training-only feature research")
     parser.add_argument("--asset", required=True, choices=("BTC", "ETH", "SOL", "XRP"))
     parser.add_argument("--manifests-dir", type=Path, required=True)
+    parser.add_argument(
+        "--okx-source-integrity",
+        choices=("okx-v5-public-history-5m-v1",
+                 "okx-v5-official-1m-zip-derived-5m-v1"),
+        default=None,
+        help="Use only the explicitly restored SHA-verified OKX native provider family",
+    )
     parser.add_argument("--train-end", required=True)
     parser.add_argument("--test-start", required=True)
     parser.add_argument("--trained-through", required=True)
@@ -88,12 +117,17 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     receipt = run(asset=args.asset, manifests=args.manifests_dir,
                   train_end=args.train_end, test_start=args.test_start,
-                  trained_through=args.trained_through)
+                  trained_through=args.trained_through,
+                  okx_source_integrity=args.okx_source_integrity)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(receipt, sort_keys=True, indent=2), encoding="utf-8")
     print(json.dumps({"asset": args.asset, "status": receipt["status"],
+                      "okx_selected_source_integrity":
+                          receipt.get("okx_selected_source_integrity"),
                       "scopes": [{"horizon": s["horizon_minutes"],
-                                  "status": s["ablation"]["status"]}
+                                  "status": s["ablation"]["status"],
+                                  "inner_eval_days": s["inner_train_only_eval_days"],
+                                  "missing_days": s["inner_train_only_missing_days"]}
                                  for s in receipt.get("scopes", [])]}))
     return 0 if receipt["status"] == "measured" else 2
 

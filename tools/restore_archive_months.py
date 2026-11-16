@@ -23,6 +23,13 @@ def main(argv: list[str] | None = None) -> int:
         "--months", nargs="+", default=None, help="YYYY-MM months (default: last 6 completed)"
     )
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument(
+        "--okx-source-integrity",
+        choices=("okx-v5-public-history-5m-v1",
+                 "okx-v5-official-1m-zip-derived-5m-v1"),
+        default=None,
+        help="Explicit OKX family for source-authenticated research; default remains strict",
+    )
     parser.add_argument("--records-since", type=date.fromisoformat,
                         help="First daily ledger backup date (default: last 90 days)")
     parser.add_argument("--records-through", type=date.fromisoformat,
@@ -31,9 +38,11 @@ def main(argv: list[str] | None = None) -> int:
     months = args.months or complete_months(now=datetime.now(UTC), count=6)
     report = asyncio.run(restore_verified_months(
         asset=args.asset, months=months, root=args.root,
-        records_since=args.records_since, records_through=args.records_through))
+        records_since=args.records_since, records_through=args.records_through,
+        okx_source_integrity=args.okx_source_integrity))
     print(f"restored: { {k: len(v) for k, v in report['restored'].items()} }")
     print(f"excluded: {report['excluded']}")
+    print(f"okx_selected_source_integrity: {report['okx_selected_source_integrity']}")
     return 0
 
 

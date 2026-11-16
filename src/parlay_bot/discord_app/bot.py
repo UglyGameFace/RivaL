@@ -660,6 +660,16 @@ class RivalDiscordClient(discord.Client):
         # Live model watch posts (Detailed Research -> Watch live).
         from parlay_bot.discord_app.model_watch import ModelWatchService
         self.model_watch = ModelWatchService(self, self.store)
+        # Opt-in channel research cards for real exchange/contract forecasts.
+        # Separate bounded refresh, never a duplicate alert/DM producer.
+        from parlay_bot.discord_app.call_board import CallBoardService
+        self.call_board = CallBoardService(
+            self, self.store,
+            self.perp_collector.market if self.perp_collector is not None else None,
+            polymarket=self.polymarket_board, kalshi=self.kalshi_browser,
+            kalshi_forward=self.kalshi_forward,
+        )
+        self._call_board_task: asyncio.Task[None] | None = None
         self._model_watch_task: asyncio.Task[None] | None = None
         self._model_lab_task: asyncio.Task[None] | None = None
         self._retention_task: asyncio.Task[None] | None = None
@@ -701,6 +711,7 @@ class RivalDiscordClient(discord.Client):
             refresh_sports=self._request_sports_refresh,
             market=collector.market if collector is not None else None,
             targets=self.direction_targets,
+            call_board=self.call_board,
             auto_hunt=self.auto_hunt,
             paper=self.paper_ledger,
             quotes=self.public_quotes,
@@ -1229,6 +1240,7 @@ class RivalDiscordClient(discord.Client):
                 auto_hunt=self.auto_hunt,
                 targets=self.direction_targets,
                 tracker=self.polymarket_board,
+                calls=self.call_board,
             )
             await interaction.edit_original_response(content=message)
 
@@ -1463,6 +1475,7 @@ class RivalDiscordClient(discord.Client):
         self.add_view(self.polymarket_board.dm_view)
         # Watch posts keep their Refresh / Stop buttons across restarts.
         self.add_view(self.model_watch.view)
+        self.add_view(self.call_board.view)
         install_owner_gate(self.tree, self.owner_gate)
         # Resolve the owner now, not inside the first button tap after a
         # restart, where Discord's application lookup counts against the
@@ -1473,6 +1486,7 @@ class RivalDiscordClient(discord.Client):
             _LOG.warning("RivaL owner lookup at startup failed; will retry on first tap")
         _LOG.info("RivaL guided, research, data and hunt recovery views registered")
         await asyncio.to_thread(self.auto_hunt.store.initialize)
+        await asyncio.to_thread(self.call_board.initialize)
         await asyncio.to_thread(self.polymarket_board.store.initialize)
         await asyncio.to_thread(self.polymarket_research.initialize)
         await asyncio.to_thread(self.formula_test.initialize)
@@ -1494,6 +1508,10 @@ class RivalDiscordClient(discord.Client):
         if self._target_task is None:
             self._target_task = asyncio.create_task(
                 self._target_loop(), name="rival-personal-direction-updates",
+            )
+        if self._call_board_task is None:
+            self._call_board_task = asyncio.create_task(
+                self._call_board_loop(), name="rival-requested-channel-calls",
             )
         if self._poly_board_task is None:
             self._poly_board_task = asyncio.create_task(
@@ -2424,7 +2442,7 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(REFRESH_SECONDS)
 
     async def _target_loop(self) -> None:
-        """Update user-opted-in private forecast cards without flooding DMs."""
+        """Update opt-in private forecast cards on their original cadence."""
         await self.wait_until_ready()
         while not self.is_closed():
             try:
@@ -2436,6 +2454,28 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001 - Discord uptime independent
                 _LOG.exception("RivaL target refresh cycle failed safely")
             await asyncio.sleep(60)
+
+    async def _call_board_loop(self) -> None:
+        """Event-woken, bounded review of requested market-specific calls.
+
+        Ten-to-fifteen-second detection is different from re-running model
+        scoring: the board only reads immutable forecasts, with a minute
+        full refresh and slower, source-specific contract reads.
+        """
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                force_exchange = await self.call_board.wait_for_refresh()
+                changed = await self.call_board.cycle(
+                    force=force_exchange,
+                )
+                if changed:
+                    _LOG.info("RivaL live channel research cards edited=%d", changed)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - cards cannot stop prediction worker
+                _LOG.exception("RivaL live channel calls temporarily unavailable")
+                await asyncio.sleep(5)
 
     def _request_sports_refresh(self) -> str:
         if getattr(self, "_sports_manual_task", None) is not None and not self._sports_manual_task.done():
@@ -2931,6 +2971,10 @@ class RivalDiscordClient(discord.Client):
                         self.autonomous.cycle(),
                         timeout=PERP_FORECAST_TIMEOUT_SECONDS,
                     )
+                    if issued:
+                        # Wake requested research cards immediately after real
+                        # issuance, never compute an unissued next target.
+                        self.call_board.request_refresh()
                     _LOG.info(
                         "RivaL automatic research math_issued=%s "
                         "math_settled=%s ai_issued=%s",
@@ -3527,6 +3571,7 @@ class RivalDiscordClient(discord.Client):
                  "rival-polymarket-formula-test"),
                 ("_polybolt_task", self.polybolt.run, "rival-read-only-chainlink-twap"),
                 ("_target_task", self._target_loop, "rival-personal-direction-updates"),
+                ("_call_board_task", self._call_board_loop, "rival-requested-channel-calls"),
             )
             for attr, method, name in workers:
                 task = getattr(self, attr)
@@ -3847,7 +3892,7 @@ class RivalDiscordClient(discord.Client):
         "_health_task", "_polybolt_task", "_kalshi_research_task",
         "_poly_board_task", "_poly_research_task", "_formula_task", "_stream_shadow_task",
         "_liquidity_task",
-        "_target_task", "_sports_results_task", "_sports_task",
+        "_target_task", "_call_board_task", "_sports_results_task", "_sports_task",
         "_sports_manual_task", "_history_task", "_shadow_task", "_perp_task",
         "_hypothesis_task", "_research_loop_task", "_candidate_task",
         "_archive_task", "_context_task",

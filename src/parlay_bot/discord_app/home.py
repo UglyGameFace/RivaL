@@ -1679,6 +1679,7 @@ class GuidedHome(discord.ui.View):
         multi: MultiExchangeResearch | None = None,
         venues: tuple[str, ...] = (),
         auto_hunt: AutoHuntService | None = None,
+        call_board: object | None = None,
         training_status: Callable[[str, int], dict] | None = None,
         polymarket_status: Callable[[str, int], dict] | None = None,
         contest_models: Callable[[str, int], list[dict] | None] | None = None,
@@ -1696,6 +1697,7 @@ class GuidedHome(discord.ui.View):
         self.market = market
         self.targets = targets
         self.auto_hunt = auto_hunt
+        self.call_board = call_board
         self.paper = paper
         self.quotes = quotes
         self.profit = profit
@@ -1768,11 +1770,14 @@ class GuidedHome(discord.ui.View):
                 self._add("View Contract Call", "desk-call", 3, "🎯", True)
                 self._add("Track Market", "desk-track", 3, "🔔")
                 self._add("Live Panel", "live-poly", 4, "📡")
+                self._add("Post Live Calls", "call-board", 4, "📣")
             elif self.live_source == "exchange":
                 self._add("Get Exchange Forecast", "desk-call", 3, "🎯", True)
                 self._add("Follow Forecast", "desk-track", 3, "🔔")
+                self._add("Post Live Calls", "call-board", 4, "📡")
             elif self.live_source == "kalshi":
                 self._add("Check Kalshi Contracts", "desk-call", 3, "🔎", True)
+                self._add("Post Live Calls", "call-board", 4, "📡")
             elif self.live_source == "draftkings":
                 self._add("Find My Coin", "cdna-auto", 3, "🔎", True)
                 self._add("Check CDNA Quote", "cdna-quote", 3, "💱")
@@ -1811,12 +1816,16 @@ class GuidedHome(discord.ui.View):
                 self._add("Refresh Kalshi", "kalshi-refresh", 2, "🔄", True)
             self._add("Analysis & Markets", "crypto-desk", 3, "📊")
         elif p == "hunt":
-            # The one tracking hub: every follow / watch / track lives here.
+            # Opt-in channel calls keep raw model directions visible without
+            # reviving retired DM alert spam or creating unproven trade calls.
             self._add("Live Panel", "live-poly", 0, "📡", True)
             self._add("Follow a Forecast", "crypto", 0, "🎯")
             if self.research_factory is not None:
                 self._add("Track Next Predictions", "track-forward", 1, "🗒️")
                 self._add("Watch Models", "watch-models", 1, "🧪")
+            if self.call_board is not None:
+                self._add("Post Live Calls", "call-board", 2, "📣", True)
+                self.add_item(_Coin(self.coin, row=3))
             self._add("Stop All", "stop-all", 2, "🛑")
         elif p == "kalshi":
             self._add("Analysis & Markets", "crypto-desk", 0, "📊", True)
@@ -2652,7 +2661,7 @@ class GuidedHome(discord.ui.View):
             research_factory=self.research_factory,
             stream_shadow=self.stream_shadow, multi=self.multi,
             venues=self.venues, auto_hunt=self.auto_hunt,
-            training_status=self.training_status,
+            call_board=self.call_board, training_status=self.training_status,
             polymarket_status=self.polymarket_status,
             contest_models=self.contest_models,
             dkex_status=self.dkex_status,
@@ -3299,10 +3308,26 @@ class GuidedHome(discord.ui.View):
                               "polymarket_board", None)
             result = await stop_all_notifications(
                 self.owner_id, auto_hunt=self.auto_hunt,
-                targets=self.targets, tracker=tracker,
+                targets=self.targets, tracker=tracker, calls=self.call_board,
             )
             self.navigate("hunt")
             self.note = result
+        elif action == "call-board":
+            if self.call_board is None:
+                self.note = "Live Calls aren't configured."
+            else:
+                try:
+                    self.note = await asyncio.wait_for(
+                        self.call_board.start(
+                            interaction, self.coin,
+                            kind=self.live_source or "exchange",
+                            horizon=self.horizon,
+                        ), timeout=25,
+                    )
+                except Exception:  # noqa: BLE001 - no false posting claim
+                    _LOG.exception("Creating requested Live Calls card failed")
+                    self.note = "Live Calls could not be posted or saved."
+            self.navigate("hunt")
         elif action in ("poly-start", "poly-stop"):
             self.live_source = "polymarket"
             self.navigate("live")
@@ -3619,7 +3644,7 @@ _STALE_BUTTONS_C = (
 )
 # Views A-C are full (Discord's five rows). New buttons go here.
 _STALE_BUTTONS_D = (
-    "watch-models",
+    "watch-models", "call-board",
 )
 
 

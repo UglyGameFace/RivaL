@@ -659,14 +659,21 @@ class GoogleDriveArchiveClient:
                     f"Drive history promotion failed with {code}"
                 )
 
-            promoted = await self._find_batch_object(
-                parent_id=self.folders.history,
-                batch_id=batch_id, kind="history",
-            )
-            pending = await self._find_batch_object(
-                parent_id=self.folders.staging,
-                batch_id=batch_id, kind="history",
-            )
+            try:
+                promoted = await self._find_batch_object(
+                    parent_id=self.folders.history,
+                    batch_id=batch_id, kind="history",
+                )
+                pending = await self._find_batch_object(
+                    parent_id=self.folders.staging,
+                    batch_id=batch_id, kind="history",
+                )
+            except httpx.TransportError:
+                # A second lost response means remote move state remains
+                # unknown. Do not retry or emit request URL/credentials.
+                raise DriveArchiveError(
+                    "Drive history promotion reconciliation unavailable; original preserved"
+                ) from None
             if promoted is not None:
                 self._verify_artifact(promoted, artifact)
                 if (promoted.file_id != staged.file_id

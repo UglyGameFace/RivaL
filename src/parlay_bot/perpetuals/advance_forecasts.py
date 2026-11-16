@@ -50,6 +50,10 @@ CREATE INDEX IF NOT EXISTS idx_rival_advance_asset_target
     ON rival_advance_forecasts(asset,horizon_minutes,target_opened_at);
 CREATE INDEX IF NOT EXISTS idx_rival_advance_pending
     ON rival_advance_forecasts(settled_at,target_closed_at);
+CREATE INDEX IF NOT EXISTS idx_rival_advance_asset_issued
+    ON rival_advance_forecasts(asset,issued_at);
+CREATE INDEX IF NOT EXISTS idx_rival_advance_issued
+    ON rival_advance_forecasts(issued_at);
 CREATE TABLE IF NOT EXISTS rival_advance_readiness (
     slot_utc TEXT NOT NULL, venue TEXT NOT NULL, contract TEXT NOT NULL,
     quote TEXT NOT NULL, asset TEXT NOT NULL, horizon_minutes INTEGER NOT NULL,
@@ -59,6 +63,8 @@ CREATE TABLE IF NOT EXISTS rival_advance_readiness (
 );
 CREATE INDEX IF NOT EXISTS idx_rival_advance_readiness_asset
     ON rival_advance_readiness(asset,slot_utc);
+CREATE INDEX IF NOT EXISTS idx_rival_advance_readiness_checked
+    ON rival_advance_readiness(checked_at);
 CREATE TABLE IF NOT EXISTS rival_advance_deliveries (
     channel_id TEXT NOT NULL, message_id TEXT NOT NULL,
     venue TEXT NOT NULL, contract TEXT NOT NULL, quote TEXT NOT NULL,
@@ -69,6 +75,8 @@ CREATE TABLE IF NOT EXISTS rival_advance_deliveries (
     PRIMARY KEY(channel_id,message_id,venue,contract,quote,horizon_minutes,
                 target_opened_at,model_version)
 );
+CREATE INDEX IF NOT EXISTS idx_rival_advance_delivered
+    ON rival_advance_deliveries(delivered_at);
 """
 
 
@@ -408,10 +416,21 @@ def read_advance_receipt(store, now):
                 utc(datetime.fromisoformat(row["target_opened_at"])) - delivered
             ).total_seconds()
             delivery_samples.append(sample)
+        try:
+            with store.connect() as conn:
+                cards = conn.execute(
+                    """SELECT market_kind,asset,horizon_minutes,COUNT(*) AS cards
+                    FROM rival_live_call_board GROUP BY market_kind,asset,horizon_minutes"""
+                ).fetchall()
+            channel_cards = {"status": "recorded", "active": sum(int(r["cards"]) for r in cards),
+                             "scopes": [dict(r) for r in cards]}
+        except Exception:  # noqa: BLE001 - no card requested is not a forecast failure
+            channel_cards = {"status": "read_unavailable", "active": None}
         return {"status": "recorded", "model": MODEL, "target_contract": TARGET_CONTRACT,
                 "scopes": [dict(r) for r in rows], "readiness": [dict(r) for r in readiness],
                 "deliveries": [dict(r) for r in deliveries], "window_hours": 2,
                 "recent_forecasts": samples, "recent_deliveries": delivery_samples,
+                "channel_cards": channel_cards,
                 "read_only": True, "qualified": False,
                 "does_not_prove_prediction_edge": True,
                 "discord_delivery_is_api_acceptance_not_independent_observation": True}

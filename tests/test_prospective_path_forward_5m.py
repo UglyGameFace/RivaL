@@ -1,13 +1,15 @@
 """Five-minute prospective paths: issuance, admission, completeness, capacity.
 
 A 5-minute path needs exactly one complete exact-source candle. The
-settlement worker admits 5-minute paths only from capacity the 15/60-minute
-queues did not use (leftover priority, MAX_SETTLE total per cycle), and
-issuance admits 5-minute horizons through ``HORIZONS`` in
-``ProspectivePathLedger.issue`` / ``empirical_paths`` and through
-``horizon in (5, 15, 60)`` in ``forward_audit``. The settlement tests
-below seed 5-minute rows directly; the issuance tests issue them through
-``ProspectivePathLedger.issue`` instead.
+settlement worker gives 5-minute paths a guaranteed reserve of
+MAX_SETTLE//5 paths per settle call (20 at the 100-path bound), with
+15/60-minute paths keeping the remaining 80 and either horizon group
+able to use the other's unused slots; the total stays bounded at
+MAX_SETTLE per cycle. Issuance admits 5-minute horizons through
+``HORIZONS`` in ``ProspectivePathLedger.issue`` / ``empirical_paths``
+and through ``horizon in (5, 15, 60)`` in ``forward_audit``. The
+settlement tests below seed 5-minute rows directly; the issuance tests
+issue them through ``ProspectivePathLedger.issue`` instead.
 """
 from __future__ import annotations
 
@@ -20,9 +22,12 @@ import pytest
 from parlay_bot.perpetuals.hyperliquid import MarketCandle
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.path_forward import (
+    HORIZONS,
+    MAX_SETTLE,
     TARGET_VERSION,
     VERSION,
     ProspectivePathLedger,
+    _batched_candles,
     empirical_paths,
 )
 
@@ -241,13 +246,14 @@ def test_five_minute_path_stays_pending_without_one_complete_candle(
 
 
 def test_five_minute_paths_never_starve_longer_horizons(learning_store, monkeypatch):
-    """5m fills only leftover capacity after 15/60m, even when newer.
+    """5m never displaces 15/60m, even when newer.
 
     The 5m paths below target 5 minutes LATER than the 15m paths, so a
     naive ``IN (5, 15, 60)`` selection ordered by newest target would
-    settle the 5m paths first and starve the 15m batch. Strict priority
-    (15/60m first, 5m only from leftover slots) must settle all four
-    15m paths in cycle 1 and all four 5m paths in cycle 2.
+    settle the 5m paths first and starve the 15m batch. At the patched
+    MAX_SETTLE of 4 the 5m reserve (4//5) is zero, so cycle 1 must
+    settle all four 15m paths and no 5m path; cycle 2 drains the 5m
+    batch from the slots 15/60m left unused.
     """
     from parlay_bot.perpetuals import path_forward
 
@@ -301,3 +307,214 @@ def test_five_minute_paths_never_starve_longer_horizons(learning_store, monkeypa
         assert _pending_sides(conn, 5) == 0
         assert _settled_sides(conn, 5) == 8
     assert ledger.settle(now=now) == {"settled": 0, "ambiguous": 0}
+
+
+def _build_starved_fixture(ledger, store):
+    """120 new paths (40 streams x 3 horizons) + 101 legacy 15m paths,
+    every path with complete future candles. Returns the settle ``now``."""
+    PerpetualMarketStore(store).initialize()
+    ledger.initialize()
+    candles = _candles()
+    last = candles[-1]
+    issued = last.observed_at + timedelta(seconds=1)
+    options = {h: empirical_paths(candles, horizon=h, now=issued) for h in HORIZONS}
+    future = _future_path(last, steps=12)
+    now = future[-1].observed_at + timedelta(minutes=1)
+    venues = ("hyperliquid", "binance", "dydx", "bitget", "gate",
+              "okx", "kucoin", "deribit", "lighter", "phemex")
+    with store.connect() as conn:
+        for index in range(MAX_SETTLE + 1):  # 101 legacy 15m paths
+            shift = timedelta(days=-3, minutes=20 * index)
+            prior = replace(last, opened_at=last.opened_at + shift,
+                            closed_at=last.closed_at + shift,
+                            observed_at=last.observed_at + shift)
+            assert ledger.issue(conn, candles=[prior], asset="BTC", horizon=15,
+                                now=issued + shift, issued_at=issued + shift,
+                                options=options[15]) == 2
+            for bar in _future_path(prior):
+                conn.execute(
+                    "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    _row(bar))
+        for venue in venues:
+            for asset in ("BTC", "ETH", "SOL", "XRP"):
+                source = replace(last, venue=venue, contract=asset)
+                for horizon in HORIZONS:
+                    assert ledger.issue(conn, candles=[source], asset=asset,
+                                        horizon=horizon, now=issued,
+                                        issued_at=issued,
+                                        options=options[horizon]) == 2
+                for bar in _future_path(source, steps=12):
+                    conn.execute(
+                        "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        _row(bar))
+    return now
+
+
+def test_five_minute_paths_get_reserved_capacity_when_longer_horizons_exceed_cap(learning_store):
+    """The 20-path 5m reserve settles 5m even when 15/60m due exceeds the cap.
+
+    Fixture: 120 new paths (40 streams x 3 horizons) + 101 legacy 15m
+    paths, all with complete future candles. Under leftover-only
+    priority the first settle took 0 five-minute sides; with the
+    reserve it takes exactly the 20-path reserve (40 sides) while
+    15/60m keep their 80 (160 sides), and the 5m queue drains fully
+    in the following settles.
+    """
+    ledger = ProspectivePathLedger(learning_store)
+    now = _build_starved_fixture(ledger, learning_store)
+    assert ledger.settle(now=now) == {"settled": 200, "ambiguous": 0}
+    with learning_store.connect() as conn:
+        assert _settled_sides(conn, 5) == 40
+        assert _settled_sides(conn, 15) + _settled_sides(conn, 60) == 160
+        assert _pending_sides(conn, 5) == 40
+    assert ledger.settle(now=now) == {"settled": 200, "ambiguous": 0}
+    assert ledger.settle(now=now) == {"settled": 42, "ambiguous": 0}
+    with learning_store.connect() as conn:
+        assert _pending_sides(conn, 5) == 0
+        assert _pending_sides(conn, 15) + _pending_sides(conn, 60) == 0
+    assert ledger.settle(now=now) == {"settled": 0, "ambiguous": 0}
+
+
+def test_batched_candle_fetch_shares_rows_across_overlapping_keys(learning_store):
+    """One batched fetch hands a shared bar to every key whose range holds it.
+
+    Keys on one stream (hyperliquid/BTC/USDC) with overlapping ranges:
+    a 5m path and a 15m path from the same reference share the
+    reference+10m bar — the 15m key needs it as its first of three
+    bars, the 5m key as its only bar. A second 5m path from a later
+    reference settles too. A 5m path whose only bar is misaligned
+    (opened 7m after its reference) passes the readiness COUNT but
+    fails the exact-spacing validation and stays pending, and a 5m
+    path with no candles at all is never selected. All four keys are
+    fetched by the single batched query; if distribution missed the
+    shared bar, the 15m path would stay pending.
+    """
+    PerpetualMarketStore(learning_store).initialize()
+    ledger = ProspectivePathLedger(learning_store)
+    ledger.initialize()
+    candles = _candles()
+    last = candles[-1]
+    issued = last.observed_at + timedelta(seconds=1)
+    options = empirical_paths(candles, horizon=15, now=issued)
+    # After the last target is due: the missing-candle 5m target
+    # (reference+10m) is 5m old and every bar is first-observed.
+    now = last.opened_at + timedelta(minutes=61)
+    reference_b = replace(
+        last, opened_at=last.opened_at + timedelta(minutes=15),
+        closed_at=last.closed_at + timedelta(minutes=15),
+        observed_at=last.observed_at + timedelta(minutes=15),
+    )
+    reference_d = replace(
+        last, opened_at=last.opened_at + timedelta(minutes=30),
+        closed_at=last.closed_at + timedelta(minutes=30),
+        observed_at=last.observed_at + timedelta(minutes=30),
+    )
+    reference_e = replace(
+        last, opened_at=last.opened_at + timedelta(minutes=45),
+        closed_at=last.closed_at + timedelta(minutes=45),
+        observed_at=last.observed_at + timedelta(minutes=45),
+    )
+    defective_bar = replace(
+        last, opened_at=last.opened_at + timedelta(minutes=37),
+        closed_at=last.opened_at + timedelta(minutes=42, milliseconds=-1),
+        observed_at=last.opened_at + timedelta(minutes=42, seconds=2),
+        high_price=last.close_price + .001,
+        low_price=last.close_price - .001,
+    )
+    with learning_store.connect() as conn:
+        assert ledger.issue(conn, candles=[last], asset="BTC", horizon=15,
+                            now=issued, issued_at=issued,
+                            options=options) == 2
+        _insert_5m_path(conn, source=last, issued=issued, options=options)
+        _insert_5m_path(conn, source=reference_b,
+                        issued=reference_b.observed_at + timedelta(seconds=1),
+                        options=options)
+        _insert_5m_path(conn, source=reference_d,
+                        issued=reference_d.observed_at + timedelta(seconds=1),
+                        options=options)
+        _insert_5m_path(conn, source=reference_e,
+                        issued=reference_e.observed_at + timedelta(seconds=1),
+                        options=options)
+        for bar in _future_path(last, steps=3):
+            conn.execute(
+                "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                _row(bar))
+        for bar in _future_path(reference_b, steps=1):
+            conn.execute(
+                "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                _row(bar))
+        conn.execute(
+            "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            _row(defective_bar))
+    assert ledger.settle(now=now) == {"settled": 6, "ambiguous": 0}
+    with learning_store.connect() as conn:
+        # A (5m) + B (5m) settle; C (15m) settles only because the
+        # shared reference+10m bar reached it; D (misaligned bar) and
+        # E (no candles) stay pending.
+        assert _settled_sides(conn, 5) == 4
+        assert _settled_sides(conn, 15) == 2
+        assert _pending_sides(conn, 5) == 4
+        assert _pending_sides(conn, 15) == 0
+    assert ledger.settle(now=now) == {"settled": 0, "ambiguous": 0}
+
+
+def test_batched_candles_match_per_key_queries(learning_store):
+    """_batched_candles returns exactly the per-key query's rows per key.
+
+    Same stream, overlapping ranges (a 5m and a 15m key from one
+    reference, plus a 5m key from a later reference): the shared bar
+    must appear in both keys' lists, and each list must equal the
+    rows the literal per-key SELECT returns for that key.
+    """
+    PerpetualMarketStore(learning_store).initialize()
+    candles = _candles()
+    last = candles[-1]
+    reference_b = replace(
+        last, opened_at=last.opened_at + timedelta(minutes=15),
+        closed_at=last.closed_at + timedelta(minutes=15),
+        observed_at=last.observed_at + timedelta(minutes=15),
+    )
+    issued = last.observed_at + timedelta(seconds=1)
+    ref = last.opened_at
+    keys = {
+        ("hyperliquid", "BTC", "USDC", 5, ref.isoformat(),
+         issued.isoformat(), (ref + timedelta(minutes=10)).isoformat()):
+            (ref, ref + timedelta(minutes=10)),
+        ("hyperliquid", "BTC", "USDC", 15, ref.isoformat(),
+         issued.isoformat(), (ref + timedelta(minutes=20)).isoformat()):
+            (ref, ref + timedelta(minutes=20)),
+        ("hyperliquid", "BTC", "USDC", 5, (ref + timedelta(minutes=15)).isoformat(),
+         issued.isoformat(), (ref + timedelta(minutes=25)).isoformat()):
+            (ref + timedelta(minutes=15), ref + timedelta(minutes=25)),
+    }
+    per_key_sql = """SELECT opened_at,closed_at,first_observed_at,high_price,
+                            low_price,close_price FROM perp_market_candles
+                     WHERE venue=? AND contract=? AND quote=?
+                       AND interval_minutes=5 AND opened_at>?
+                       AND opened_at<=? ORDER BY opened_at"""
+    columns = ("opened_at", "closed_at", "first_observed_at",
+               "high_price", "low_price", "close_price")
+    with learning_store.connect() as conn:
+        for bar in _future_path(last, steps=3) + _future_path(reference_b, steps=1):
+            conn.execute(
+                "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                _row(bar))
+        batched = _batched_candles(conn, keys)
+        assert set(batched) == set(keys)
+        for key, (reference, target) in keys.items():
+            expected = conn.execute(
+                per_key_sql,
+                (key[0], key[1], key[2],
+                 (reference + timedelta(minutes=5)).isoformat(),
+                 target.isoformat()),
+            ).fetchall()
+            got = [{column: row[column] for column in columns}
+                   for row in batched[key]]
+            assert got == [dict(row) for row in expected]
+        # The reference+10m bar is shared by the 5m and 15m keys.
+        key5, key15, key5b = keys
+        assert len(batched[key5]) == 1
+        assert len(batched[key15]) == 3
+        assert len(batched[key5b]) == 1
+        assert batched[key5][0]["opened_at"] == batched[key15][0]["opened_at"]
+    assert _batched_candles(conn, {}) == {}

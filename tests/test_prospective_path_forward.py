@@ -225,13 +225,18 @@ def test_one_full_issuance_cycle_drains_across_settles_without_unbounded_backlog
                                  _row(bar))
     assert streams==MAX_STREAMS_PER_CYCLE
     # First settle caps at the 100-path bound (200 sides). Empty backlog:
-    # 240 issued sides - 200 settled = 40 pending (the newest 5m paths are
-    # last in the current queue, so they are what remains). Older backlog:
+    # 240 issued sides - 200 settled = 40 pending (the 5m paths beyond
+    # the 20-path reserve are what remains). Older backlog:
     # 101 legacy paths (202 sides, targets deleted above) + 240 new sides
     # - 200 settled = 242 pending.
     assert ledger.settle(now=now)=={"settled":200,"ambiguous":0}
     progress=_path_target_progress(learning_store,now)
-    assert progress["settled_close_targets_24h"]==(200 if not legacy_paths else 160)
+    # Older backlog: the first settle takes the 20-path 5m reserve (40
+    # target sides) plus 64 new 15/60m paths (128 target sides); the 16
+    # legacy paths it also settles carry no companion targets (deleted
+    # above), so 168 target sides settle, not the 160 the leftover-only
+    # priority used to settle (80 new 15/60m paths).
+    assert progress["settled_close_targets_24h"]==(200 if not legacy_paths else 168)
     assert progress["pending_paths_14d"]==progress["due_pending_paths_14d"]==(
         242 if legacy_paths else 40)
     # The remainder drains on the next settle(s); nothing is left behind.

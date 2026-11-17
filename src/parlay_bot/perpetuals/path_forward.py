@@ -38,6 +38,71 @@ MAX_SETTLE = 100
 CURRENT_SETTLEMENT_WINDOW = timedelta(hours=2)
 
 
+def _take_split(current_list, backlog_list, total):
+    """Take up to ``total`` paths keeping the current/backlog split.
+
+    Current outcomes take ``total`` minus a 20% reserve for older
+    evidence (at least 1 when ``total`` > 1); the backlog fills the
+    rest. Returns (taken, used_current, used_backlog) so a caller can
+    continue taking from the same canonical order afterwards.
+    """
+    reserved = max(1, total // 5) if total > 1 else 0
+    current_limit = total - min(reserved, len(backlog_list))
+    take_current = min(current_limit, len(current_list))
+    take_backlog = min(total - take_current, len(backlog_list))
+    return (current_list[:take_current] + backlog_list[:take_backlog],
+            take_current, take_backlog)
+
+
+def _batched_candles(conn, keys):
+    """Fetch settlement candles for many path keys in one round-trip.
+
+    ``keys`` maps each distinct path key to its (reference, target).
+    Returns {key: [rows]} where each key's rows are exactly what the
+    old per-key query returned for it: the same six columns, the same
+    ``opened_at > reference+5m AND opened_at <= target`` predicate,
+    the same opened_at order. The single query ORs one branch per key
+    with the identical predicate; rows are distributed back in Python
+    by testing that predicate, so a row matching several overlapping
+    keys (same stream, different horizons) is handed to each of them,
+    exactly as the per-key queries would each have returned it.
+    At most MAX_SETTLE keys are ever selected, so the parameter count
+    stays bounded (5 per key).
+    """
+    if not keys:
+        return {}
+    branches = []
+    params = []
+    for (venue, contract, quote, _horizon, _ref, _issued, _target), (reference, target) in keys.items():
+        branches.append(
+            "(venue=? AND contract=? AND quote=? AND interval_minutes=5"
+            " AND opened_at>? AND opened_at<=?)")
+        params.extend([venue, contract, quote,
+                       (reference + timedelta(minutes=5)).isoformat(),
+                       target.isoformat()])
+    rows = conn.execute(
+        """SELECT venue,contract,quote,opened_at,closed_at,first_observed_at,
+                  high_price,low_price,close_price FROM perp_market_candles
+           WHERE """ + " OR ".join(branches) +
+        " ORDER BY venue,contract,quote,opened_at",
+        params,
+    ).fetchall()
+    by_group = {}
+    for key, (reference, target) in keys.items():
+        by_group.setdefault(key[:3], []).append((
+            key, (reference + timedelta(minutes=5)).isoformat(),
+            target.isoformat()))
+    out = {key: [] for key in keys}
+    for row in rows:
+        for key, low, high in by_group.get(
+                (row["venue"], row["contract"], row["quote"]), ()):
+            if low < row["opened_at"] <= high:
+                out[key].append(row)
+    for bars in out.values():
+        bars.sort(key=lambda bar: bar["opened_at"])
+    return out
+
+
 def _sigma(candles, index: int, steps: int) -> float:
     if index < LOOKBACK:
         raise ValueError("not enough causal volatility observations")
@@ -364,9 +429,11 @@ class ProspectivePathLedger:
 
         ``horizons`` restricts which horizons may be selected. Settlement
         itself is horizon-generic (one complete 5-minute candle per 5
-        minutes of horizon); callers admit 5-minute paths only from
-        capacity the 15/60-minute queues did not use, so a faster-due
-        horizon can never displace a longer-horizon path.
+        minutes of horizon); callers give 5-minute paths a guaranteed
+        reserve of MAX_SETTLE//5 paths per settle call, with either
+        horizon group able to use the other's unused slots, so a
+        faster-due horizon can never displace a longer-horizon path
+        while the longer queue still has ready work.
         """
         comparison = ">=" if current else "<"
         direction = "DESC" if current else "ASC"
@@ -428,30 +495,44 @@ class ProspectivePathLedger:
             # forecasts for days while current close targets never score.
             current = self._ready_paths(conn, stamp=stamp, current=True)
             backlog = self._ready_paths(conn, stamp=stamp, current=False)
-            reserved = max(1, MAX_SETTLE//5) if MAX_SETTLE > 1 else 0
-            current_limit = MAX_SETTLE-min(reserved, len(backlog))
-            selected = current[:current_limit]
-            selected += backlog[:MAX_SETTLE-len(selected)]
-            # 5-minute paths settle only from capacity the 15/60-minute
-            # queues did not use, with the same current/backlog split.
-            # They issue ~3x as often as 15-minute paths, so sharing one
-            # queue would let them crowd out longer horizons; strict
-            # leftover priority bounds them to MAX_SETTLE total per cycle
-            # without ever displacing a 15/60-minute path.
-            remaining = MAX_SETTLE-len(selected)
-            if remaining > 0:
-                current5 = self._ready_paths(
-                    conn, stamp=stamp, current=True, horizons=(5,), limit=remaining)
-                backlog5 = self._ready_paths(
-                    conn, stamp=stamp, current=False, horizons=(5,), limit=remaining)
-                reserved5 = max(1, remaining//5) if remaining > 1 else 0
-                current5_limit = remaining-min(reserved5, len(backlog5))
-                selected5 = current5[:current5_limit]
-                selected5 += backlog5[:remaining-len(selected5)]
-                selected += selected5
+            current5 = self._ready_paths(
+                conn, stamp=stamp, current=True, horizons=(5,), limit=MAX_SETTLE)
+            backlog5 = self._ready_paths(
+                conn, stamp=stamp, current=False, horizons=(5,), limit=MAX_SETTLE)
+            # Five-minute paths hold a guaranteed reserve of MAX_SETTLE//5
+            # paths per settle call (20 at the 100-path bound), taken
+            # before the 15/60-minute queues fill the rest. A full cycle
+            # issues 40 five-minute paths (80 sides), so a 20-path reserve
+            # settles half the 5m flow (~40 sides/cycle, ~11.5k sides/day)
+            # — far above the ~7 settled/scope/day a scope needs for the
+            # 150-paired bar at 80% coverage — while 15/60 keep 80% of
+            # capacity against their ~107k due queue. Either horizon group
+            # may use the other's unused slots (see the slack step below),
+            # so a drained queue never strands capacity. The 5m readiness
+            # scans are new work per cycle, but the 5m pending queue is
+            # small next to the 15/60 queue, so they stay cheap.
+            five_min_reserve = MAX_SETTLE // 5
+            selected5, used_current5, used_backlog5 = _take_split(
+                current5, backlog5, five_min_reserve)
+            selected, _, _ = _take_split(
+                current, backlog, MAX_SETTLE - len(selected5))
+            slack = MAX_SETTLE - len(selected) - len(selected5)
+            if slack > 0:
+                # 15/60 had nothing more ready; let 5m continue in its
+                # canonical current/backlog order instead of stranding
+                # slots. This keeps the old leftover behaviour for small
+                # caps (a MAX_SETTLE of 4 has a zero reserve yet still
+                # drains 5m once 15/60 are done).
+                rest5 = current5[used_current5:] + backlog5[used_backlog5:]
+                selected5 += rest5[:slack]
+            selected += selected5
             waiting = [row for path in selected for row in path]
             scored=ambiguous=0
-            paths={}
+            # Collect the distinct candle keys first: timing validity
+            # depends only on the row itself, never on the candles, so
+            # one batched fetch serves every selected key and the scoring
+            # loop below runs exactly as it did with per-key fetches.
+            keys={}
             for p in waiting:
                 target=utc(datetime.fromisoformat(p["target_opened_at"]))
                 reference=utc(datetime.fromisoformat(p["reference_opened_at"]))
@@ -462,17 +543,18 @@ class ProspectivePathLedger:
                     continue
                 key=(p["venue"],p["contract"],p["quote"],p["horizon_minutes"],
                      p["reference_opened_at"],p["issued_at"],p["target_opened_at"])
-                if key not in paths:
-                    paths[key]=conn.execute(
-                        """SELECT opened_at,closed_at,first_observed_at,high_price,
-                                  low_price,close_price FROM perp_market_candles
-                           WHERE venue=? AND contract=? AND quote=?
-                             AND interval_minutes=5 AND opened_at>?
-                             AND opened_at<=? ORDER BY opened_at""",
-                        (p["venue"],p["contract"],p["quote"],
-                         (reference+timedelta(minutes=5)).isoformat(),
-                         target.isoformat()),
-                    ).fetchall()
+                keys.setdefault(key,(reference,target))
+            paths=_batched_candles(conn,keys)
+            for p in waiting:
+                target=utc(datetime.fromisoformat(p["target_opened_at"]))
+                reference=utc(datetime.fromisoformat(p["reference_opened_at"]))
+                issued=utc(datetime.fromisoformat(p["issued_at"]))
+                steps=int(p["horizon_minutes"])//5
+                if not (issued < reference+timedelta(minutes=10) and issued<=stamp
+                        and target==reference+timedelta(minutes=5*(steps+1))):
+                    continue
+                key=(p["venue"],p["contract"],p["quote"],p["horizon_minutes"],
+                     p["reference_opened_at"],p["issued_at"],p["target_opened_at"])
                 bars=paths[key]
                 if len(bars)!=steps:
                     continue

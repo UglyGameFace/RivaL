@@ -564,7 +564,12 @@ def _kucoin_gap_recovery_progress(store, now: datetime) -> dict:
                 """SELECT asset,COUNT(*) AS queued,
                           SUM(CASE WHEN attempted_at IS NOT NULL THEN 1 ELSE 0 END)
                               AS attempted,
-                          SUM(CASE WHEN retry_after<=? THEN 1 ELSE 0 END) AS due,
+                          SUM(CASE WHEN retry_after<=?
+                                   AND (status IS NULL
+                                        OR status<>'upstream_absent')
+                                   THEN 1 ELSE 0 END) AS due,
+                          SUM(CASE WHEN status='upstream_absent' THEN 1
+                                   ELSE 0 END) AS upstream_absent,
                           MIN(opened_at) AS oldest_opened_at
                    FROM perp_history_gap_repair WHERE venue='kucoin'
                      AND asset IN ('BTC','ETH','SOL','XRP')
@@ -587,6 +592,8 @@ def _kucoin_gap_recovery_progress(store, now: datetime) -> dict:
                 "queued_exact_gaps_14d": int(gap.get("queued") or 0),
                 "attempted_exact_gaps_14d": int(gap.get("attempted") or 0),
                 "due_exact_gaps_14d": int(gap.get("due") or 0),
+                "upstream_absent_exact_gaps_14d": int(
+                    gap.get("upstream_absent") or 0),
                 "oldest_exact_gap_at": gap.get("oldest_opened_at"),
             })
         return {

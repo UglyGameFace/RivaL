@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.history_inventory import six_months_prior
+from parlay_bot.perpetuals.history_recovery import _ensure_gap_repair_columns
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS as _ASSETS
 
@@ -68,13 +69,14 @@ class SixMonthQualityAudit:
                 CREATE TABLE IF NOT EXISTS perp_history_gap_repair (
                     venue TEXT NOT NULL, asset TEXT NOT NULL,
                     opened_at TEXT NOT NULL, attempted_at TEXT,
-                    retry_after TEXT NOT NULL,
+                    retry_after TEXT NOT NULL, status TEXT, queued_at TEXT,
                     PRIMARY KEY(venue,asset,opened_at)
                 );
                 CREATE INDEX IF NOT EXISTS idx_perp_history_gap_due
                     ON perp_history_gap_repair(venue,asset,retry_after,opened_at);
                 """
             )
+            _ensure_gap_repair_columns(conn, self.store.database.backend)
 
     @staticmethod
     def _scan_rows(store, *, venue: str, contract: str, quote: str,
@@ -212,10 +214,11 @@ class SixMonthQualityAudit:
                 for slot in missing_slots:
                     conn.execute(
                         """INSERT INTO perp_history_gap_repair
-                           (venue,asset,opened_at,retry_after)
-                           VALUES (?,?,?,?)
+                           (venue,asset,opened_at,retry_after,queued_at)
+                           VALUES (?,?,?,?,?)
                            ON CONFLICT(venue,asset,opened_at) DO NOTHING""",
-                        (venue, asset, slot.isoformat(), clock.isoformat()),
+                        (venue, asset, slot.isoformat(), clock.isoformat(),
+                         clock.isoformat()),
                     )
             conn.execute(
                 """INSERT INTO perp_history_quality

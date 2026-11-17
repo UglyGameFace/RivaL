@@ -1,8 +1,10 @@
 """Bounded, restart-safe KuCoin USDTM 5m historical futures recovery.
 
-One window <=200 bars/coin/cycle from KuCoin's public UTA V2 market API.
-A recovered old bar records *today's first observation*, never a fake live
-prediction from months ago. Separate venue cursor shares Gate's audited table.
+One UTA V2 window <=200 bars/coin/cycle from KuCoin's public UTA V2 market
+API. A claimed exact gap slot may additionally spend one futures REST kline
+request, only when UTA positively returned no bar for that slot. A recovered
+old bar records *today's first observation*, never a fake live prediction
+from months ago. Separate venue cursor shares Gate's audited table.
 """
 from __future__ import annotations
 
@@ -113,7 +115,11 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
     def _claim_due_gap(
         self, asset: str, *, now: datetime, end: datetime,
     ) -> datetime | None:
-        """Atomically claim one audit-proven KuCoin gap with six-hour backoff."""
+        """Atomically claim one audit-proven KuCoin gap with six-hour backoff.
+
+        Rows recorded as upstream_absent (both KuCoin endpoints positively
+        returned no bar for the slot) are never claimed again.
+        """
         floor = six_complete_months_start(now).isoformat()
         with self.store.connect() as conn:
             row = conn.execute(
@@ -124,6 +130,7 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
                        SELECT opened_at FROM perp_history_gap_repair
                        WHERE venue='kucoin' AND asset=? AND opened_at>=?
                          AND opened_at<? AND retry_after<=?
+                         AND (status IS NULL OR status<>'upstream_absent')
                        ORDER BY opened_at LIMIT 1
                      ) AND retry_after<=?
                    RETURNING opened_at""",
@@ -132,6 +139,83 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
                  now.isoformat()),
             ).fetchone()
         return _utc(datetime.fromisoformat(str(row["opened_at"]))) if row else None
+
+    def _mark_gap_upstream_absent(self, asset: str, opened: datetime) -> None:
+        """Record a slot both KuCoin endpoints positively lack, terminally.
+
+        The row stays in the queue (visible in queued counts) and ages out
+        with the fourteen-day window. retry_after is left at the claim's
+        six-hour value because the column cannot be NULL; the claim skips
+        the row by status and the receipt excludes it from the due count,
+        so it is never re-fetched.
+        """
+        with self.store.connect() as conn:
+            conn.execute(
+                """UPDATE perp_history_gap_repair SET status='upstream_absent'
+                   WHERE venue='kucoin' AND asset=? AND opened_at=?""",
+                (asset, opened.isoformat()),
+            )
+
+    async def _fetch_exact_futures_slot(
+        self, asset: str, symbol: str, slot: datetime, factor: float,
+        observed: datetime,
+    ) -> MarketCandle | None:
+        """Fetch one exact 5m slot from the futures REST kline endpoint.
+
+        Only used when the UTA V2 endpoint positively returned no bar for
+        the claimed slot. Returns None when the endpoint positively has no
+        bar for the slot. Raises MarketDataError when the request itself
+        fails or the response is malformed: absence is then unproven and
+        the gap stays queued on its own backoff. A bar is accepted only
+        when its timestamp equals the slot exactly; a neighbor is never
+        a recovery. The caller passes observed so the recovered bar shares
+        the batch's observation timestamp, as the UTA path does. Observed
+        2026-11-17: for the same bar the futures endpoint's volume runs
+        about half the UTA figure while OHLC is identical; the bar is
+        stored as returned, no correction invented.
+        """
+        slot_ms = int(slot.timestamp()) * 1000
+        data = await self._public(
+            "https://api-futures.kucoin.com/api/v1/kline/query",
+            {"symbol": symbol, "granularity": 5,
+             "from": slot_ms, "to": slot_ms + 300_000},
+        )
+        if (
+            not isinstance(data, dict) or data.get("code") != "200000"
+            or not isinstance(data.get("data"), list)
+        ):
+            raise MarketDataError("invalid KuCoin futures kline response")
+        for row in data["data"]:
+            if not isinstance(row, list) or len(row) < 7:
+                raise MarketDataError("invalid KuCoin futures kline row")
+            raw = row[0]
+            if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+                raise MarketDataError("invalid KuCoin futures timestamp")
+            value = str(raw)
+            if not value.isascii() or not value.isdecimal():
+                raise MarketDataError("invalid KuCoin futures timestamp")
+            timestamp = int(value)
+            if len(value) == 13:
+                if timestamp % 1000:
+                    raise MarketDataError("non-second KuCoin futures timestamp")
+                timestamp //= 1000
+            elif len(value) != 10:
+                raise MarketDataError("unexpected KuCoin futures timestamp unit")
+            if timestamp != int(slot.timestamp()):
+                continue  # A neighbor bar is never this slot's recovery.
+            opened = datetime.fromtimestamp(timestamp, UTC)
+            op, high, low, close = (
+                _num(v, positive=True) for v in row[1:5]
+            )
+            if low > min(op, close) or high < max(op, close):
+                raise MarketDataError("inconsistent KuCoin futures OHLC")
+            return MarketCandle(
+                "kucoin", symbol, "USDT", 5, opened,
+                opened + _STEP - timedelta(milliseconds=1),
+                observed, op, high, low, close,
+                _num(row[5]) * factor, -1,
+            )
+        return None
 
     def _complete_gap(self, asset: str, opened: datetime) -> None:
         with self.store.connect() as conn:
@@ -252,10 +336,11 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
                             continue
                         result = conn.execute(
                             """INSERT INTO perp_history_gap_repair
-                               (venue,asset,opened_at,retry_after)
-                               VALUES ('kucoin',?,?,?)
+                               (venue,asset,opened_at,retry_after,queued_at)
+                               VALUES ('kucoin',?,?,?,?)
                                ON CONFLICT(venue,asset,opened_at) DO NOTHING""",
-                            (asset, hole.isoformat(), now.isoformat()),
+                            (asset, hole.isoformat(), now.isoformat(),
+                             now.isoformat()),
                         )
                         queued += int(result.rowcount == 1)
                         if queued >= budget:
@@ -307,9 +392,17 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
         )
         bulk_paused = bulk_retry is not None and bulk_retry > clock
         # A missing bulk-history page is independent of an EXACT, already
-        # witnessed path gap. Let a due gap use its own durable retry clock,
-        # but never bypass provider-wide error/rate-limit cooldowns.
-        if bulk_paused and position["status"] != "upstream_empty":
+        # witnessed path gap. Let a due gap use its own durable retry clock.
+        # Only a provider-wide error/rate-limit cooldown ("blocked") pauses
+        # gap claims too: the provider is refusing us outright. Any other
+        # bulk pause (an empty bulk page, a transient bulk-page failure)
+        # must not waste the rare turns this loop gets.
+        if bulk_paused and position["status"] == "blocked":
+            _LOG.info(
+                "RivaL KuCoin gap claim skipped: bulk paused status=%s "
+                "retry_after=%s",
+                position["status"], position["retry_after"],
+            )
             return 0
         cursor = _utc(datetime.fromisoformat(str(position["next_opened_at"])))
         end = clock.replace(
@@ -317,8 +410,9 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
         ) - timedelta(hours=4)
         # Queue source-authentic singleton holes from a small sample of
         # immutable, already-due paper paths even while the six-month
-        # historical cursor is still filling older months. One provider
-        # request per cycle remains the hard limit.
+        # historical cursor is still filling older months. One UTA request
+        # per cycle remains the hard limit, plus at most one futures REST
+        # request when UTA positively returns no bar for a claimed slot.
         await asyncio.to_thread(
             self._queue_due_path_gaps, asset, now=clock, end=end,
         )
@@ -403,14 +497,51 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
                     _num(row[5]) * factor, -1,
                 ))
             if not candles and repairing:
-                # The claimed slot stays queued for another source request
-                # after the per-gap backoff, without rewinding forward data.
-                await asyncio.to_thread(
-                    self._advance, asset, now=clock, next_open=None,
-                    status="upstream_empty" if bulk_paused else "gaps_pending",
-                    retry_after=bulk_retry if bulk_paused else None,
-                )
-                return 0
+                # The UTA V2 endpoint positively returned no bar for the
+                # exact slot. Try the futures REST kline for the same
+                # exact slot before giving up: same venue and contract,
+                # still exact-source. Only a bar whose timestamp equals
+                # the slot counts; a neighbor is never a recovery.
+                try:
+                    fallback = await self._fetch_exact_futures_slot(
+                        asset, symbol, cursor, factor, observed,
+                    )
+                except Exception:  # noqa: BLE001 - fallback failure is not absence
+                    # The fallback request itself failed, so absence is
+                    # unproven. Keep the gap queued on its own six-hour
+                    # backoff and do not re-pause the bulk cursor.
+                    await asyncio.to_thread(
+                        self._advance, asset, now=clock, next_open=None,
+                        status=position["status"] if bulk_paused
+                        else "gaps_pending",
+                        retry_after=bulk_retry if bulk_paused else None,
+                    )
+                    _LOG.warning(
+                        "RivaL KuCoin history asset=%s futures fallback failed",
+                        asset,
+                    )
+                    return 0
+                if fallback is None:
+                    # Both endpoints positively returned no bar for this
+                    # slot: a genuine upstream hole. Record it terminally
+                    # instead of re-claiming it every six hours forever.
+                    # The row stays queued (visible in queued counts) and
+                    # ages out with the fourteen-day window.
+                    await asyncio.to_thread(
+                        self._mark_gap_upstream_absent, asset, cursor,
+                    )
+                    await asyncio.to_thread(
+                        self._advance, asset, now=clock, next_open=None,
+                        status=position["status"] if bulk_paused
+                        else "gaps_pending",
+                        retry_after=bulk_retry if bulk_paused else None,
+                    )
+                    _LOG.warning(
+                        "RivaL KuCoin history asset=%s upstream hole at %s",
+                        asset, cursor.isoformat(),
+                    )
+                    return 0
+                candles = [fallback]
             if not candles:
                 # Never advance past an empty window: an upstream page
                 # with no bars is an API gap, not coverage. Retrying
@@ -439,7 +570,8 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
                 await asyncio.to_thread(
                     self._advance, asset, now=clock, next_open=None,
                     inserted=added,
-                    status="upstream_empty" if bulk_paused else "gaps_pending",
+                    status=position["status"] if bulk_paused
+                    else "gaps_pending",
                     retry_after=bulk_retry if bulk_paused else None,
                 )
             else:
@@ -458,6 +590,23 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - one provider never stalls live data
+            if repairing:
+                # A gap-fetch failure must not re-pause the bulk cursor:
+                # the gap already carries its own six-hour backoff from
+                # the claim, and the bulk row's pause is driven only by
+                # bulk-fetch outcomes. The next bulk turn will hit a
+                # provider-wide block itself and pause then.
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=None,
+                    status=position["status"] if bulk_paused
+                    else "gaps_pending",
+                    retry_after=bulk_retry if bulk_paused else None,
+                )
+                _LOG.warning(
+                    "RivaL KuCoin history asset=%s gap fetch failed",
+                    asset,
+                )
+                return 0
             blocked = (
                 isinstance(exc, MarketDataError)
                 and isinstance(exc.__cause__, httpx.HTTPStatusError)

@@ -139,6 +139,16 @@ class OddsLagLearner:
 
         Returns the number of contracts learned. Throttled to once every
         ``LEARN_EVERY_SECONDS`` unless ``force``.
+
+        Fetch-release-compute-write: one short read borrow fetches the batch
+        and every learner state it may touch, the connection is released
+        while rows are parsed and weights updated in Python, and one short
+        write borrow persists the learned markers and states. A slow learn
+        used to hold one of eight pool connections across the whole batch
+        (per-row parsing, per-row inserts and per-key state reads inside a
+        single borrow); it now holds a connection only for the two bounded
+        SQL phases. The in-process lock is still held throughout, so two
+        learners cannot interleave a batch.
         """
         from parlay_bot.perpetuals.model_league import FORMULA, PRESSURE
 
@@ -149,28 +159,44 @@ class OddsLagLearner:
         self.initialize()
         stamp = (now or datetime.now(UTC)).astimezone(UTC)
         clock = stamp.isoformat()
-        learned = 0
-        with self._lock, self.store.connect() as conn:
-            rows = conn.execute(
-                """SELECT r.slug, r.asset, r.horizon, r.schema_key, r.market_up,
-                          r.evidence_json, o.direction,
-                          ff.probability_up AS formula_up,
-                          fp.probability_up AS pressure_up
-                   FROM rival_poly_contest_rounds r
-                   JOIN rival_polymarket_ai_outcomes o
-                     ON o.slug=r.slug AND o.condition_id=r.condition_id
-                   JOIN rival_poly_contest_forecasts ff
-                     ON ff.slug=r.slug AND ff.model=?
-                   LEFT JOIN rival_poly_contest_forecasts fp
-                     ON fp.slug=r.slug AND fp.model=?
-                   LEFT JOIN rival_poly_lag_learned l ON l.slug=r.slug
-                   WHERE l.slug IS NULL AND o.direction IN ('UP','DOWN')
-                     AND o.resolved_at>=r.expires_at AND o.observed_at<=?
-                     AND r.issued_at<r.expires_at
-                   ORDER BY o.observed_at, r.slug LIMIT ?""",
-                (FORMULA, PRESSURE, clock, LEARN_BATCH),
-            ).fetchall()
+        with self._lock:
+            # Phase 1: one short read borrow. The batch and every learner
+            # state it may touch are fetched here, nothing else.
+            with self.store.connect() as conn:
+                rows = conn.execute(
+                    """SELECT r.slug, r.asset, r.horizon, r.schema_key, r.market_up,
+                              r.evidence_json, o.direction,
+                              ff.probability_up AS formula_up,
+                              fp.probability_up AS pressure_up
+                       FROM rival_poly_contest_rounds r
+                       JOIN rival_polymarket_ai_outcomes o
+                         ON o.slug=r.slug AND o.condition_id=r.condition_id
+                       JOIN rival_poly_contest_forecasts ff
+                         ON ff.slug=r.slug AND ff.model=?
+                       LEFT JOIN rival_poly_contest_forecasts fp
+                         ON fp.slug=r.slug AND fp.model=?
+                       LEFT JOIN rival_poly_lag_learned l ON l.slug=r.slug
+                       WHERE l.slug IS NULL AND o.direction IN ('UP','DOWN')
+                         AND o.resolved_at>=r.expires_at AND o.observed_at<=?
+                         AND r.issued_at<r.expires_at
+                       ORDER BY o.observed_at, r.slug LIMIT ?""",
+                    (FORMULA, PRESSURE, clock, LEARN_BATCH),
+                ).fetchall()
+                raw_states = {
+                    (str(row["asset"]), int(row["horizon"]), str(row["schema_key"])): row
+                    for row in conn.execute(
+                        """SELECT asset,horizon,schema_key,weights_json,
+                                  weights_sha256,updates
+                           FROM rival_poly_lag_state"""
+                    ).fetchall()
+                }
+            # Phase 2: compute with no connection held. States are decoded
+            # lazily, exactly as _load would decode them, so a corrupt state
+            # still raises before anything is written, and a contract with
+            # unusable evidence is still recorded as seen, never retried.
             states: dict[tuple[str, int, str], list] = {}
+            learned_slugs: list[str] = []
+            learned = 0
             for row in rows:
                 try:
                     receipt = json.loads(row["evidence_json"])
@@ -181,14 +207,12 @@ class OddsLagLearner:
                         up_ask=float(receipt["up_ask"]), down_ask=float(receipt["down_ask"]))
                 except (TypeError, ValueError, KeyError):
                     x = None
-                conn.execute(
-                    "INSERT INTO rival_poly_lag_learned (slug,learned_at) VALUES (?,?) "
-                    "ON CONFLICT DO NOTHING", (row["slug"], clock))
+                learned_slugs.append(row["slug"])
                 if x is None:
                     continue  # recorded as seen, never retried, never learned
                 key = (str(row["asset"]), int(row["horizon"]), str(row["schema_key"]))
                 if key not in states:
-                    states[key] = [*self._load(conn, *key)]
+                    states[key] = list(self._state_from(raw_states.get(key), *key))
                 weights = states[key][0]
                 y = 1.0 if row["direction"] == "UP" else 0.0
                 error = y - _sigmoid(sum(w * v for w, v in zip(weights, x)))
@@ -197,18 +221,44 @@ class OddsLagLearner:
                         error * value - PRIOR_PULL * (weights[i] - PRIOR[i]))
                 states[key][1] += 1
                 learned += 1
-            for (asset, horizon, schema), (weights, updates) in states.items():
-                conn.execute(
-                    """INSERT INTO rival_poly_lag_state (asset,horizon,schema_key,
-                         weights_json,weights_sha256,updates,trained_at)
-                       VALUES (?,?,?,?,?,?,?)
-                       ON CONFLICT (asset,horizon,schema_key) DO UPDATE SET
-                         weights_json=excluded.weights_json,
-                         weights_sha256=excluded.weights_sha256,
-                         updates=excluded.updates, trained_at=excluded.trained_at""",
-                    (asset, horizon, schema, _canonical(weights), _sha(weights),
-                     updates, clock))
+            if not learned_slugs:
+                return 0
+            # Phase 3: one short write borrow. Nothing was written before
+            # this point, so a failure above leaves no partial markers.
+            with self.store.connect() as conn:
+                for slug in learned_slugs:
+                    conn.execute(
+                        "INSERT INTO rival_poly_lag_learned (slug,learned_at) VALUES (?,?) "
+                        "ON CONFLICT DO NOTHING", (slug, clock))
+                for (asset, horizon, schema), (weights, updates) in states.items():
+                    conn.execute(
+                        """INSERT INTO rival_poly_lag_state (asset,horizon,schema_key,
+                             weights_json,weights_sha256,updates,trained_at)
+                           VALUES (?,?,?,?,?,?,?)
+                           ON CONFLICT (asset,horizon,schema_key) DO UPDATE SET
+                             weights_json=excluded.weights_json,
+                             weights_sha256=excluded.weights_sha256,
+                             updates=excluded.updates, trained_at=excluded.trained_at""",
+                        (asset, horizon, schema, _canonical(weights), _sha(weights),
+                         updates, clock))
         return learned
+
+    @staticmethod
+    def _decode(weights_json, weights_sha256, updates):
+        """Validate stored weights exactly as _load does, without a connection."""
+        weights = [float(w) for w in json.loads(weights_json)]
+        if (len(weights) != len(PRIOR) or not all(math.isfinite(w) for w in weights)
+                or _sha(weights) != weights_sha256):
+            raise ValueError("corrupt odds-lag learner state")
+        return weights, int(updates)
+
+    def _state_from(self, row, asset, horizon, schema):
+        """A learner's (weights, updates), decoded lazily from a raw state row."""
+        if row is None:
+            return list(PRIOR), 0
+        weights, updates = self._decode(
+            row["weights_json"], row["weights_sha256"], row["updates"])
+        return weights, updates
 
     @staticmethod
     def _load(conn, asset, horizon, schema):
@@ -219,11 +269,8 @@ class OddsLagLearner:
         ).fetchone()
         if row is None:
             return list(PRIOR), 0
-        weights = [float(w) for w in json.loads(row["weights_json"])]
-        if (len(weights) != len(PRIOR) or not all(math.isfinite(w) for w in weights)
-                or _sha(weights) != row["weights_sha256"]):
-            raise ValueError("corrupt odds-lag learner state")
-        return weights, int(row["updates"])
+        return OddsLagLearner._decode(
+            row["weights_json"], row["weights_sha256"], row["updates"])
 
     # -- forecasting ---------------------------------------------------------
 

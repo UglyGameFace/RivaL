@@ -389,3 +389,122 @@ def test_a_broken_cross_model_never_costs_the_main_model_its_cycle(tmp_path, mon
                 (MODEL,)).fetchone()["n"] >= 3
     finally:
         store.close()
+
+
+# --- Fetch-release-compute-write -------------------------------------------
+
+class _BorrowRecorder:
+    """Wraps a store and records every pool borrow and the SQL run inside it.
+
+    Proves fetch-release-compute-write: the read borrow must close before
+    the write borrow opens, with all SELECTs in the first and all writes
+    in the second, and never two borrows open at once.
+    """
+
+    def __init__(self, store):
+        self.store = store
+        self.borrows: list[list[str]] = []
+        self.events: list[str] = []
+        self._open = 0
+        self.max_open = 0
+
+    def reset(self) -> None:
+        self.borrows.clear()
+        self.events.clear()
+        self._open = 0
+        self.max_open = 0
+
+    def connect(self):
+        recorder = self
+        inner = self.store.connect()
+        borrow: list[str] = []
+
+        class _Tracked:
+            def execute(self, sql, params=()):
+                borrow.append(sql)
+                return self._inner.execute(sql, params)
+
+            def executescript(self, script):
+                borrow.append(script)
+                return self._inner.executescript(script)
+
+            def __enter__(self):
+                self._inner = inner.__enter__()
+                recorder.borrows.append(borrow)
+                recorder.events.append("enter")
+                recorder._open += 1
+                recorder.max_open = max(recorder.max_open, recorder._open)
+                return self
+
+            def __exit__(self, *exc):
+                try:
+                    return inner.__exit__(*exc)
+                finally:
+                    recorder.events.append("exit")
+                    recorder._open -= 1
+
+            def __getattr__(self, name):
+                if name == "_inner":
+                    raise AttributeError(name)
+                return getattr(self._inner, name)
+
+        return _Tracked()
+
+
+def _is_select(sql: str) -> bool:
+    return sql.lstrip().upper().startswith("SELECT")
+
+
+def test_learn_reads_in_one_batched_pass_and_writes_in_one_short_borrow(tmp_path):
+    store = _store(tmp_path, "borrow.sqlite")
+    try:
+        recorder = _BorrowRecorder(store)
+        model = CrossModel(recorder)
+        model.initialize()
+        # Three graded targets on three exchanges each: nine stream grades.
+        start = NOW - timedelta(hours=3)
+        for i in range(3):
+            reference = start + timedelta(minutes=5 * i)
+            pending = _pending(reference)
+            model.issue(pending, issued_at=reference + timedelta(seconds=30))
+            _grade(store, pending, [1, 0, 1])
+        recorder.reset()
+        assert model.learn(NOW, model_version=MODEL) == 3
+        assert recorder.max_open == 1
+        assert recorder.events == ["enter", "exit", "enter", "exit"]
+        assert len(recorder.borrows) == 2
+        reads, writes = recorder.borrows
+        assert reads and all(_is_select(sql) for sql in reads)
+        # Nine stream grades came back in one batched read, not nine
+        # primary-key SELECTs.
+        assert sum("perp_forward_audit" in sql for sql in reads) == 1
+        assert writes and not any(_is_select(sql) for sql in writes)
+        assert any("UPDATE rival_cross_model_examples" in sql for sql in writes)
+        # The lessons actually landed.
+        assert {(s["family"], s["scope"]): s["updates"]
+                for s in CrossModel(store).status()} == {
+            (FAMILY, "BTC"): 3, (ALL_FAMILY, "ALL"): 3}
+    finally:
+        store.close()
+
+
+def test_batched_outcome_read_chunks_large_batches(tmp_path):
+    store = _store(tmp_path, "chunk.sqlite")
+    try:
+        nine = tuple((f"venue{i}", "BTC", "USDT") for i in range(9))
+        recorder = _BorrowRecorder(store)
+        model = CrossModel(recorder)
+        model.initialize()
+        start = NOW - timedelta(hours=3)
+        for i in range(12):
+            reference = start + timedelta(minutes=5 * i)
+            pending = _pending(reference, venues=nine)
+            model.issue(pending, issued_at=reference + timedelta(seconds=30))
+            _grade(store, pending, [1] * 9)
+        recorder.reset()
+        assert model.learn(NOW, model_version=MODEL) == 12
+        reads = recorder.borrows[0]
+        audit_reads = [sql for sql in reads if "perp_forward_audit" in sql]
+        assert len(audit_reads) == 2  # 108 stream keys in chunks of 100
+    finally:
+        store.close()

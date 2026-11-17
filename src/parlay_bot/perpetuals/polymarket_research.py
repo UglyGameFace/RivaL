@@ -102,6 +102,8 @@ class PolymarketResearch:
                         observed_at TEXT NOT NULL, receipt_sha256 TEXT NOT NULL,
                         receipt_json TEXT NOT NULL
                     );
+                    CREATE INDEX IF NOT EXISTS idx_rival_polymarket_ai_outcomes_observed
+                        ON rival_polymarket_ai_outcomes(observed_at);
                 """)
             self.learner.initialize()
             self.oracle_challenger.initialize()

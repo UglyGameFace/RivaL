@@ -32,6 +32,9 @@ from parlay_bot.perpetuals.polymarket_lag import (
     features,
     market_up,
 )
+from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
+from parlay_bot.storage.hot import SQLiteHotStore
+from tests.test_cross_model import _BorrowRecorder
 from tests.test_model_league import CONDITION, SHA, START, notice, setup
 
 
@@ -240,3 +243,50 @@ def test_once_taught_the_checkpoint_carries_its_forecast(learning_store):
         models = {r["model"] for r in conn.execute(
             "SELECT model FROM rival_poly_contest_forecasts WHERE slug=?", (n.slug,))}
     assert {FORMULA, LAG} <= models
+
+
+# --- Fetch-release-compute-write -------------------------------------------
+
+def test_learn_releases_the_connection_before_it_computes(learning_store):
+    contest = setup(learning_store)
+    last = _lagging_market(learning_store, contest, 5)
+    recorder = _BorrowRecorder(learning_store)
+    learner = OddsLagLearner(recorder)
+    learner.initialize()
+    recorder.reset()
+    assert learner.learn(now=last.expires + timedelta(hours=1), force=True) == 5
+    assert recorder.max_open == 1
+    assert recorder.events == ["enter", "exit", "enter", "exit"]
+    assert len(recorder.borrows) == 2
+    reads, writes = recorder.borrows
+    assert reads and all(sql.lstrip().upper().startswith("SELECT") for sql in reads)
+    assert any("rival_poly_contest_rounds" in sql for sql in reads)
+    assert writes and not any(
+        sql.lstrip().upper().startswith("SELECT") for sql in writes)
+    assert any("INSERT INTO rival_poly_lag_learned" in sql for sql in writes)
+    assert any("INSERT INTO rival_poly_lag_state" in sql for sql in writes)
+    # The lessons actually landed.
+    assert learner.status()[0]["updates"] == 5
+
+
+def test_outcomes_observed_at_is_indexed(tmp_path):
+    store = SQLiteHotStore(tmp_path / "index.sqlite")
+    try:
+        PolymarketResearch(store).initialize()
+        with store.connect() as conn:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=? "
+                "AND name=?",
+                ("rival_polymarket_ai_outcomes",
+                 "idx_rival_polymarket_ai_outcomes_observed"),
+            ).fetchone()
+            assert row is not None
+            plan = [str(r["detail"]) for r in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT slug FROM rival_polymarket_ai_outcomes "
+                "WHERE observed_at<=? ORDER BY observed_at",
+                ("2026-11-17T00:00:00+00:00",))]
+            assert any(
+                "USING INDEX idx_rival_polymarket_ai_outcomes_observed" in detail
+                for detail in plan)
+    finally:
+        store.close()

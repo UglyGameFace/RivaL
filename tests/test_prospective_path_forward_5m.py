@@ -28,6 +28,7 @@ from parlay_bot.perpetuals.path_forward import (
     VERSION,
     ProspectivePathLedger,
     _batched_candles,
+    _batched_window_counts,
     empirical_paths,
 )
 
@@ -518,3 +519,209 @@ def test_batched_candles_match_per_key_queries(learning_store):
         assert len(batched[key5b]) == 1
         assert batched[key5][0]["opened_at"] == batched[key15][0]["opened_at"]
     assert _batched_candles(conn, {}) == {}
+
+
+def _window_count_sql(conn, key, stamp):
+    """The old correlated COUNT(*) for one key, as a literal per-key query."""
+    return conn.execute(
+        """SELECT COUNT(*) AS n FROM perp_market_candles c
+           WHERE c.venue=? AND c.contract=? AND c.quote=?
+             AND c.interval_minutes=5
+             AND c.opened_at>? AND c.opened_at<=?
+             AND c.first_observed_at>? AND c.first_observed_at<=?
+             AND c.closed_at<? AND c.closed_at<=c.first_observed_at""",
+        (key[0], key[1], key[2], key[5], key[6], key[5],
+         stamp.isoformat(), stamp.isoformat()),
+    ).fetchone()["n"]
+
+
+def test_batched_window_counts_match_correlated_count(learning_store):
+    """_batched_window_counts equals the old per-key COUNT(*) per key.
+
+    Same stream, overlapping windows (a 5m and a 15m key from one
+    reference share the reference+10m bar — it counts for both). A
+    bar first observed after the stamp, a bar closed at/after the
+    stamp, and a bar closed after its first observation all count
+    for no key. The misaligned-bar case from the batched-fetch test
+    still counts here: readiness only proves the window holds the
+    right number of valid bars; exact spacing is the settle loop's
+    job, not the count's.
+    """
+    from parlay_bot.perpetuals.fusion import utc
+
+    PerpetualMarketStore(learning_store).initialize()
+    candles = _candles()
+    last = candles[-1]
+    issued = last.observed_at + timedelta(seconds=1)
+    now = last.opened_at + timedelta(minutes=61)
+    stamp = utc(now)
+    reference_b = replace(
+        last, opened_at=last.opened_at + timedelta(minutes=15),
+        closed_at=last.closed_at + timedelta(minutes=15),
+        observed_at=last.observed_at + timedelta(minutes=15),
+    )
+    reference_d = replace(
+        last, opened_at=last.opened_at + timedelta(minutes=30),
+        closed_at=last.closed_at + timedelta(minutes=30),
+        observed_at=last.observed_at + timedelta(minutes=30),
+    )
+    reference_e = replace(
+        last, opened_at=last.opened_at + timedelta(minutes=45),
+        closed_at=last.closed_at + timedelta(minutes=45),
+        observed_at=last.observed_at + timedelta(minutes=45),
+    )
+    ref = last.opened_at
+    keys = [
+        ("hyperliquid", "BTC", "USDC", 15, ref.isoformat(),
+         issued.isoformat(), (ref + timedelta(minutes=20)).isoformat()),
+        ("hyperliquid", "BTC", "USDC", 5, ref.isoformat(),
+         issued.isoformat(), (ref + timedelta(minutes=10)).isoformat()),
+        ("hyperliquid", "BTC", "USDC", 5,
+         (ref + timedelta(minutes=15)).isoformat(),
+         (reference_b.observed_at + timedelta(seconds=1)).isoformat(),
+         (ref + timedelta(minutes=25)).isoformat()),
+        ("hyperliquid", "BTC", "USDC", 5,
+         (ref + timedelta(minutes=30)).isoformat(),
+         (reference_d.observed_at + timedelta(seconds=1)).isoformat(),
+         (ref + timedelta(minutes=40)).isoformat()),
+        ("hyperliquid", "BTC", "USDC", 5,
+         (ref + timedelta(minutes=45)).isoformat(),
+         (reference_e.observed_at + timedelta(seconds=1)).isoformat(),
+         (ref + timedelta(minutes=55)).isoformat()),
+    ]
+    with learning_store.connect() as conn:
+        for bar in _future_path(last, steps=3):
+            conn.execute(
+                "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                _row(bar))
+        # B's only bar is first observed after the stamp: never counts.
+        late_bar = replace(
+            _future_path(reference_b, steps=1)[0],
+            observed_at=now + timedelta(hours=1))
+        conn.execute(
+            "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            _row(late_bar))
+        # D's only bar closes at/after the stamp: never counts.
+        unclosed_bar = replace(
+            _future_path(reference_d, steps=1)[0],
+            closed_at=now + timedelta(minutes=1))
+        conn.execute(
+            "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            _row(unclosed_bar))
+        # E's only bar closes after its first observation: never counts.
+        revised_bar = _future_path(reference_e, steps=1)[0]
+        revised_bar = replace(
+            revised_bar,
+            closed_at=revised_bar.observed_at + timedelta(minutes=1))
+        conn.execute(
+            "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            _row(revised_bar))
+        counts = _batched_window_counts(conn, keys, stamp.isoformat())
+        assert counts == {keys[0]: 3, keys[1]: 1}
+        for key in keys:
+            assert counts.get(key, 0) == _window_count_sql(conn, key, stamp)
+    assert _batched_window_counts(conn, [], stamp.isoformat()) == {}
+
+
+def _ready_key_list(paths):
+    return [tuple(p[0][field] for field in (
+        "venue", "contract", "quote", "horizon_minutes",
+        "reference_opened_at", "issued_at", "target_opened_at"))
+        for p in paths]
+
+
+def test_ready_paths_chunking_does_not_change_selection(
+        learning_store, monkeypatch):
+    """Counting in tiny chunks selects the same keys as one big chunk.
+
+    The starved fixture's four readiness scans must return identical
+    key lists whether _batched_window_counts sees 3 keys at a time or
+    200: chunk boundaries never skip, repeat, or reorder a candidate.
+    """
+    from parlay_bot.perpetuals import path_forward
+    from parlay_bot.perpetuals.fusion import utc
+
+    ledger = ProspectivePathLedger(learning_store)
+    now = _build_starved_fixture(ledger, learning_store)
+    stamp = utc(now)
+    with learning_store.connect() as conn:
+        monkeypatch.setattr(path_forward, "_READY_COUNT_CHUNK", 3)
+        small = {
+            label: _ready_key_list(ledger._ready_paths(conn, stamp=stamp, **kw))
+            for label, kw in (
+                ("current", {"current": True}),
+                ("backlog", {"current": False}),
+                ("current5", {"current": True, "horizons": (5,)}),
+                ("backlog5", {"current": False, "horizons": (5,)}),
+            )
+        }
+        monkeypatch.setattr(path_forward, "_READY_COUNT_CHUNK", 200)
+        big = {
+            label: _ready_key_list(ledger._ready_paths(conn, stamp=stamp, **kw))
+            for label, kw in (
+                ("current", {"current": True}),
+                ("backlog", {"current": False}),
+                ("current5", {"current": True, "horizons": (5,)}),
+                ("backlog5", {"current": False, "horizons": (5,)}),
+            )
+        }
+    assert small == big
+    assert len(big["current"]) == 80
+    assert len(big["backlog"]) == 100
+    assert len(big["current5"]) == 40
+    assert len(big["backlog5"]) == 0
+
+
+def _add_unready_tail(conn, ledger, *, count=2000):
+    """2,000 old 15m paths with no future candles: never ready, always
+    scanned. Their windows hold no bars at all, so the backlog scan
+    must evaluate (and reject) every one before reaching the ready
+    legacy paths — the production shape, where most old pending rows
+    are missing evidence."""
+    candles = _candles()
+    last = candles[-1]
+    issued = last.observed_at + timedelta(seconds=1)
+    options = empirical_paths(candles, horizon=15, now=issued)
+    for index in range(count):
+        shift = timedelta(days=-10, minutes=5 * index)
+        prior = replace(
+            last, venue="tailvenue",
+            opened_at=last.opened_at + shift,
+            closed_at=last.closed_at + shift,
+            observed_at=last.observed_at + shift,
+        )
+        assert ledger.issue(
+            conn, candles=[prior], asset="BTC", horizon=15,
+            now=issued + shift, issued_at=issued + shift,
+            options=options,
+        ) == 2
+
+
+def test_unready_backlog_tail_does_not_change_settlement(learning_store):
+    """An unready backlog tail changes scan cost, never selection.
+
+    The starved fixture settles identically with and without 2,000
+    unready legacy paths ahead of it in the backlog queue: same
+    settle results cycle by cycle, same final pending/settled counts.
+    The old correlated COUNT(*) evaluated one subquery per tail row;
+    the two-phase scan rejects them from batched counts instead.
+    """
+    ledger = ProspectivePathLedger(learning_store)
+    now = _build_starved_fixture(ledger, learning_store)
+    with learning_store.connect() as conn:
+        _add_unready_tail(conn, ledger)
+    results = [ledger.settle(now=now) for _ in range(4)]
+    assert results == [
+        {"settled": 200, "ambiguous": 0},
+        {"settled": 200, "ambiguous": 0},
+        {"settled": 42, "ambiguous": 0},
+        {"settled": 0, "ambiguous": 0},
+    ]
+    with learning_store.connect() as conn:
+        assert _pending_sides(conn, 5) == 0
+        assert _pending_sides(conn, 60) == 0
+        # The 2,000 tail paths stay pending (no candles, never ready);
+        # every fixture path drains.
+        assert _pending_sides(conn, 15) == 4000
+        assert _settled_sides(conn, 5) == 80
+        assert _settled_sides(conn, 15) + _settled_sides(conn, 60) == 362

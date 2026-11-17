@@ -29,6 +29,12 @@ MAX_TRAIN = 280
 # selects at most 40 streams x 3 horizons: 120 paths / 240 side records.
 # Batching 100 side records cannot keep up even without missing evidence.
 MAX_SETTLE = 100
+# Readiness counting fetches candle windows in chunks of this many path
+# keys (5 SQL parameters per key). The correlated COUNT(*) this replaced
+# evaluated one subquery per candidate row; the chunked batched fetch
+# keeps every statement small while selection still stops as soon as
+# MAX_SETTLE ready keys are found.
+_READY_COUNT_CHUNK = 200
 # Give current outcomes 80 of the 100-path bound while retaining 20 slots
 # for older evidence. Unused capacity is shared. This is scheduling only:
 # all paths retain the same 14-day and causal source gates. A full
@@ -101,6 +107,60 @@ def _batched_candles(conn, keys):
     for bars in out.values():
         bars.sort(key=lambda bar: bar["opened_at"])
     return out
+
+
+def _batched_window_counts(conn, keys, stamp_s):
+    """Count valid settlement candles per path key, in one round-trip.
+
+    ``keys`` is a list of path keys in canonical order; ``stamp_s`` is
+    the settle stamp as an ISO string. Returns {key: count} where count
+    is the number of 5-minute candles in the key's readiness window
+    (opened_at in (issued_at, target_opened_at]) that also pass the
+    first-observation checks: first_observed_at in (issued_at, stamp],
+    closed_at < stamp, closed_at <= first_observed_at. A key is ready
+    when its count equals horizon_minutes // 5.
+
+    The SQL carries only primary-key terms (venue/contract/quote/
+    interval_minutes/opened_at range). Adding first_observed_at terms
+    makes SQLite's planner abandon the candle primary key for the
+    (interval_minutes, first_observed_at) index and scan every bar
+    first-observed in the window instead of the ~1-12 bars in it, so
+    the validity checks run here in Python. The comparisons are plain
+    ISO-string comparisons, exactly what SQLite does for these TEXT
+    columns, so the counts match the old correlated COUNT(*) row for
+    row. A row matching several overlapping keys is counted for each
+    of them, exactly as the per-key subqueries would each have
+    counted it.
+    """
+    counts = {}
+    if not keys:
+        return counts
+    branches = []
+    params = []
+    for key in keys:
+        branches.append(
+            "(venue=? AND contract=? AND quote=? AND interval_minutes=5"
+            " AND opened_at>? AND opened_at<=?)")
+        params.extend([key[0], key[1], key[2], key[5], key[6]])
+    rows = conn.execute(
+        """SELECT venue,contract,quote,opened_at,closed_at,first_observed_at
+           FROM perp_market_candles
+           WHERE """ + " OR ".join(branches),
+        params,
+    ).fetchall()
+    by_group = {}
+    for key in keys:
+        by_group.setdefault(key[:3], []).append(key)
+    for row in rows:
+        for key in by_group.get(
+                (row["venue"], row["contract"], row["quote"]), ()):
+            issued_at, target = key[5], key[6]
+            if (issued_at < row["opened_at"] <= target
+                    and issued_at < row["first_observed_at"] <= stamp_s
+                    and row["closed_at"] < stamp_s
+                    and row["closed_at"] <= row["first_observed_at"]):
+                counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _sigma(candles, index: int, steps: int) -> float:
@@ -434,53 +494,76 @@ class ProspectivePathLedger:
         horizon group able to use the other's unused slots, so a
         faster-due horizon can never displace a longer-horizon path
         while the longer queue still has ready work.
+
+        Readiness is two-phase, not a correlated COUNT(*) per candidate
+        row: one indexed scan reads the candidate keys in canonical
+        order, then _batched_window_counts counts valid candles per
+        key in chunks, stopping as soon as ``limit`` ready keys are
+        found, and one row-value IN query fetches their side rows.
+        The selection (keys, order, outcomes) is identical to the old
+        per-row subquery — the subquery only ever proved that a key's
+        window holds exactly horizon/5 valid bars, which is what the
+        batched counts compute. The correlated form was dropped
+        because the GROUP BY forces a full pass over every pending row
+        in the 14-day window, and once first_observed_at terms are
+        present SQLite's planner reads the candles through the
+        (interval_minutes, first_observed_at) index instead of the
+        primary key: on a 2,000-unready-row fixture the backlog scan
+        alone took ~880ms; the two-phase form takes ~11ms for the
+        same selection.
         """
+        if limit <= 0:
+            return []
         comparison = ">=" if current else "<"
         direction = "DESC" if current else "ASC"
         placeholders = ",".join("?" for _ in horizons)
+        stamp_s = stamp.isoformat()
         rows = conn.execute(
-                f"""WITH ready AS (
-                       SELECT p.venue,p.contract,p.quote,p.horizon_minutes,
-                              p.reference_opened_at,p.issued_at,p.target_opened_at
-                       FROM rival_forward_paths p
-                       WHERE p.state='pending' AND p.target_opened_at<=?
-                        AND p.target_opened_at>=? AND p.horizon_minutes IN ({placeholders})
-                        AND p.target_opened_at {comparison} ?
-                        AND p.side IN ('long','short')
-                        AND (SELECT COUNT(*) FROM perp_market_candles c
-                             WHERE c.venue=p.venue AND c.contract=p.contract
-                               AND c.quote=p.quote AND c.interval_minutes=5
-                               AND c.opened_at>p.issued_at
-                               AND c.opened_at<=p.target_opened_at
-                               AND c.first_observed_at>p.issued_at
-                               AND c.first_observed_at<=? AND c.closed_at<?
-                               AND c.closed_at<=c.first_observed_at
-                            )=p.horizon_minutes/5
-                       GROUP BY p.venue,p.contract,p.quote,p.horizon_minutes,
-                                p.reference_opened_at,p.issued_at,p.target_opened_at
-                       ORDER BY p.target_opened_at {direction},p.venue,p.contract,p.quote,
-                                p.horizon_minutes,p.reference_opened_at,p.issued_at
-                       LIMIT ?
-                   ) SELECT p.* FROM rival_forward_paths p JOIN ready r
-                     ON p.venue=r.venue AND p.contract=r.contract AND p.quote=r.quote
-                      AND p.horizon_minutes=r.horizon_minutes
-                      AND p.reference_opened_at=r.reference_opened_at
-                      AND p.issued_at=r.issued_at AND p.target_opened_at=r.target_opened_at
-                   WHERE p.state='pending' AND p.side IN ('long','short')
+                f"""SELECT DISTINCT p.venue,p.contract,p.quote,p.horizon_minutes,
+                       p.reference_opened_at,p.issued_at,p.target_opened_at
+                   FROM rival_forward_paths p
+                   WHERE p.state='pending' AND p.target_opened_at<=?
+                    AND p.target_opened_at>=? AND p.horizon_minutes IN ({placeholders})
+                    AND p.target_opened_at {comparison} ?
+                    AND p.side IN ('long','short')
                    ORDER BY p.target_opened_at {direction},p.venue,p.contract,p.quote,
-                            p.horizon_minutes,p.reference_opened_at,p.issued_at,p.side""",
+                            p.horizon_minutes,p.reference_opened_at,p.issued_at""",
                 ((stamp-timedelta(minutes=5)).isoformat(),
                  (stamp-timedelta(days=14)).isoformat(),
                  *horizons,
-                 (stamp-CURRENT_SETTLEMENT_WINDOW).isoformat(),
-                 stamp.isoformat(), stamp.isoformat(), limit),
+                 (stamp-CURRENT_SETTLEMENT_WINDOW).isoformat()),
+            ).fetchall()
+        key_fields = ("venue", "contract", "quote", "horizon_minutes",
+                      "reference_opened_at", "issued_at", "target_opened_at")
+        keys = [tuple(row[field] for field in key_fields) for row in rows]
+        ready = []
+        for start in range(0, len(keys), _READY_COUNT_CHUNK):
+            chunk = keys[start:start + _READY_COUNT_CHUNK]
+            counts = _batched_window_counts(conn, chunk, stamp_s)
+            for key in chunk:
+                if counts.get(key, 0) == key[3] // 5:
+                    ready.append(key)
+                    if len(ready) == limit:
+                        break
+            if len(ready) == limit:
+                break
+        if not ready:
+            return []
+        in_placeholders = ",".join("(?,?,?,?,?,?,?)" for _ in ready)
+        params = [value for key in ready for value in key]
+        rows = conn.execute(
+                f"""SELECT p.* FROM rival_forward_paths p
+                   WHERE p.state='pending' AND p.side IN ('long','short')
+                     AND (p.venue,p.contract,p.quote,p.horizon_minutes,
+                          p.reference_opened_at,p.issued_at,p.target_opened_at)
+                         IN ({in_placeholders})
+                   ORDER BY p.target_opened_at {direction},p.venue,p.contract,p.quote,
+                            p.horizon_minutes,p.reference_opened_at,p.issued_at,p.side""",
+                params,
             ).fetchall()
         paths = {}
         for row in rows:
-            key = tuple(row[field] for field in (
-                "venue", "contract", "quote", "horizon_minutes",
-                "reference_opened_at", "issued_at", "target_opened_at",
-            ))
+            key = tuple(row[field] for field in key_fields)
             paths.setdefault(key, []).append(row)
         return list(paths.values())
 

@@ -17,6 +17,34 @@ from parlay_bot.research.audit import audit_partition
 from parlay_bot.research.publish import _drive
 from parlay_bot.research.recorded_candles import restore_recorded_partitions
 
+# PR #633 single-family OKX pin, matching research_after_source
+# (tools/restore_archive_months.py --okx-source-integrity). The pin filter
+# in restore_verified_source_months runs before its conflict check, so an
+# unpinned restore fails closed on any divergent OKX original while the
+# pinned restore skips the rival family. This selects one documented
+# family; it never picks a favourable archive or relaxes any gate.
+OKX_SOURCE_INTEGRITY = "okx-v5-public-history-5m-v1"
+
+# Only these already-public, credential-free conflict comparison fields
+# may enter the receipt. Raw manifests, prices and Drive IDs stay local.
+_CONFLICT_COMPARISON_FIELDS = (
+    "first_rows", "second_rows", "all_candle_fields_identical",
+    "differing_fields", "price_fields_differ", "volume_fields_differ",
+    "trade_count_differs", "grid_or_identity_fields_differ",
+    "semantic_fields_equal", "identical_except_first_observed_at",
+)
+
+
+def _source_conflict_receipt(evidence: dict) -> dict:
+    """Trim an OKX source-conflict to its month and differing fields."""
+    comparison = evidence.get("comparison") or {}
+    return {
+        "month": evidence.get("month"),
+        "comparison": {
+            key: comparison.get(key) for key in _CONFLICT_COMPARISON_FIELDS
+        },
+    }
+
 
 def _category(exc: Exception) -> str:
     """Non-secret failure categories; never copy raw upstream text to Actions."""
@@ -156,6 +184,19 @@ async def verify_xmarket_admission(drive, *, asset: str, root: Path,
             name: item.get("status") == "verified"
             for name, item in market.get("verification", {}).items()
         },
+        # Step 6 publishes these per-source diagnostics; step 8 previously
+        # discarded them, so a fidelity flip between the two steps could not
+        # be classified from this artifact. Receipt-only: no gate changes.
+        "native_source_fidelity": {
+            name: {
+                "status": item.get("status"),
+                "blocked_reason": item.get("blocked_reason"),
+                "paired_points": item.get("paired_points"),
+                "overlap_coverage": item.get("overlap_coverage"),
+                "mismatch_rate": item.get("mismatch_rate"),
+            }
+            for name, item in market.get("verification", {}).items()
+        },
         "train_end_utc": train_end.isoformat(),
         "test_start_utc": test_start.isoformat(),
         "trained_through_utc": trained_through.isoformat(),
@@ -199,6 +240,7 @@ async def verify(*, asset: str, root: Path, now: datetime, lookback_days: int,
                 asset=asset, months=complete_months(now=now, count=6), root=root,
                 records_since=first, records_through=last,
                 now=now.astimezone(UTC), drive=drive,
+                okx_source_integrity=OKX_SOURCE_INTEGRITY,
             )
             result = restoration.get("recorded_candles") or {
                 "restored": [], "source_files": [], "partitions": [],
@@ -250,6 +292,8 @@ async def verify(*, asset: str, root: Path, now: datetime, lookback_days: int,
             **({"input_restoration": {
                 "mode": "production_verified_months_and_recorded_partitions",
                 "months_requested": restoration["months_requested"],
+                "okx_selected_source_integrity": restoration.get(
+                    "okx_selected_source_integrity"),
                 "restored_manifest_counts": {
                     source: len(items) for source, items in restoration["restored"].items()
                 },
@@ -257,6 +301,14 @@ async def verify(*, asset: str, root: Path, now: datetime, lookback_days: int,
                 # source names and exception class; keep the raw report local.
                 "excluded_reason_classes": {
                     source: item["reason"] for source, item in restoration["excluded"].items()
+                },
+                # Conflict month/differing fields only; the full evidence
+                # (manifest SHAs, no prices or IDs) stays in the local report.
+                "excluded_source_conflicts": {
+                    source: _source_conflict_receipt(item["source_conflict"])
+                    for source, item in restoration["excluded"].items()
+                    if isinstance(item, dict)
+                    and isinstance(item.get("source_conflict"), dict)
                 },
                 "historical_split_status": "eligible" if split_proven else "blocked",
             }} if restoration is not None else {}),

@@ -77,6 +77,13 @@ async def test_audited_gap_repairs_one_exact_provider_candle_without_rewind(
         assert result["missing_bars"] == 1
         auditor.audit_stream(venue="kucoin", asset="BTC", now=END)
         assert worker._pending_gaps("BTC", now=CLOCK) == 1
+        with store.connect() as conn:
+            queued = conn.execute(
+                "SELECT queued_at FROM perp_history_gap_repair "
+                "WHERE venue='kucoin' AND asset='BTC' AND opened_at=?",
+                (HOLE.isoformat(),),
+            ).fetchone()
+        assert queued is not None and queued["queued_at"] == END.isoformat()
 
         assert await worker.fetch_asset("BTC", now=CLOCK) == 1
         assert len(calls) == 1

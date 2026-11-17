@@ -29,6 +29,34 @@ def _utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+def _ensure_gap_repair_columns(conn, backend: str) -> None:
+    """Idempotently add the gap-repair status/queued_at columns.
+
+    CREATE TABLE IF NOT EXISTS cannot extend a table created by an older
+    release, so extend pre-existing tables after the shared DDL runs.
+    SQLite has no ADD COLUMN IF NOT EXISTS, so introspect first on both
+    backends and add only what is missing. Both columns stay nullable:
+    rows queued before this release keep an unknown status/insert time
+    instead of a fabricated one.
+    """
+    if backend == "postgres":
+        rows = conn.execute(
+            """SELECT column_name FROM information_schema.columns
+               WHERE table_name='perp_history_gap_repair'"""
+        ).fetchall()
+        present = {str(row["column_name"]) for row in rows}
+    else:
+        rows = conn.execute(
+            "PRAGMA table_info(perp_history_gap_repair)"
+        ).fetchall()
+        present = {str(row["name"]) for row in rows}
+    for column in ("status", "queued_at"):
+        if column not in present:
+            conn.execute(
+                f"ALTER TABLE perp_history_gap_repair ADD COLUMN {column} TEXT"
+            )
+
+
 def align_forward_month_cursor(conn, *, venue: str, asset: str,
                                now: datetime, row: dict) -> dict:
     """Repair persisted rolling-lookback cursors, once, without wiping candles.
@@ -194,6 +222,8 @@ class GateHistoryRecovery:
                     opened_at TEXT NOT NULL,
                     attempted_at TEXT,
                     retry_after TEXT NOT NULL,
+                    status TEXT,
+                    queued_at TEXT,
                     PRIMARY KEY (venue,asset,opened_at)
                 );
                 CREATE INDEX IF NOT EXISTS idx_perp_history_gap_due
@@ -212,6 +242,7 @@ class GateHistoryRecovery:
                 );
                 """
             )
+            _ensure_gap_repair_columns(conn, self.store.database.backend)
 
     async def aclose(self) -> None:
         if self._owned:
@@ -317,11 +348,12 @@ class GateHistoryRecovery:
                 opened = start + slot * _STEP
                 conn.execute(
                     """INSERT INTO perp_history_gap_repair
-                       (venue,asset,opened_at,retry_after)
-                       VALUES ('gate',?,?,?)
+                       (venue,asset,opened_at,retry_after,queued_at)
+                       VALUES ('gate',?,?,?,?)
                        ON CONFLICT(venue,asset,opened_at) DO NOTHING""",
                     (asset, opened.isoformat(),
-                     (now + timedelta(hours=6)).isoformat()),
+                     (now + timedelta(hours=6)).isoformat(),
+                     now.isoformat()),
                 )
 
     def _pending_gaps(self, asset: str, *, now: datetime) -> int:

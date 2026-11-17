@@ -147,8 +147,8 @@ async def test_unpublished_kucoin_original_keeps_path_gap_pending(learning_store
     async def multiplier(*_args):
         return 1.0
 
-    async def empty(_url, params):
-        requests.append(params)
+    async def empty(url, params):
+        requests.append((url, params))
         return {"code": "200000", "data": {
             "symbol": "ETHUSDTM", "tradeType": "FUTURES", "list": [],
         }}
@@ -157,8 +157,18 @@ async def test_unpublished_kucoin_original_keeps_path_gap_pending(learning_store
     worker._public = empty
     try:
         assert await worker.fetch_asset("ETH", now=CLOCK) == 0
-        assert len(requests) == 1
-        assert requests[0]["startAt"] == requests[0]["endAt"] == int(hole.timestamp())
+        # UTA positively returned no bar, so the exact-slot futures
+        # fallback is attempted once; it answers with the same empty
+        # UTA-shaped payload, which is malformed for that endpoint,
+        # so absence stays unproven and the gap stays queued.
+        assert len(requests) == 2
+        assert requests[0][1]["startAt"] == requests[0][1]["endAt"] == int(
+            hole.timestamp())
+        assert requests[1][0].endswith("/api/v1/kline/query")
+        assert requests[1][1]["symbol"] == "ETHUSDTM"
+        assert requests[1][1]["granularity"] == 5
+        assert requests[1][1]["from"] == int(hole.timestamp()) * 1000
+        assert requests[1][1]["to"] == int(hole.timestamp()) * 1000 + 300_000
         assert worker._pending_gaps("ETH", now=CLOCK) == 1
         with learning_store.connect() as conn:
             gap = conn.execute(
@@ -278,8 +288,8 @@ async def test_empty_gap_does_not_clear_independent_bulk_retry(learning_store):
     async def multiplier(*_args):
         return 1.0
 
-    async def empty(_url, params):
-        requests.append(params)
+    async def empty(url, params):
+        requests.append((url, params))
         return {"code": "200000", "data": {
             "symbol": "ETHUSDTM", "tradeType": "FUTURES", "list": [],
         }}
@@ -288,8 +298,13 @@ async def test_empty_gap_does_not_clear_independent_bulk_retry(learning_store):
     worker._public = empty
     try:
         assert await worker.fetch_asset("ETH", now=CLOCK) == 0
-        assert len(requests) == 1
-        assert requests[0]["startAt"] == requests[0]["endAt"] == int(hole.timestamp())
+        # UTA empty, then one futures fallback attempt (same malformed
+        # UTA-shaped payload), then the bulk pause is left untouched.
+        assert len(requests) == 2
+        assert requests[0][1]["startAt"] == requests[0][1]["endAt"] == int(
+            hole.timestamp())
+        assert requests[1][0].endswith("/api/v1/kline/query")
+        assert requests[1][1]["from"] == int(hole.timestamp()) * 1000
         assert worker.progress()[0]["retry_after"] == bulk_retry.isoformat()
         with learning_store.connect() as conn:
             pending = conn.execute(
@@ -299,6 +314,289 @@ async def test_empty_gap_does_not_clear_independent_bulk_retry(learning_store):
             ).fetchone()
         assert pending["retry_after"] == bulk_retry.isoformat()
         assert await worker.fetch_asset("ETH", now=CLOCK + timedelta(minutes=1)) == 0
-        assert len(requests) == 1
+        assert len(requests) == 2
     finally:
         await worker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gap_claim_proceeds_while_bulk_paused_with_retry_status(learning_store):
+    worker, hole = _seed(learning_store)
+    worker._position("ETH", CLOCK)
+    bulk_retry = CLOCK + timedelta(minutes=20)
+    with learning_store.connect() as conn:
+        conn.execute(
+            """UPDATE perp_history_recovery SET status='retry',
+                      retry_after=? WHERE venue='kucoin' AND asset='ETH'""",
+            (bulk_retry.isoformat(),),
+        )
+    calls = []
+
+    async def multiplier(*_args):
+        return 1.0
+
+    async def public(url, params):
+        calls.append((url, params))
+        return {"code": "200000", "data": {
+            "symbol": "ETHUSDTM", "tradeType": "FUTURES",
+            "list": [[int(hole.timestamp()), "100", "105", "95",
+                      "101", "1", "101"]],
+        }}
+
+    worker._multiplier = multiplier
+    worker._public = public
+    try:
+        assert await worker.fetch_asset("ETH", now=CLOCK) == 1
+        assert len(calls) == 1
+        assert calls[0][1]["startAt"] == calls[0][1]["endAt"] == int(
+            hole.timestamp())
+        position = worker.progress()[0]
+        # The transient bulk-page pause is preserved, not extended.
+        assert position["status"] == "retry"
+        assert position["retry_after"] == bulk_retry.isoformat()
+        assert worker._pending_gaps("ETH", now=CLOCK) == 0
+    finally:
+        await worker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gap_fetch_failure_does_not_repause_bulk(learning_store):
+    from parlay_bot.perpetuals.hyperliquid import MarketDataError
+
+    worker, hole = _seed(learning_store)
+    worker._position("ETH", CLOCK)
+    bulk_retry = CLOCK + timedelta(minutes=20)
+    with learning_store.connect() as conn:
+        conn.execute(
+            """UPDATE perp_history_recovery SET status='retry',
+                      retry_after=? WHERE venue='kucoin' AND asset='ETH'""",
+            (bulk_retry.isoformat(),),
+        )
+
+    async def multiplier(*_args):
+        return 1.0
+
+    async def failing(_url, _params):
+        raise MarketDataError("KuCoin public futures history unavailable")
+
+    worker._multiplier = multiplier
+    worker._public = failing
+    try:
+        assert await worker.fetch_asset("ETH", now=CLOCK) == 0
+        position = worker.progress()[0]
+        assert position["status"] == "retry"
+        assert position["retry_after"] == bulk_retry.isoformat()
+        with learning_store.connect() as conn:
+            gap = conn.execute(
+                """SELECT retry_after,status FROM perp_history_gap_repair
+                   WHERE venue='kucoin' AND asset='ETH' AND opened_at=?""",
+                (hole.isoformat(),),
+            ).fetchone()
+        # The claim's own six-hour backoff is preserved; the row is not
+        # terminally marked because the failure proves nothing.
+        assert gap["status"] is None
+        assert datetime.fromisoformat(gap["retry_after"]) == CLOCK + timedelta(hours=6)
+    finally:
+        await worker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gap_fetch_failure_without_bulk_pause_leaves_bulk_unpaused(learning_store):
+    from parlay_bot.perpetuals.hyperliquid import MarketDataError
+
+    worker, hole = _seed(learning_store)
+    worker._position("ETH", CLOCK)
+
+    async def multiplier(*_args):
+        return 1.0
+
+    async def failing(_url, _params):
+        raise MarketDataError("KuCoin public futures history unavailable")
+
+    worker._multiplier = multiplier
+    worker._public = failing
+    try:
+        assert await worker.fetch_asset("ETH", now=CLOCK) == 0
+        position = worker.progress()[0]
+        assert position["status"] == "gaps_pending"
+        assert position["retry_after"] is None
+        with learning_store.connect() as conn:
+            gap = conn.execute(
+                "SELECT retry_after FROM perp_history_gap_repair "
+                "WHERE venue='kucoin' AND asset='ETH' AND opened_at=?",
+                (hole.isoformat(),),
+            ).fetchone()
+        assert datetime.fromisoformat(gap["retry_after"]) == CLOCK + timedelta(hours=6)
+    finally:
+        await worker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_futures_fallback_recovers_slot_when_uta_is_empty(learning_store):
+    worker, hole = _seed(learning_store)
+    worker._position("ETH", CLOCK)
+    requests = []
+
+    async def multiplier(*_args):
+        return 1.0
+
+    async def public(url, params):
+        requests.append((url, params))
+        if "kline/query" in url:
+            assert params["symbol"] == "ETHUSDTM"
+            assert params["granularity"] == 5
+            assert params["from"] == int(hole.timestamp()) * 1000
+            assert params["to"] == int(hole.timestamp()) * 1000 + 300_000
+            return {"code": "200000", "data": [
+                [int(hole.timestamp()) * 1000, 100, 105, 95, 101, "2", "202"],
+            ]}
+        return {"code": "200000", "data": {
+            "symbol": "ETHUSDTM", "tradeType": "FUTURES", "list": [],
+        }}
+
+    worker._multiplier = multiplier
+    worker._public = public
+    try:
+        assert await worker.fetch_asset("ETH", now=CLOCK) == 1
+        assert len(requests) == 2
+        with learning_store.connect() as conn:
+            candle = conn.execute(
+                """SELECT open_price,close_price,volume_base
+                   FROM perp_market_candles WHERE venue='kucoin'
+                     AND opened_at=?""",
+                (hole.isoformat(),),
+            ).fetchone()
+            active = conn.execute(
+                "SELECT COUNT(*) AS n FROM perp_history_gap_repair "
+                "WHERE venue='kucoin' AND asset='ETH'",
+            ).fetchone()["n"]
+        assert candle is not None
+        assert candle["close_price"] == 101
+        assert candle["volume_base"] == 2.0
+        assert active == 0
+    finally:
+        await worker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_futures_fallback_rejects_neighbor_bar(learning_store):
+    from parlay_bot.perpetuals import learning_health_receipt as host
+
+    worker, hole = _seed(learning_store)
+    worker._position("ETH", CLOCK)
+    with learning_store.connect() as conn:
+        conn.execute(
+            """UPDATE perp_history_recovery SET next_opened_at=?,status='caught_up'
+               WHERE venue='kucoin' AND asset='ETH'""",
+            ((CLOCK - timedelta(hours=4)).isoformat(),),
+        )
+    neighbor = hole + timedelta(minutes=5)
+
+    async def multiplier(*_args):
+        return 1.0
+
+    async def public(url, params):
+        if "kline/query" in url:
+            return {"code": "200000", "data": [
+                [int(neighbor.timestamp()) * 1000, 100, 105, 95, 101, "2", "202"],
+            ]}
+        return {"code": "200000", "data": {
+            "symbol": "ETHUSDTM", "tradeType": "FUTURES", "list": [],
+        }}
+
+    worker._multiplier = multiplier
+    worker._public = public
+    try:
+        assert await worker.fetch_asset("ETH", now=CLOCK) == 0
+        with learning_store.connect() as conn:
+            row = conn.execute(
+                """SELECT status,queued_at FROM perp_history_gap_repair
+                   WHERE venue='kucoin' AND asset='ETH' AND opened_at=?""",
+                (hole.isoformat(),),
+            ).fetchone()
+            stored = conn.execute(
+                "SELECT COUNT(*) AS n FROM perp_market_candles "
+                "WHERE venue='kucoin' AND opened_at=?",
+                (hole.isoformat(),),
+            ).fetchone()["n"]
+        assert row is not None
+        assert row["status"] == "upstream_absent"
+        assert row["queued_at"] == CLOCK.isoformat()
+        assert stored == 0
+        receipt = host._kucoin_gap_recovery_progress(learning_store, CLOCK)
+        eth = next(r for r in receipt["assets"] if r["asset"] == "ETH")
+        assert eth["queued_exact_gaps_14d"] == 1
+        assert eth["due_exact_gaps_14d"] == 0
+        assert eth["upstream_absent_exact_gaps_14d"] == 1
+    finally:
+        await worker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_both_endpoints_empty_marks_gap_upstream_absent(learning_store):
+    worker, hole = _seed(learning_store)
+    worker._position("ETH", CLOCK)
+    with learning_store.connect() as conn:
+        conn.execute(
+            """UPDATE perp_history_recovery SET next_opened_at=?,status='caught_up'
+               WHERE venue='kucoin' AND asset='ETH'""",
+            ((CLOCK - timedelta(hours=4)).isoformat(),),
+        )
+    requests = []
+
+    async def multiplier(*_args):
+        return 1.0
+
+    async def public(url, params):
+        requests.append(url)
+        if "kline/query" in url:
+            return {"code": "200000", "data": []}
+        return {"code": "200000", "data": {
+            "symbol": "ETHUSDTM", "tradeType": "FUTURES", "list": [],
+        }}
+
+    worker._multiplier = multiplier
+    worker._public = public
+    try:
+        assert await worker.fetch_asset("ETH", now=CLOCK) == 0
+        assert len(requests) == 2
+        with learning_store.connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM perp_history_gap_repair "
+                "WHERE venue='kucoin' AND asset='ETH' AND opened_at=?",
+                (hole.isoformat(),),
+            ).fetchone()
+        assert row["status"] == "upstream_absent"
+        # The next claim skips the terminal row even after the six-hour
+        # backoff expires: park the bulk cursor at the new end first so
+        # the turn has no bulk page to fetch either.
+        later = CLOCK + timedelta(hours=7)
+        end = later.replace(minute=later.minute // 5 * 5, second=0,
+                            microsecond=0) - timedelta(hours=4)
+        with learning_store.connect() as conn:
+            conn.execute(
+                """UPDATE perp_history_recovery SET next_opened_at=?
+                   WHERE venue='kucoin' AND asset='ETH'""",
+                (end.isoformat(),),
+            )
+        assert await worker.fetch_asset("ETH", now=later) == 0
+        assert len(requests) == 2
+    finally:
+        await worker.aclose()
+
+
+def test_gap_row_records_queued_at(learning_store):
+    worker, hole = _seed(learning_store)
+    worker._position("ETH", CLOCK)
+    assert worker._queue_due_path_gaps(
+        "ETH", now=CLOCK, end=CLOCK - timedelta(hours=4),
+    ) == 1
+    with learning_store.connect() as conn:
+        row = conn.execute(
+            """SELECT status,queued_at FROM perp_history_gap_repair
+               WHERE venue='kucoin' AND asset='ETH' AND opened_at=?""",
+            (hole.isoformat(),),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] is None
+    assert row["queued_at"] == CLOCK.isoformat()

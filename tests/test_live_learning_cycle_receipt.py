@@ -538,6 +538,36 @@ def test_kucoin_gap_receipt_fails_closed_if_persistence_unavailable():
     assert result["does_not_prove_gap_recovery"]
 
 
+@pytest.mark.asyncio
+async def test_kucoin_gap_receipt_counts_upstream_absent_separately(learning_store):
+    from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
+    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+
+    stamp = datetime(2026, 11, 16, 17, tzinfo=UTC)
+    market = PerpetualMarketStore(learning_store)
+    market.initialize()
+    worker = KucoinHistoryRecovery(market, assets=("ETH",))
+    try:
+        worker._position("ETH", stamp)
+        hole = stamp - timedelta(days=1)
+        with learning_store.connect() as conn:
+            conn.execute(
+                """INSERT INTO perp_history_gap_repair
+                   (venue,asset,opened_at,retry_after,status,queued_at)
+                   VALUES ('kucoin','ETH',?,?,?,?)""",
+                (hole.isoformat(), stamp.isoformat(), "upstream_absent",
+                 stamp.isoformat()),
+            )
+        receipt = host._kucoin_gap_recovery_progress(learning_store, stamp)
+        eth = next(row for row in receipt["assets"] if row["asset"] == "ETH")
+        assert eth["queued_exact_gaps_14d"] == 1
+        assert eth["due_exact_gaps_14d"] == 0
+        assert eth["attempted_exact_gaps_14d"] == 0
+        assert eth["upstream_absent_exact_gaps_14d"] == 1
+    finally:
+        await worker.aclose()
+
+
 def _insert_pending_path(conn, *, venue, contract, quote, asset, horizon,
                          side, reference, issued, target):
     conn.execute(

@@ -350,6 +350,10 @@ def test_actual_learning_receipt_requires_changed_weights_and_new_labels(learnin
     assert result["lab"]["streams_with_training_updates"] == 1
     assert result["proves_improvement"] is False
     assert result["proves_profitable_edge"] is False
+    # Exact serving artifact identity: version plus truncated digests.
+    assert result["model_version"] == "prospective-logistic-persistent-v3"
+    assert result["latest_weights_sha256_prefix"] == "b" * 12
+    assert result["latest_seed_sha256_prefix"] is None
 
     # Counter alone isn't enough. Persisted probabilities can stay unchanged.
     with store.connect() as conn:

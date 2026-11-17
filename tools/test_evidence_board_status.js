@@ -20,6 +20,12 @@ async function status(){
   const response = await vm.runInContext("handle(new Request('https://evidence.the420lobby.com/api/status'))",context);
   return {code:response.status, body:await response.json()};
 }
+async function diagnostics(){
+  const response = await vm.runInContext("handle(new Request('https://evidence.the420lobby.com/api/diagnostics'))",context);
+  return {code:response.status, body:await response.json()};
+}
+function sourceNamed(body,name){return body.sources.find(s=>s.name===name)}
+function alertCodes(body){return body.alerts.map(a=>a.code)}
 async function main(){
   const now = new Date(Date.now()-120000).toISOString();
   receipt = {
@@ -35,6 +41,10 @@ async function main(){
   assert.equal(r.body.database_read_verified,true);
   assert.equal(r.body.drive_reports_verified,true);
   assert.equal(r.body.after_cost_qualified_not_inferred,true);
+  // D3: LLM metrics are a separate dimension; an absent probe is
+  // unavailable, never a fabricated healthy value, and never gates health.
+  assert.equal(r.body.intelligence_metrics_status,'unavailable');
+  assert.equal(r.body.intelligence_inference_verified,false);
   receipt={...receipt,host:{...receipt.host,status:'unavailable'}};
   r=await status();
   assert.equal(r.code,503,'Recent signed snapshot must not mask host failure');
@@ -65,6 +75,68 @@ async function main(){
   r=await status();
   assert.equal(r.code,503,'Collector outage cannot be interpreted as success');
   assert.equal(r.body.data_health,'unavailable');
+  upstreamOk=true;
+  // Delivery 1: collection provenance, per-source reliability and alerts.
+  const attemptedAt=new Date(Date.now()-6*3600000).toISOString();
+  receipt={captured_at:now,provenance:{method:'github-actions-oidc',verified:true},
+    collection:{event:'schedule',run_id:'44002956865',run_attempt:1,
+      attempted_at:attemptedAt,coalesced:false},
+    sources:{
+      discloud_forecast:{status:'ok',reason:null,checked_at:now,freshness_seconds:900},
+      discloud_learning:{status:'ok',reason:null,checked_at:now,freshness_seconds:900},
+      postgres:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
+      drive:{status:'failed_read',reason:'incomplete_listing',checked_at:now,freshness_seconds:86400},
+      github:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
+      intelligence:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
+      intelligence_host:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
+      performance:{status:'measured_zero',reason:'no_pairs_measured',checked_at:now,freshness_seconds:3600}},
+    host:{status:'verified',forecast_status:'fresh',learning_status:'fresh'},
+    database:{status:'verified_read'},drive:{status:'verified_reports'}};
+  r=await status();
+  assert.equal(r.code,200);
+  assert.equal(r.body.collection.last_scheduled_attempt_at,attemptedAt);
+  assert.equal(r.body.collection.last_attempt_outcome,'accepted');
+  assert.equal(r.body.collection.last_successful_publication_at,now);
+  assert.equal(r.body.collection.target_cadence_seconds,600);
+  assert.equal(r.body.sources.length,10,'All tracked upstreams are reported');
+  assert.equal(sourceNamed(r.body,'drive').status,'failed_read');
+  assert.equal(sourceNamed(r.body,'drive').reason,'incomplete_listing');
+  assert.equal(sourceNamed(r.body,'drive').fresh,false);
+  assert.equal(sourceNamed(r.body,'performance').status,'measured_zero');
+  assert.ok(alertCodes(r.body).includes('source_failed:drive'),
+    'A failed source stays visible as an alert on a 200 status');
+  assert.ok(!alertCodes(r.body).includes('source_failed:performance'),
+    'A genuinely measured zero is not a failure');
+  assert.ok(!alertCodes(r.body).includes('schedule_gap'),
+    'A 6h schedule gap is below the 12h alert bar');
+  assert.equal(sourceNamed(r.body,'market_feed').status,'unknown');
+  assert.equal(r.body.bindings.evidence_receipts_ok,true);
+  assert.equal(r.body.bindings.market_feed_ok,false);
+  assert.equal(r.body.snapshot_is_latest_only,true);
+  receipt={...receipt,
+    collection:{...receipt.collection,
+      attempted_at:new Date(Date.now()-13*3600000).toISOString()},
+    captured_at:new Date(Date.now()-2*3600000).toISOString()};
+  r=await status();
+  assert.equal(r.code,503,'A 2h-old receipt is a critical collection failure');
+  assert.ok(alertCodes(r.body).includes('collection_stale'));
+  assert.ok(alertCodes(r.body).includes('schedule_gap'));
+  let d=await diagnostics();
+  assert.equal(d.code,200,'Diagnostics stays readable while failures are shown');
+  assert.equal(sourceNamed(d.body,'market_feed').status,'binding_missing');
+  assert.equal(d.body.checks.missing_bindings,true);
+  assert.equal(d.body.checks.stale_receipt,true);
+  assert.equal(d.body.checks.invalid_snapshot,false);
+  assert.deepEqual(d.body.attempts,[]);
+  receipt={...receipt,captured_at:now,
+    collection:{...receipt.collection,attempted_at:attemptedAt}};
+  d=await diagnostics();
+  assert.equal(d.code,200);
+  assert.equal(d.body.checks.stale_receipt,false);
+  assert.equal(d.body.checks.failed_collection_attempt,false);
+  upstreamOk=false;
+  d=await diagnostics();
+  assert.equal(d.code,503,'Diagnostics without a snapshot cannot invent health');
   console.log('Evidence Board source-health regressions passed');
 }
 main().catch(error=>{console.error(error);process.exitCode=1});

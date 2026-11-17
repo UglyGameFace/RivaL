@@ -252,12 +252,133 @@ assert.match(cx.opsSignals(),/Actual UP/);
 cx.state.evidence.host.recent_forward_calls={status:'read_unavailable',captured_at:at,window_hours:6,rows:[]};
 assert.match(cx.opsSignals(),/not in the latest signed receipt/);
 
+// D2: artifact identity, paper gates, lab queue, watchdog, longer history.
+cx.state.evidence.host.xmarket_scope_progress=[
+ {asset:'BTC',horizon:15,status:'shadow_issuing',stored_artifacts:2,
+  shadow_rows_24h:77,fresh_native_sources:2,expected_native_sources:2,
+  latest_shadow_at:at,latest_imported_at:at,latest_artifact_sha256_prefix:'deadbeef1234',
+  latest_trained_through:at,missing_native_sources:[],stale_native_sources:[]},
+ {asset:'ETH',horizon:5,status:'waiting_for_fit',stored_artifacts:0,
+  shadow_rows_24h:0,fresh_native_sources:1,expected_native_sources:2,
+  latest_shadow_at:null,latest_imported_at:null,
+  missing_native_sources:['kalshi'],stale_native_sources:[]}
+];
+cx.state.evidence.host.model_artifacts={status:'recorded',incumbent:{
+ family:'prospective-logistic',model_version:'prospective-logistic-persistent-v3',
+ serving_status:'serving',lineage_status:'weight_updates_observed',
+ weights_sha256_prefix:'abcdef012345',seed_sha256_prefix:'0123456789ab',
+ online_training_updates:84,sampled_forecasts:12,sampled_streams:3,
+ verified_weight_updates:2,
+ lab:{status:'recorded',sampled_streams:4,streams_with_training_updates:2,latest_checkpoint_at:at}},
+ xmarket:[{asset:'BTC',horizon:15,artifact_sha256_prefix:'deadbeef1234',
+  trained_through:at,latest_imported_at:at,stored_artifacts:2}]};
+cx.state.evidence.host.research_loop={status:'recorded',enabled:true,
+ drive_folder_ids_present:true,recent_by_status:{screened:3,discarded:1},
+ recent_submitted_to_drive:1};
+cx.state.evidence.host.paper_proof={status:'recorded',evaluated_scopes:71,
+ fresh_scopes:12,qualified_paper_scopes:0,
+ best_exact_source:{asset:'XRP',venue:'binance',quote:'USDT',horizon_minutes:15,
+  fresh:true,targets:165,days:22,eligible_quotes:160,closed_quotes:144,
+  quote_coverage:.9,qualified_paper:false,
+  checks:{future_outcomes:true,beats_baselines:true,quote_coverage:true,
+   after_cost_paper:false,valid_records:true},
+  trades:60,gain:-0.002,severe_lower_bps:-3.5,promotion_status:'held'},
+ xmarket_v1:{status:'recorded',evaluated_scopes:71,fresh_scopes:12,
+  qualified_paper_scopes:0,
+  scopes:[{asset:'BTC',horizon:15,sources_evaluated:2,fresh_valid_sources:2,
+   qualified_sources:0,min_targets:40,min_days:1,min_coverage:0,
+   failing_checks:{quote_coverage:2,after_cost_paper:2},venues:['binance','hyperliquid']}],
+  scope_handoff:{status:'recorded',fitted_scopes:5,issuing_scopes:5,
+   issuing_scopes_with_fresh_source_evaluation:3,
+   issuing_scopes_missing_supported_source_evaluation:2,scopes:[]}}};
+cx.state.evidence.host.xmarket_quotes={status:'recorded',window_start:at,
+ captured_at:at,scopes:[{asset:'BTC',horizon:15,forecast_rows:15,
+  decisive_forecast_rows:6,entry_rows:4,closed_exit_rows:3,missed_exit_rows:1,
+  elapsed_unmatched_decisive_rows:0,latest_entry_at:at,latest_exit_at:at,
+  venues:[{venue:'okx',quote:'USDT',entry_rows:4,closed_exit_rows:3,missed_exit_rows:1}]}]};
+cx.state.evidence.host.xmarket_watchdog={status:'fresh',operational_status:'degraded',
+ census_status:'recorded',scope_checked_at:at,fitted_scopes:5,issuing_scopes:4,
+ silent_scopes:1,open_silence_incidents:1,resolved_silence_incidents:2,
+ scopes:[{asset:'BTC',horizon:15,status:'issuing',incumbent_rows:10,shadow_rows:7}]};
+assert.match(cx.opsModels(),/Weight digest prefix/);
+assert.match(cx.opsModels(),/abcdef012345/);
+assert.match(cx.opsModels(),/Model Lab/);
+assert.match(cx.opsModels(),/screened · 3/);
+assert.match(cx.opsModels(),/deadbeef1234/);
+assert.match(cx.opsSignals(),/Paper-evaluation evidence/);
+assert.match(cx.opsSignals(),/0 of 71/);
+assert.match(cx.opsSignals(),/Why no scope qualified/);
+assert.match(cx.opsSignals(),/Promotion record: held/);
+assert.match(cx.opsSignals(),/observed fees, spread, slippage, funding/);
+assert.match(cx.opsXMarket(),/Digest prefixes linked per scope below/);
+assert.match(cx.opsXMarket(),/Paper evaluation by scope/);
+assert.match(cx.opsXMarket(),/Issuance watchdog/);
+assert.match(cx.opsXMarket(),/degraded/);
+assert.match(cx.opsXMarket(),/4 entries/);
+assert.match(cx.opsXMarket(),/deadbeef1234/);
+cx.state.evidence.host.recent_forward_calls={
+ status:'observed',captured_at:at,window_hours:6,rows_per_scope:3,not_trading_calls:true,
+ rows:[
+  {asset:'BTC',horizon:5,venue:'okx',quote:'USDT',
+   issued_at:new Date(Date.now()-120000).toISOString(),
+   target_opened_at:new Date(Date.now()-120000).toISOString(),
+   target_close_at:new Date(Date.now()+180000).toISOString(),settled_at:null,
+   probability_up:0.62,baseline_up:0.52,direction:'UP',status:'open',outcome_up:null,lead_seconds:300},
+  {asset:'BTC',horizon:5,venue:'okx',quote:'USDT',
+   issued_at:new Date(Date.now()-300000).toISOString(),
+   target_opened_at:new Date(Date.now()-420000).toISOString(),
+   target_close_at:new Date(Date.now()-120000).toISOString(),
+   settled_at:new Date(Date.now()-60000).toISOString(),
+   probability_up:0.58,baseline_up:0.51,direction:'UP',status:'settled',outcome_up:0,lead_seconds:180}
+ ]};
+assert.match(cx.opsSignals(),/Target opens \(5m candle\)/);
+assert.match(cx.opsSignals(),/58.0%/);
+assert.match(cx.opsSignals(),/Next-target readiness/);
+assert.match(cx.opsSignals(),/1 of 12 scopes/);
+cx.opsSigFilter('outcome','settled');
+assert.match(cx.opsSignals(),/58.0%/);
+assert.doesNotMatch(cx.opsSignals(),/62.0%/);
+cx.opsSigFilter('outcome','all');
+assert.match(cx.opsSignals(),/62.0%/);
+cx.v2scope('BTC',5);
+assert.match(document.drawer,/Drive report artifact prefix/);
+assert.match(document.drawer,/No host-imported artifact prefix published/);
+assert.match(document.drawer,/Gate failures/);
+
 assert.match(cx.opsSignals(),/Coverage is not an 80% prediction-accuracy rule/);
 assert.match(cx.opsModels(),/Are RivaL predictions improving/);
 assert.match(cx.opsXMarket(),/From market inputs to usable shadow predictions/);
 assert.match(cx.opsXMarket(),/7 rejected by offline gates/);
 assert.match(cx.opsIntelligenceView(),/Is the model actually serving/);
 assert.match(cx.opsDiagnostics(),/Diagnostics and source evidence/);
+assert.match(cx.opsDiagnostics(),/Loading collection attempts/,
+  'Diagnostics must show the reliability section while /api/diagnostics loads');
+cx.state.diagnostics={
+  collection:{last_scheduled_attempt_at:new Date(Date.now()-13*3600000).toISOString(),
+    last_successful_publication_at:new Date(Date.now()-120000).toISOString(),
+    last_attempt_at:new Date(Date.now()-60000).toISOString(),
+    last_attempt_outcome:'failed',last_attempt_reason:'receiver_http_403_authorization_required',
+    schedule_gap_seconds:46800,target_cadence_seconds:600},
+  sources:[
+    {name:'discloud_forecast',status:'ok',reason:null,last_success_at:new Date(Date.now()-120000).toISOString(),last_error_at:null,consecutive_failures:0,freshness_seconds:900,fresh:true},
+    {name:'drive',status:'failed_read',reason:'incomplete_listing',last_success_at:null,last_error_at:new Date(Date.now()-60000).toISOString(),consecutive_failures:3,freshness_seconds:86400,fresh:false},
+    {name:'performance',status:'measured_zero',reason:'no_pairs_measured',last_success_at:new Date(Date.now()-120000).toISOString(),last_error_at:null,consecutive_failures:0,freshness_seconds:3600,fresh:true}],
+  alerts:[{code:'source_failed:drive',level:'warning',message:'Source drive is failed_read',since:new Date(Date.now()-60000).toISOString()}],
+  incidents:{total_attempts:5,failed_attempts:2,coalesced_attempts:1,accepted_attempts:2,sources_failing:1,sources_tracked:3},
+  attempts:[{run_id:'123456792',event:'schedule',attempted_at:new Date(Date.now()-60000).toISOString(),received_at:new Date(Date.now()-60000).toISOString(),outcome:'failed',reason:'receiver_http_403_authorization_required'}]};
+assert.match(cx.opsDiagnostics(),/Collection reliability/);
+assert.match(cx.opsDiagnostics(),/Last scheduled attempt/);
+assert.match(cx.opsDiagnostics(),/Last successful signed publication/);
+assert.match(cx.opsDiagnostics(),/receiver_http_403_authorization_required/,
+  'The last failure reason must be visible in Diagnostics');
+assert.match(cx.opsDiagnostics(),/drive/);
+assert.match(cx.opsDiagnostics(),/incomplete_listing/);
+assert.match(cx.opsDiagnostics(),/3 consecutive failures/);
+assert.match(cx.opsDiagnostics(),/OK · zero measured/,
+  'A genuinely measured zero must not read as a failure');
+assert.match(cx.opsDiagnostics(),/Scheduled collection is stale/,
+  'Historical fallback data must be labelled stale, never current');
+assert.match(cx.opsDiagnostics(),/2 failed · 1 coalesced · 1 sources failing/);
 assert.match(cx.opsMore(),/Everything else in RivaL/);
 assert.match(cx.opsSourceBanner(),/production receipt/);
 cx.ops.perpsStatus='ok';
@@ -317,6 +438,8 @@ assert.match(cx.opsModels(),/prospective-logistic-persistent-v3/);
 assert.match(cx.opsModelCard(cx.state.evidence.performance.scopes[0]),/prospective-logistic-persistent-v3/);
 assert.match(cx.opsCommand(),/Which actual model is scored/);
 assert.match(cx.opsCommand(),/XMarket challengers are separate/);
+// Without a published artifact identity the board must say so plainly.
+delete cx.state.evidence.host.model_artifacts;
 assert.match(cx.opsXMarket(),/no signed import-artifact-to-served-model identity/);
 cx.opsOpenScore('BTC',15);
 assert.match(document.drawer,/Scored model version/);
@@ -369,6 +492,112 @@ assert.doesNotMatch(cx.opsCommand(),/Latest signed host read failed/);
 cx.state.evidence.host={...oldHost.host};
 cx.state.evidence.database={...oldHost.database};
 assert.equal(cx.opsHomeObservation().historical,false,'A verified current host read must supersede historical fallback');
+
+// D3: market-specific prediction evidence — implied probability vs the
+// signed RivaL forecast, rejected quotes, DraftKings disconnected.
+cx.ops.perpsStatus='ok';
+cx.ops.perps={
+ status:'ok',generated_at:Date.now(),
+ venues:[{id:'okx',name:'OKX',status:'ok',latency_ms:25},{id:'binance',name:'Binance',status:'blocked',http_status:403}],
+ assets:[{asset:'BTC',price:64000,change_24h_pct:-3.5,venues_used:8,dispersion_bps:6.1,
+  volume_24h_usd:2000000000,open_interest_usd:500000000,
+  venues:[{venue:'okx',status:'ok',mid:64000,bid:63999,ask:64001,spread_bps:.15,funding:-.00005,
+   open_interest_usd:450000000,quote_age_ms:1518,quote_kind:'indicative'}]},
+  {asset:'ETH',price:2020,change_24h_pct:2,venues_used:7},
+  {asset:'SOL',price:130,change_24h_pct:-2,venues_used:5},
+  {asset:'XRP',price:1.4,change_24h_pct:0,venues_used:3}]
+};
+cx.ops.predictions.BTC={
+ asset:'BTC',
+ draftkings:{status:'disconnected',reason:'no_authorized_verified_source',contracts:[]},
+ polymarket:{status:'ok',generated_at:Date.now(),contracts:[
+  {asset:'BTC',horizon:15,title:'BTC 15m',status:'ok',closes:Date.now()+900000,
+   accepting_orders:true,up_ask:.64,down_ask:.37,up_bid:.60,down_bid:.36,
+   up_ask_depth:100,down_ask_depth:200,book_age_ms:50,
+   market_up_prob:.62,quote_state:'observed',usable:true,
+   resolution_rule:null,resolution_rule_source:'not_carried_by_feed',
+   settlement:null,model_linkage:'proximity_only_no_contract_id'}
+ ]},
+ kalshi:{status:'ok',generated_at:Date.now(),quote_source:'kalshi_market_summary',
+  markets:[{title:'BTC threshold',ticker:'BTCX',yes_bid:.48,yes_ask:.54,last:.53,
+   volume_24h:500,oi:1200,close_time:Date.now()+300000,
+   yes_implied_prob:.51,quote_kind:'market_summary_not_executable',executable:false,
+   resolution_rule:null,model_linkage:'proximity_only_no_contract_id'}],open_count:1}
+};
+const d3markets=cx.opsMarkets();
+assert.match(d3markets,/Market-implied UP/);
+assert.match(d3markets,/64.0%/,'Signed forecast probability must sit beside the market-implied probability');
+assert.match(d3markets,/Model minus market/);
+assert.match(d3markets,/\+2\.0 pts/);
+assert.match(d3markets,/Resolution rule: not carried/);
+assert.match(d3markets,/not a verified contract link/);
+assert.match(d3markets,/DraftKings Predictions is disconnected/);
+assert.match(d3markets,/Source contribution and gaps/);
+assert.match(d3markets,/Quote age/);
+assert.match(d3markets,/1,518 ms/);
+assert.match(d3markets,/Bid \/ Ask/);
+assert.match(d3markets,/Open interest/);
+assert.match(d3markets,/YES implied/);
+assert.match(d3markets,/market-summary fields, not an independently verified executable order book/);
+assert.match(d3markets,/0 qualified of 12 evaluated/);
+assert.doesNotMatch(d3markets,/No quote.*0\.0|0\.0¢/,'Missing quotes must never render as zero prices');
+// Expired Polymarket contracts are rejected as baselines, not plotted.
+cx.ops.predictions.BTC.polymarket.contracts[0].quote_state='expired';
+cx.ops.predictions.BTC.polymarket.contracts[0].usable=false;
+cx.ops.predictions.BTC.polymarket.contracts[0].closes=Date.now()-60000;
+assert.match(cx.opsMarkets(),/Expired/);
+assert.match(cx.opsMarkets(),/contract not usable as a baseline/);
+
+// D3: authenticated LFM3 metrics — observed values shown, absent stays unmeasured.
+cx.state.evidence.intelligence_metrics={
+ status:'observed',probe:'llm_console_v1_status',captured_at:new Date().toISOString(),
+ model:'LiquidAI/LFM3-1.7B-GGUF:Q4_K_M',ready:true,inference_verified:false,
+ source_sha:'a'.repeat(40),repair_state:'healthy',repair_count:2,
+ runtime_context_tokens:8192,
+ memory:{current_mb:1190,limit_mb:4088,peak_mb:1300,oom_kills:0},
+ status_latency_ms:42.5,status_http:200,tokens_per_second:null};
+assert.match(cx.opsIntelligenceView(),/LiquidAI\/LFM3-1\.7B-GGUF:Q4_K_M/);
+assert.match(cx.opsIntelligenceView(),/29\.1%/);
+assert.match(cx.opsIntelligenceView(),/OOM kills 0/);
+assert.match(cx.opsIntelligenceView(),/43 ms/);
+assert.match(cx.opsIntelligenceView(),/Not verified/,'A status probe must never claim verified generation');
+delete cx.state.evidence.intelligence_metrics;
+assert.match(cx.opsIntelligenceView(),/Unmeasured/);
+assert.match(cx.opsIntelligenceView(),/not emitted by the host yet/);
+
+// D3: Diagnostics Trends — version/policy gated history with filters.
+const trendPoint=(at,policy,paired)=>({run_id:'t'+at,schema_version:1,captured_at:at,
+ host:{status:'verified',forecast_issued:100,learning_settled:99,xmarket_shadow_rows:4000},
+ database:{status:'verified_read',qualified_paper_scopes:0,evaluated_paper_scopes:12},
+ drive:{status:'verified_reports',accepted:1,rejected:0,blocked:2},
+ performance:{model:'prospective-logistic-persistent-v3',sampling_policy:policy,
+  scopes:[{asset:'BTC',horizon:5,paired_outcomes:paired,model_brier:.23,baseline_brier:.25,unique_target_windows:50}]}});
+const nowIso=new Date().toISOString();
+const hourAgo=new Date(Date.now()-3600000).toISOString();
+const twoHoursAgo=new Date(Date.now()-7200000).toISOString();
+cx.state.history={source:'signed-github-actions',points:[
+ trendPoint(twoHoursAgo,'per-asset-horizon-close-v3',140),
+ trendPoint(hourAgo,'per-asset-horizon-close-v3',150),
+ trendPoint(nowIso,'per-asset-horizon-v2',150)]};
+cx.ops.diag='Trends';
+const trends=cx.opsDiagnostics();
+assert.match(trends,/History across signed receipts/);
+assert.match(trends,/Qualification progress/);
+assert.match(trends,/Mixed paired-scoring sampling policies/);
+assert.match(trends,/From date/);
+assert.match(trends,/150 paired outcomes of 150 required/);
+assert.match(trends,/80% matched quote coverage/);
+assert.match(trends,/Not measured per scope/);
+assert.match(trends,/Retention gap/);
+cx.state.history.points[2].performance.sampling_policy='per-asset-horizon-close-v3';
+assert.doesNotMatch(cx.opsDiagnostics(),/Mixed paired-scoring sampling policies/);
+cx.state.history.points[2].schema_version=2;
+assert.match(cx.opsDiagnostics(),/Mixed receipt schema versions/);
+cx.state.history.points[2].schema_version=1;
+cx.ops.trend.asset='ETH';
+assert.match(cx.opsDiagnostics(),/No retained history matches these filters/);
+cx.ops.trend.asset='';
+assert.match(cx.opsDiagnostics(),/History across signed receipts/);
 
 console.log('RivaL operations dashboard UI regressions passed');
 

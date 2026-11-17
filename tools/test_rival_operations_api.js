@@ -25,6 +25,7 @@ const market={
       spread_median_bps:0.15,vol24_usd_total:10000000000,oi_usd_total:450000000,
       api_token:'secret_market_field',
       rows:[{venue:'okx',status:'ok',bid:63999,ask:64001,mid:64000,funding:0.0001,
+        spread_bps:0.15,oi_usd:450000000,latency_ms:1518,
         private_data:'secret_market_field'}]}}
 };
 const poly={
@@ -75,6 +76,11 @@ async function main(){
   assert.equal(d.assets[0].price,64000);
   assert.equal(d.venues[1].status,'blocked');
   assert.equal(d.assets[1].price,null,'Missing quotes are null, not zero');
+  // D3: per-venue quote age is the source age (upstream calls it latency_ms),
+  // never a fabricated zero; receipt-backed quotes are labelled as such.
+  assert.equal(d.assets[0].venues[0].quote_age_ms,1518);
+  assert.equal(d.assets[0].venues[0].quote_kind,'indicative');
+  assert.equal(d.assets[0].venues[0].open_interest_usd,450000000);
   assert.equal(calls.length,1);
   assert.equal(calls[0].pathname,'/api/perps');
   assert.ok(!JSON.stringify(d).includes('secret_market_field'),'Only allowlisted public fields may be exposed');
@@ -88,7 +94,24 @@ async function main(){
   assert.equal(d.polymarket.contracts.length,1,'No other asset may leak');
   assert.equal(d.polymarket.contracts[0].up_ask,.52);
   assert.equal(d.polymarket.contracts[0].down_ask,null,'No ask stays unknown');
+  // D3: market-implied probability is the carried Up-book mid only; a
+  // missing side makes the contract unusable as a baseline, never zero.
+  assert.equal(d.polymarket.contracts[0].market_up_prob,.505);
+  assert.equal(d.polymarket.contracts[0].quote_state,'missing_side');
+  assert.equal(d.polymarket.contracts[0].usable,false);
+  assert.equal(d.polymarket.contracts[0].resolution_rule,null);
+  assert.equal(d.polymarket.contracts[0].resolution_rule_source,'not_carried_by_feed');
+  assert.equal(d.polymarket.contracts[0].model_linkage,'proximity_only_no_contract_id');
   assert.equal(d.kalshi.markets[0].yes_ask,.54);
+  // D3: Kalshi summary fields are never executable book quotes.
+  assert.equal(d.kalshi.markets[0].yes_implied_prob,.5);
+  assert.equal(d.kalshi.markets[0].quote_kind,'market_summary_not_executable');
+  assert.equal(d.kalshi.markets[0].executable,false);
+  assert.equal(d.kalshi.markets[0].resolution_rule,null);
+  // D3: DraftKings stays explicitly disconnected without a verified source.
+  assert.equal(d.draftkings.status,'disconnected');
+  assert.equal(d.draftkings.reason,'no_authorized_verified_source');
+  assert.deepEqual(d.draftkings.contracts,[]);
   assert.equal(d.kalshi.quote_source,'kalshi_market_summary','Do not pretend summary quote is executable book');
   assert.ok(!JSON.stringify(d).includes('secret_market_field'));
   assert.ok(!JSON.stringify(d).includes('private_unwanted_field'));

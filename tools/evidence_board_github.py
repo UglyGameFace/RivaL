@@ -14,6 +14,17 @@ REPO = "UglyGameFace/RivaL"
 INTELLIGENCE_REPO = "UglyGameFace/RivaL-Intelligence"
 API_ROOT = "https://api.github.com/repos/" + REPO
 PINNED_PRS = (447, 463, 526, 529, 531, 532, 533, 534, 536, 538, 542, 543)
+
+# Signed-receipt budget (Delivery 4): the collector rejects payloads over
+# 80,000 bytes, so the GitHub sections are capped by count. RivaL keeps
+# every pinned PR plus the newest others to 20 PRs / 12 runs; the
+# Intelligence mirror keeps 8 PRs / 8 runs (the dashboard renders at most
+# 4 Intelligence runs). Counts, not field widths, are trimmed: titles,
+# SHAs and run names keep their full allowlisted lengths.
+RECEIPT_PRS_MAX = 20
+RECEIPT_RUNS_MAX = 12
+INTELLIGENCE_RECEIPT_PRS_MAX = 8
+INTELLIGENCE_RECEIPT_RUNS_MAX = 8
 _SHA = re.compile(r"[a-fA-F0-9]{40}\Z")
 
 
@@ -97,7 +108,16 @@ def safe_run(value: dict, *, repository: str = REPO) -> dict | None:
 
 
 def read_github_snapshot(token: str) -> dict:
-    """Read only RivaL public repo. Failure means unavailable, never an empty zero."""
+    """Read only RivaL public repo. Failure means unavailable, never an empty zero.
+
+    The signed receipt is capped at 80KB by the collector, so the GitHub
+    section is budgeted, not open-ended (Delivery 4 measured a worst-case
+    realistic receipt at ~107KB with the old 40-PR / 45-run caps). Every
+    pinned PR is kept -- the audit trail the board links model work to --
+    plus the newest other PRs up to 20 total, and the 12 newest runs. The
+    dashboard renders at most 6 runs in the jobs list; GitHub itself
+    remains the full archive.
+    """
     if not token:
         return {"status": "unavailable", "fetched_at": None, "prs": [], "runs": []}
     pulls = _github_json(
@@ -129,11 +149,16 @@ def read_github_snapshot(token: str) -> dict:
     ]
     if not by_number:
         raise ValueError("github_pulls_empty")
+    pinned = [by_number[n] for n in PINNED_PRS if n in by_number]
+    newest = [p for p in sorted(
+        by_number.values(), key=lambda x: x["number"], reverse=True)
+        if p["number"] not in set(PINNED_PRS)
+    ][: max(0, RECEIPT_PRS_MAX - len(pinned))]
     return {
         "status": "verified",
         "fetched_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "prs": sorted(by_number.values(), key=lambda x: x["number"], reverse=True)[:40],
-        "runs": clean_runs[:45],
+        "prs": sorted(pinned + newest, key=lambda x: x["number"], reverse=True),
+        "runs": clean_runs[:RECEIPT_RUNS_MAX],
     }
 
 
@@ -154,9 +179,9 @@ def read_public_intelligence(token: str) -> dict:
     try:
         commit = _github_json("/commits/main", token, limit=250_000,
                               repository=INTELLIGENCE_REPO)
-        pulls = _github_json("/pulls?state=all&per_page=12&sort=updated",
+        pulls = _github_json("/pulls?state=all&per_page=8&sort=updated",
                              token, limit=250_000, repository=INTELLIGENCE_REPO)
-        actions = _github_json("/actions/runs?per_page=15", token,
+        actions = _github_json("/actions/runs?per_page=8", token,
                                limit=400_000, repository=INTELLIGENCE_REPO)
         if not isinstance(commit, dict) or not isinstance(pulls, list) or not isinstance(actions, dict):
             raise TypeError("intelligence_github_schema_invalid")
@@ -166,11 +191,11 @@ def read_public_intelligence(token: str) -> dict:
         cleaned_prs = [
             p for x in pulls if isinstance(x, dict)
             if (p := safe_pr(x, repository=INTELLIGENCE_REPO)) is not None
-        ][:12]
+        ][:INTELLIGENCE_RECEIPT_PRS_MAX]
         cleaned_runs = [
             r for x in actions["workflow_runs"] if isinstance(x, dict)
             if (r := safe_run(x, repository=INTELLIGENCE_REPO)) is not None
-        ][:15]
+        ][:INTELLIGENCE_RECEIPT_RUNS_MAX]
         return {
             "status": "verified", "repository": INTELLIGENCE_REPO,
             "fetched_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),

@@ -35,7 +35,7 @@
 | P3 | Next-target Discord card lifecycle | Truthful configured-panel count, pre-close immutable advance issuance and confirmed message delivery/edit, no invented signals |
 | P4 | Overdue settlements and PostgreSQL contention | Real source-candle diagnosis, genuine bounded recovery and reproducible deadlock fix; forward issuance preserved |
 | P5 | Autonomous candidate learning and rollback | Auditable strict selection/demotion, no holdout mining, restart and permission proof, no real-money orders |
-| P6 | Evidence Board, Binance/Hyperliquid/OKX and other markets | Real model names, input/quote completeness and source-specific Polymarket/Kalshi contracts, explicit abstention |
+| P6 | Evidence Board, Binance/Hyperliquid/OKX and other markets | Real model names, input/quote completeness and source-specific Polymarket/Kalshi contracts, explicit abstention. Evidence Board D1–D4 complete on local branch `evidence-board/d4-final` (2026-11-17, unmerged): reliability, model/forecast, market/intel, final acceptance; combined receipt re-budgeted to fit the 80KB collector cap (worst case 73,212 B). Still external: Felix taps (push, PR, merge, scheduler patch, Cloudflare deploy/verify), live mobile/desktop render check, schedule fix #554. |
 
 ## Continuous execution protocol
 

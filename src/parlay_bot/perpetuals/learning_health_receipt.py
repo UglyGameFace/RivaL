@@ -641,6 +641,81 @@ def _kucoin_gap_recovery_progress(store, now: datetime) -> dict:
         }
 
 
+def _cycle_diagnostics_progress(store, now: datetime) -> dict:
+    """Forward-cycle stream diagnostics: is issuance stream-limited?
+
+    The deciding evidence for the 33.6-vs-40 paths/cycle question is the
+    mean selected_streams over 24h plus the latest cycle row. Counts only,
+    never raw rows. A missing or empty table is not_initialized, never a
+    zero — zero selected streams is a real (bad) reading, not an absence.
+    """
+    name = "perp_forward_cycle_diagnostics"
+    try:
+        with store.connect() as conn:
+            if store.database.backend == "postgres":
+                exists = conn.execute(
+                    "SELECT to_regclass(?) AS name", (name,),
+                ).fetchone()["name"]
+            else:
+                row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                    (name,),
+                ).fetchone()
+                exists = row["name"] if row else None
+            if not exists:
+                return {"status": "not_initialized", "read_only": True}
+            window = conn.execute(
+                """SELECT COUNT(*) AS cycles,
+                          AVG(selected_streams) AS mean_selected_streams,
+                          AVG(target_expired) AS mean_target_expired,
+                          AVG(duplicate_forecasts) AS mean_duplicate_forecasts,
+                          AVG(insufficient_training) AS mean_insufficient_training,
+                          AVG(stale_last_candle) AS mean_stale_last_candle,
+                          AVG(short_history) AS mean_short_history
+                   FROM perp_forward_cycle_diagnostics
+                   WHERE checked_at>=? AND checked_at<=?""",
+                ((now-timedelta(days=1)).isoformat(), now.isoformat()),
+            ).fetchone()
+            latest = conn.execute(
+                """SELECT checked_at,selected_streams,target_expired,
+                          duplicate_forecasts,insufficient_training,
+                          stale_last_candle,short_history,issued_forecasts
+                   FROM perp_forward_cycle_diagnostics
+                   ORDER BY checked_at DESC LIMIT 1"""
+            ).fetchone()
+        cycles = int(window["cycles"] or 0)
+        if cycles == 0 or latest is None:
+            return {"status": "not_initialized", "read_only": True}
+        return {
+            "status": "recorded",
+            "cycles_24h": cycles,
+            "latest_checked_at": latest["checked_at"],
+            "mean_selected_streams_24h": round(
+                float(window["mean_selected_streams"]), 2),
+            "mean_target_expired_24h": round(
+                float(window["mean_target_expired"]), 2),
+            "mean_duplicate_forecasts_24h": round(
+                float(window["mean_duplicate_forecasts"]), 2),
+            "mean_insufficient_training_24h": round(
+                float(window["mean_insufficient_training"]), 2),
+            "mean_stale_last_candle_24h": round(
+                float(window["mean_stale_last_candle"]), 2),
+            "mean_short_history_24h": round(
+                float(window["mean_short_history"]), 2),
+            "latest_selected_streams": int(latest["selected_streams"]),
+            "latest_target_expired": int(latest["target_expired"]),
+            "latest_duplicate_forecasts": int(latest["duplicate_forecasts"]),
+            "latest_insufficient_training": int(
+                latest["insufficient_training"]),
+            "latest_stale_last_candle": int(latest["stale_last_candle"]),
+            "latest_short_history": int(latest["short_history"]),
+            "latest_issued_forecasts": int(latest["issued_forecasts"]),
+            "read_only": True,
+        }
+    except Exception:  # noqa: BLE001 - optional read must not hide healthy cycles
+        return {"status": "read_unavailable", "read_only": True}
+
+
 def _path_target_progress(store, now: datetime) -> dict:
     """Bounded read-only check of independently scored path target heads.
 
@@ -737,6 +812,7 @@ def _path_target_progress(store, now: datetime) -> dict:
                                   {"status": "no_due_pending_paths",
                                    "sampled_unique_paths": 0, "read_only": True}),
             "kucoin_gap_recovery": _kucoin_gap_recovery_progress(store, now),
+            "cycle_diagnostics": _cycle_diagnostics_progress(store, now),
             "counts_are_independent_targets": False,
             "read_only": True,
             "does_not_prove_prediction_edge": True,

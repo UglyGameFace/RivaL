@@ -118,6 +118,46 @@ class ReceiptTests(unittest.TestCase):
         self.assertIsNone(
             unknown["pending_backlog"]["unique_due_targets_14d"])
 
+    def test_cycle_diagnostics_publishes_24h_means_and_latest_row(self) -> None:
+        diag = {
+            "status": "recorded", "cycles_24h": 288,
+            "mean_selected_streams_24h": 33.6,
+            "mean_target_expired_24h": 0.5,
+            "mean_duplicate_forecasts_24h": 1.0,
+            "mean_insufficient_training_24h": 1.5,
+            "mean_stale_last_candle_24h": 0.5,
+            "mean_short_history_24h": 1.0,
+            "latest_selected_streams": 34, "latest_target_expired": 0,
+            "latest_duplicate_forecasts": 0, "latest_insufficient_training": 3,
+            "latest_stale_last_candle": 0, "latest_short_history": 2,
+            "latest_issued_forecasts": 96, "contract": "PRIVATE",
+        }
+        host, _ = summarize_host({"path_targets": {"cycle_diagnostics": diag}})
+        self.assertEqual(host["cycle_diagnostics"], {
+            "status": "recorded", "cycles_24h": 288,
+            "mean_selected_streams_24h": 33.6,
+            "mean_target_expired_24h": 0.5,
+            "mean_duplicate_forecasts_24h": 1.0,
+            "mean_insufficient_training_24h": 1.5,
+            "mean_stale_last_candle_24h": 0.5,
+            "mean_short_history_24h": 1.0,
+            "latest_selected_streams": 34, "latest_target_expired": 0,
+            "latest_duplicate_forecasts": 0, "latest_insufficient_training": 3,
+            "latest_stale_last_candle": 0, "latest_short_history": 2,
+            "latest_issued_forecasts": 96,
+        })
+        self.assertNotIn("PRIVATE", str(host["cycle_diagnostics"]))
+        bad, _ = summarize_host({"path_targets": {"cycle_diagnostics": {
+            **diag, "mean_selected_streams_24h": -1,
+        }}})
+        self.assertEqual(bad["cycle_diagnostics"]["status"], "unavailable")
+        missing, _ = summarize_host({"path_targets": {"cycle_diagnostics": {
+            **diag, "latest_selected_streams": None,
+        }}})
+        self.assertEqual(missing["cycle_diagnostics"]["status"], "unavailable")
+        unknown, _ = summarize_host(None)
+        self.assertIsNone(unknown["cycle_diagnostics"]["cycles_24h"])
+
     def test_live_call_delivery_shows_exact_opt_in_and_model_without_ids(self) -> None:
         host, _ = summarize_host({"advance_forecasts": {
             "channel_cards": {"status": "recorded", "active": 0,

@@ -83,6 +83,14 @@ async function main(){
    attempted_exact_gaps_14d:1,bulk_upstream_empty_assets:1,contract:'PRIVATE'},
   pending_backlog:{status:'recorded',pending_paths_14d:240,
    due_pending_paths_14d:40,unique_due_targets_14d:20,contract:'PRIVATE'},
+  cycle_diagnostics:{status:'recorded',cycles_24h:288,
+   mean_selected_streams_24h:33.6,latest_selected_streams:34,
+   mean_target_expired_24h:0.5,latest_target_expired:0,
+   mean_duplicate_forecasts_24h:1,latest_duplicate_forecasts:0,
+   mean_insufficient_training_24h:1.5,latest_insufficient_training:3,
+   mean_stale_last_candle_24h:0.5,latest_stale_last_candle:0,
+   mean_short_history_24h:1,latest_short_history:2,
+   latest_issued_forecasts:96,contract:'PRIVATE'},
   xmarket_exports:{recent_completed_days_pending:4,eligible_before:now,
    published:[{asset:'BTC',exported_days:1,latest_exported_day:'2026-11-12',drive_file_id:'PRIVATE'}],
    pending_by_asset:[{asset:'ETH',days:1}],password:'PRIVATE'}},
@@ -162,6 +170,14 @@ async function main(){
  assert.equal(receipt.host.pending_backlog.due_pending_paths_14d,40);
  assert.equal(receipt.host.pending_backlog.unique_due_targets_14d,20);
  assert.ok(!Object.hasOwn(receipt.host.pending_backlog,'contract'));
+ assert.equal(receipt.host.cycle_diagnostics.status,'recorded');
+ assert.equal(receipt.host.cycle_diagnostics.cycles_24h,288);
+ assert.equal(receipt.host.cycle_diagnostics.mean_selected_streams_24h,33.6);
+ assert.equal(receipt.host.cycle_diagnostics.latest_selected_streams,34);
+ assert.equal(receipt.host.cycle_diagnostics.mean_insufficient_training_24h,1.5);
+ assert.equal(receipt.host.cycle_diagnostics.latest_insufficient_training,3);
+ assert.equal(receipt.host.cycle_diagnostics.latest_issued_forecasts,96);
+ assert.ok(!Object.hasOwn(receipt.host.cycle_diagnostics,'contract'));
  assert.equal(receipt.host.xmarket_exports.published[0].latest_exported_day,'2026-11-12');
  assert.equal(receipt.drive.reports[0].reason,'insufficient_exact_pairs');
  assert.equal(receipt.drive.reports[0].model_version,null,

@@ -707,6 +707,22 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
             "status": "unavailable", "pending_paths_14d": None,
             "due_pending_paths_14d": None, "unique_due_targets_14d": None,
         },
+        "cycle_diagnostics": {
+            "status": "unavailable", "cycles_24h": None,
+            "mean_selected_streams_24h": None,
+            "latest_selected_streams": None,
+            "mean_target_expired_24h": None,
+            "latest_target_expired": None,
+            "mean_duplicate_forecasts_24h": None,
+            "latest_duplicate_forecasts": None,
+            "mean_insufficient_training_24h": None,
+            "latest_insufficient_training": None,
+            "mean_stale_last_candle_24h": None,
+            "latest_stale_last_candle": None,
+            "mean_short_history_24h": None,
+            "latest_short_history": None,
+            "latest_issued_forecasts": None,
+        },
         "live_call_delivery": {
             "status": "unavailable", "active_channels": None,
             "recent_accepted_delivery_rows": None,
@@ -803,6 +819,39 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
                 "due_pending_paths_14d": due,
                 "unique_due_targets_14d": unique,
             }
+
+    # Forward-cycle stream diagnostics answer whether issuance is
+    # stream-limited: 24h means plus the latest cycle row. Counts only,
+    # never raw rows. Unknown stays unknown: any missing, negative, or
+    # non-finite value leaves the block unavailable instead of publishing
+    # a zero or a guess.
+    if isinstance(paths, dict):
+        diag = paths.get("cycle_diagnostics")
+        if isinstance(diag, dict) and diag.get("status") == "recorded":
+            mean_keys = ("mean_selected_streams_24h",
+                         "mean_target_expired_24h",
+                         "mean_duplicate_forecasts_24h",
+                         "mean_insufficient_training_24h",
+                         "mean_stale_last_candle_24h",
+                         "mean_short_history_24h")
+            int_keys = ("latest_selected_streams", "latest_target_expired",
+                        "latest_duplicate_forecasts",
+                        "latest_insufficient_training",
+                        "latest_stale_last_candle", "latest_short_history",
+                        "latest_issued_forecasts")
+            cycles = _nonnegative(diag.get("cycles_24h"))
+            means = {}
+            for key in mean_keys:
+                value = _finite_number(diag.get(key), limit=10_000_000)
+                means[key] = value if value is not None and value >= 0 else None
+            latest = {key: _nonnegative(diag.get(key)) for key in int_keys}
+            if (cycles is not None
+                    and all(value is not None for value in means.values())
+                    and all(value is not None for value in latest.values())):
+                host["cycle_diagnostics"] = {
+                    "status": "recorded", "cycles_24h": cycles,
+                    **means, **latest,
+                }
 
     # The channel opt-in and API-accepted message receipts are observable,
     # unlike whether a Discord user actually saw the call. Never publish IDs.

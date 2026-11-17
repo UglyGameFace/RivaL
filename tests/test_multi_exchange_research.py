@@ -82,6 +82,63 @@ def settle_anchor(store, now, target, *, outcome=1):
         )
 
 
+def settle_venue(store, now, target, *, venue, outcome=1):
+    with store.connect() as conn:
+        conn.execute(
+            """UPDATE perp_forward_audit
+               SET outcome_up=?,settled_at=?,model_brier=?,baseline_brier=?
+               WHERE venue=? AND target_opened_at=?""",
+            (outcome, (now+timedelta(minutes=8)).isoformat(),
+             (0.62-outcome)**2, (.5-outcome)**2, venue,
+             target.isoformat()),
+        )
+
+
+def test_report_splits_quote_coverage_by_reference_venue(tmp_path):
+    store = SQLiteHotStore(tmp_path / "split.sqlite")
+    now = datetime.now(UTC).replace(microsecond=0)
+    a = MultiExchangeResearch(store)
+    try:
+        first = seed(store, now, venues=("hyperliquid", "binance", "okx"))
+        # No issued rows yet: the split exists and is empty, not missing.
+        assert a.report(asset="BTC", horizon_minutes=5, now=now)[
+            "quote_coverage_by_reference_venue"] == {}
+        assert a.issue(now=now) == 1
+        # Second target without hyperliquid: okx becomes the reference venue.
+        later = now + timedelta(minutes=10)
+        second = seed(store, later, venues=("okx", "bitget", "gate"),
+                      target=later + timedelta(minutes=2))
+        assert a.issue(now=later) == 1
+        with store.connect() as conn:
+            refs = [r["reference_venue"] for r in conn.execute(
+                "SELECT reference_venue FROM perp_multi_forward "
+                "ORDER BY target_opened_at").fetchall()]
+        assert refs == ["hyperliquid", "okx"]
+        # Only the hyperliquid-referenced target ever sees a book quote.
+        entry = now + timedelta(seconds=20)
+        exit_time = first + timedelta(minutes=5, seconds=20)
+        assert a.observe(book(entry), now=entry)["opened"] == 1
+        assert a.observe(book(exit_time, bid=101, ask=101.1),
+                         now=exit_time)["closed"] == 1
+        settle_anchor(store, now, first)
+        settle_venue(store, later, second, venue="okx")
+        assert a.settle(now=later + timedelta(minutes=9)) == 2
+        proof = a.report(asset="BTC", horizon_minutes=5,
+                         now=later + timedelta(minutes=9))
+        assert proof["settled"] == 2
+        assert proof["quote_pairs"] == 1
+        assert proof["quote_coverage_by_reference_venue"] == {
+            "hyperliquid": {"settled": 1, "paired": 1, "coverage": 1.0},
+            "okx": {"settled": 1, "paired": 0, "coverage": 0.0},
+        }
+        # The split is a partition of the headline numbers, not new data.
+        split = proof["quote_coverage_by_reference_venue"]
+        assert sum(v["settled"] for v in split.values()) == proof["settled"]
+        assert sum(v["paired"] for v in split.values()) == proof["quote_pairs"]
+    finally:
+        store.close()
+
+
 def test_all_ten_actual_source_forecasts_fuse_into_one_frozen_prediction(tmp_path):
     store = SQLiteHotStore(tmp_path / "ten.sqlite")
     now = datetime.now(UTC).replace(microsecond=0)

@@ -544,6 +544,21 @@ class MultiExchangeResearch:
                      AND e.settled_at IS NOT NULL""",
                 (asset,horizon_minutes,start),
             ).fetchone()
+            split_rows = conn.execute(
+                """SELECT e.reference_venue AS venue,
+                          COUNT(*) AS settled,
+                          SUM(CASE WHEN q.state='EXIT_QUOTED' THEN 1 ELSE 0 END)
+                              AS paired
+                   FROM perp_multi_forward AS e
+                   LEFT JOIN perp_multi_quote_shadow AS q
+                     ON q.asset=e.asset AND q.horizon_minutes=e.horizon_minutes
+                    AND q.target_opened_at=e.target_opened_at
+                   WHERE e.asset=? AND e.horizon_minutes=? AND e.issued_at>=?
+                     AND e.settled_at IS NOT NULL AND e.outcome_up IN (0,1)
+                   GROUP BY e.reference_venue
+                   ORDER BY e.reference_venue""",
+                (asset, horizon_minutes, start),
+            ).fetchall()
             daily_rows = conn.execute(
                 f"""SELECT substr(e.target_opened_at,1,10) AS day,
                           COUNT(*) AS n,
@@ -628,6 +643,22 @@ class MultiExchangeResearch:
                 ),
             }
         coverage = paired/n if n else 0.0
+        # Diagnostic only: the same settled/paired counts, split by the
+        # reference venue that supplied the outcome. The split is a
+        # partition of the headline numbers (sums equal settled/paired),
+        # so a venue that can never earn a quote — no book adapter, or a
+        # reference chosen outside SOURCE_QUOTE_CURRENCIES — shows up as
+        # paired 0 / coverage 0.0 instead of hiding inside the aggregate.
+        # No gate reads this split; thresholds are untouched.
+        coverage_by_reference_venue = {
+            str(row["venue"]): {
+                "settled": int(row["settled"]),
+                "paired": int(row["paired"] or 0),
+                "coverage": (int(row["paired"] or 0) / int(row["settled"])
+                             if int(row["settled"]) else 0.0),
+            }
+            for row in split_rows
+        }
         severe = cost_results.get("severe", {})
         severe_daily = daily_stats.get("severe", {})
         incumbent_outperformed = (
@@ -667,6 +698,7 @@ class MultiExchangeResearch:
             "quote_pairs":paired,"quote_missed":int(quotes["missed"] or 0),
             "quote_entries":int(quotes["n"] or 0),
             "quote_coverage": coverage,
+            "quote_coverage_by_reference_venue": coverage_by_reference_venue,
             "after_cost":cost_results,
             "calibration":calibration,
             "daily_stress": daily_stats,

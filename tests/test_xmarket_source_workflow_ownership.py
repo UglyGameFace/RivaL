@@ -61,4 +61,7 @@ def test_verified_four_asset_train_only_pass_keeps_frozen_holdouts_and_no_writes
     assert "--publish" not in source
     assert "--out " in source
     assert "models_published" not in source
-    assert "source-only" not in source or "no source-only" not in source
+    assert "workflow_dispatch:" in source
+    assert "Research XMarket feature subsets without publishing models" in source
+    assert "Upload only sanitized research results" in source
+    assert "--max-windows" not in source

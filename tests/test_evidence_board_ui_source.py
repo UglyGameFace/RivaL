@@ -26,6 +26,16 @@ class EvidenceBoardSourceTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
+    def test_source_health_requires_real_production_reads(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node is not installed")
+        result = subprocess.run(
+            [node, str(ROOT / "tools/test_evidence_board_status.js")],
+            cwd=ROOT, capture_output=True, text=True, timeout=20, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_public_market_bridge_sanitization(self) -> None:
         node = shutil.which("node")
         if not node:

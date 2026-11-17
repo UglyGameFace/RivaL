@@ -57,6 +57,36 @@ function cleanXmarketExports(value){
     does_not_prove_independent_drive_restore:true};
 }
 
+
+function cleanXmarketScopeProgress(value){
+  if(!Array.isArray(value))return null;
+  const assets=['BTC','ETH','SOL','XRP'],horizons=[5,15,60],
+    stages=['not_initialized','waiting_for_inputs','waiting_for_completed_day_export',
+      'waiting_for_fit','imported_no_shadow_rows','shadow_issuing','read_unavailable'];
+  const seen=new Set(),rows=[];
+  for(const r of value.slice(0,12)){
+    if(!r||!assets.includes(r.asset)||!horizons.includes(r.horizon)||!stages.includes(r.status))continue;
+    const key=r.asset+':'+r.horizon;
+    if(seen.has(key))continue;
+    seen.add(key);
+    const native=x=>Array.isArray(x)?Array.from(new Set(x.filter(
+      source=>['polymarket','kalshi'].includes(source)))).sort():[];
+    rows.push({
+      asset:r.asset,horizon:r.horizon,status:r.status,
+      stored_artifacts:numberOrNull(r.stored_artifacts,100000),
+      shadow_rows_24h:numberOrNull(r.shadow_rows_24h),
+      latest_imported_at:isoOrNull(r.latest_imported_at),
+      latest_shadow_at:isoOrNull(r.latest_shadow_at),
+      fresh_native_sources:numberOrNull(r.fresh_native_sources,2),
+      expected_native_sources:2,
+      missing_native_sources:native(r.missing_native_sources),
+      stale_native_sources:native(r.stale_native_sources),
+      proves_live_edge:false
+    });
+  }
+  return rows.sort((a,b)=>a.asset.localeCompare(b.asset)||a.horizon-b.horizon);
+}
+
 function cleanGithub(g,identity) {
   if(!g||g.status!=='verified'||!Array.isArray(g.prs)||!Array.isArray(g.runs))return null;
   const fetched=isoOrNull(g.fetched_at);
@@ -255,6 +285,7 @@ function build(payload,identity){
         does_not_prove_source_recovery:true
       },
       xmarket_exports:cleanXmarketExports(h.xmarket_exports),
+      xmarket_scope_progress:cleanXmarketScopeProgress(h.xmarket_scope_progress),
       recent_forward_calls:cleanForwardCalls(h.recent_forward_calls)
     },
     database:{

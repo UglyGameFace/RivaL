@@ -50,7 +50,7 @@ cmake -S runtime/llama.cpp -B runtime/llama.cpp/build \
   -DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build runtime/llama.cpp/build --target llama-server --parallel 2
 cp runtime/llama.cpp/build/bin/llama-server runtime/bin/llama-server
-# Ship the actual library bytes at every SONAME, including .so.0 aliases.
+# Ship the actual library bytes at every SONAME, including .so.1 aliases.
 # ZIP/artifact transports can strip symlinks; never rely on them surviving upload.
 find runtime/llama.cpp/build/bin -maxdepth 1 \( -type f -o -type l \) \
   \( -name 'libggml*.so*' -o -name 'libllama*.so*' -o -name 'libmtmd*.so*' \) \

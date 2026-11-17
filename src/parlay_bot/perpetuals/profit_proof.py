@@ -28,7 +28,9 @@ COST_SCENARIOS = (
 # Existing policy includes 8 bps round-trip taker fees. Standard public fees
 # checked 2026-11-15/16 are 10 bps on OKX, 12 on Bitget and 15 on Gate
 # (public contract metadata). Deribit's 7 and Lighter's published public fees
-# do not reduce the existing 8-bps floor. Preserve all slippage/funding stress.
+# do not reduce the existing 8-bps floor. KuCoin's standard public futures
+# taker fee is 6 bps (VIP0, checked 2026-11-17), also below the floor, so
+# no premium entry. Preserve all slippage/funding stress.
 VENUE_FEE_PREMIUM_BPS = {"okx": 2.0, "bitget": 4.0, "gate": 7.0}
 
 

@@ -824,6 +824,24 @@ class LlmMetricsTests(unittest.TestCase):
         raw["generation_probe"] = "authenticated_generation"
         self.assertTrue(summarize_llm_metrics(raw)["inference_verified"])
 
+    def test_generation_probe_marker_is_carried_for_the_board_checker(self) -> None:
+        # The board's collector re-checks the marker before trusting the
+        # verified flag, so the publisher must carry it in the receipt.
+        # Live 2026-11-17: the probe verified (8.8s generation) but the
+        # board stayed Unverified because this field was stripped here.
+        raw = self._valid_raw()
+        raw["inference_verified"] = True
+        raw["generation_probe"] = "authenticated_generation"
+        clean = summarize_llm_metrics(raw)
+        self.assertTrue(clean["inference_verified"])
+        self.assertEqual(clean["generation_probe"], "authenticated_generation")
+        raw["generation_probe"] = "tampered"
+        clean = summarize_llm_metrics(raw)
+        self.assertFalse(clean["inference_verified"])
+        self.assertIsNone(clean["generation_probe"])
+        clean = summarize_llm_metrics(self._valid_raw())
+        self.assertIsNone(clean["generation_probe"])
+
     def test_generation_timing_fields_are_carried_when_probe_verified(self) -> None:
         raw = self._valid_raw()
         raw.update({

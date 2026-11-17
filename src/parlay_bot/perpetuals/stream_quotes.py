@@ -65,6 +65,12 @@ BINANCE_TRADES_WS = "wss://fstream.binance.com/market/stream?streams="
 # documented default and is replaced by the bullet response when it differs.
 KUCOIN_FUTURES_WS = "wss://ws-api-futures.kucoin.com/endpoint"
 KUCOIN_BULLET_PUBLIC_URL = "https://api-futures.kucoin.com/api/v1/bullet-public"
+# Phemex public websocket. No token, no auth: one orderbook_p.subscribe
+# per USDT perpetual symbol. The plain {"method", "params"} shape is what
+# the venue accepts — wrapping it in a jsonrpc envelope is rejected with
+# error 6001 (verified live 2026-11-17). orderbook.subscribe (no _p)
+# returns the same 6001 for USDT perps and is never used here.
+PHEMEX_PUBLIC_WS = "wss://ws.phemex.com"
 
 
 async def fetch_kucoin_bullet_token(
@@ -109,8 +115,133 @@ def _kucoin_is_ping(message: str | bytes) -> bool:
     return isinstance(frame, dict) and frame.get("type") == "ping"
 
 
+class PhemexBookResync(RuntimeError):
+    """A Phemex delta arrived with no snapshot: the book state is unknown."""
+
+    def __init__(self, asset: str) -> None:
+        super().__init__(f"Phemex book for {asset} has no snapshot yet")
+        self.asset = asset
+
+
+def _phemex_book_levels(raw: Any) -> list[tuple[float, float]]:
+    """One side of a Phemex WS book frame: [[price, size], ...]."""
+    if not isinstance(raw, list):
+        raise TypeError("order book side is not a list")
+    levels = []
+    for row in raw:
+        if not isinstance(row, list) or len(row) != 2:
+            raise ValueError("malformed order book level")
+        price, quantity = float(row[0]), float(row[1])
+        if quantity < 0:
+            raise ValueError("negative order book size")
+        levels.append((price, quantity))
+    return levels
+
+
+class PhemexBook:
+    """One Phemex asset's order book: snapshot replace + delta merge.
+
+    The venue publishes a 30-level snapshot on subscribe (and again every
+    60s for self-verification), then incremental deltas only. A delta
+    with size 0 deletes its level; any other size replaces it; a new
+    price inserts sorted. Only the top 30 levels per side are kept, so
+    the book stays bounded no matter how long the socket lives.
+
+    The sequence is an event counter, NOT +1 per message (verified live
+    2026-11-17: jumps of 1–381 between consecutive messages), so no +1
+    continuity is assumed. The only sequence rules are monotonicity — a
+    non-increasing sequence is a stale replay and is discarded — and
+    that a delta may never apply before the first snapshot: that state
+    gap raises PhemexBookResync so the caller re-subscribes for a fresh
+    snapshot instead of scoring against a half-known book.
+    """
+
+    _DEPTH = 30
+
+    def __init__(self) -> None:
+        self.bids: dict[float, float] = {}
+        self.asks: dict[float, float] = {}
+        self.last_sequence: int | None = None
+        self.synced = False
+
+    def apply(self, frame: dict, *, asset: str, received_at: datetime
+              ) -> VenueBookQuote | None:
+        kind = frame.get("type")
+        if kind not in ("snapshot", "incremental"):
+            raise QuoteUnavailable("Phemex book frame has no snapshot/delta type.")
+        sequence = frame.get("sequence")
+        if type(sequence) is not int or sequence <= 0:
+            raise QuoteUnavailable("Phemex book frame has no sequence.")
+        nanoseconds = frame.get("timestamp")
+        if isinstance(nanoseconds, str):
+            nanoseconds = int(nanoseconds)
+        if type(nanoseconds) is not int or nanoseconds <= 0:
+            raise QuoteUnavailable("Phemex book frame has no exchange clock.")
+        book = frame.get("orderbook_p")
+        if not isinstance(book, dict):
+            raise QuoteUnavailable("Phemex book frame has no order book.")
+        try:
+            bids = _phemex_book_levels(book.get("bids"))
+            asks = _phemex_book_levels(book.get("asks"))
+        except (ValueError, TypeError) as exc:
+            raise QuoteUnavailable("Malformed Phemex order book level.") from exc
+        if kind == "snapshot":
+            # A snapshot always replaces: it is a complete vendor state,
+            # and a delayed older snapshot rewinds to a still-complete
+            # state (later deltas re-apply idempotently). The hub's own
+            # exchange_at guard keeps the stored quote monotonic.
+            # Validate before assigning so a bad snapshot never empties
+            # a good book.
+            new_bids = {p: q for p, q in bids if q > 0}
+            new_asks = {p: q for p, q in asks if q > 0}
+            if not new_bids or not new_asks:
+                raise QuoteUnavailable("Phemex order book is empty.")
+            self.bids, self.asks = new_bids, new_asks
+            self.last_sequence = sequence
+            self.synced = True
+        else:
+            if not self.synced:
+                raise PhemexBookResync(asset)
+            if sequence <= self.last_sequence:
+                return None  # stale replay; the newer book stands
+            for price, quantity in bids:
+                if quantity == 0:
+                    self.bids.pop(price, None)
+                else:
+                    self.bids[price] = quantity
+            for price, quantity in asks:
+                if quantity == 0:
+                    self.asks.pop(price, None)
+                else:
+                    self.asks[price] = quantity
+            self._trim()
+            self.last_sequence = sequence
+        if not self.bids or not self.asks:
+            raise QuoteUnavailable("Phemex order book is empty.")
+        bid_price, bid_quantity = max(self.bids.items())
+        ask_price, ask_quantity = min(self.asks.items())
+        try:
+            quote = VenueBookQuote(
+                asset, "phemex", VENUE_BOOK_SYMBOLS["phemex"][asset],
+                bid_price, bid_quantity, ask_price, ask_quantity,
+                datetime.fromtimestamp(nanoseconds / 1_000_000_000, tz=UTC),
+                received_at,
+            )
+            quote.validate(now=received_at)
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise QuoteUnavailable("Invalid Phemex book quote.") from exc
+        return quote
+
+    def _trim(self) -> None:
+        if len(self.bids) > self._DEPTH:
+            self.bids = dict(sorted(self.bids.items(), reverse=True)[: self._DEPTH])
+        if len(self.asks) > self._DEPTH:
+            self.asks = dict(sorted(self.asks.items())[: self._DEPTH])
+
+
 def parse_stream_message(
     venue: str, message: str | bytes, *, received_at: datetime,
+    phemex_books: dict[str, PhemexBook] | None = None,
 ) -> PerpReferenceBook | BookQuote | VenueBookQuote | None:
     """Only admit timestamped, source-identified, viable best-book updates."""
     if isinstance(message, bytes):
@@ -230,6 +361,28 @@ def parse_stream_message(
             raise QuoteUnavailable("Malformed KuCoin ticker push.")
         return parse_kucoin_ticker({"code": "200000", "data": data},
                                    asset=asset, received_at=received_at)
+    if venue == "phemex":
+        # Subscribe acknowledgements carry no book; an error dict means
+        # the subscribe was rejected (6001) and the socket stays up.
+        # Book frames are bare objects: {"depth": 30, "dts": <ns>,
+        # "orderbook_p": {"asks": [[px, qty], ...], "bids": [...]},
+        # "sequence": <int>, "symbol": "BTCUSDT", "timestamp": <ns>,
+        # "type": "snapshot" | "incremental"} — verified live 2026-11-17.
+        # Deltas apply only through the per-asset book; a bare
+        # parse_stream_message call gets a transient book, so a lone
+        # delta without a snapshot raises PhemexBookResync there too.
+        if "orderbook_p" not in wrapper:
+            if wrapper.get("error") is not None:
+                raise QuoteUnavailable("Phemex subscription rejected.")
+            return None
+        symbol = wrapper.get("symbol")
+        asset = next((a for a, s in VENUE_BOOK_SYMBOLS["phemex"].items()
+                      if s == symbol), None)
+        if asset is None:
+            return None
+        books = phemex_books if phemex_books is not None else {}
+        return books.setdefault(asset, PhemexBook()).apply(
+            wrapper, asset=asset, received_at=received_at)
     if venue == "hyperliquid":
         if wrapper.get("channel") != "l2Book":
             return None
@@ -291,6 +444,12 @@ class StreamingBookHub:
         self._blocked_until: dict[str, datetime | None] = dict.fromkeys(VENUES, None)
         self._blocked_status: dict[str, int | None] = dict.fromkeys(VENUES, None)
         self._silence_restarts: dict[str, int] = dict.fromkeys(VENUES, 0)
+        # Phemex delta state: one snapshot+merge book per asset, held
+        # here (never in the module) so tests and reconnects start clean.
+        # A delta with no snapshot is a state gap, never a half-known
+        # book; _run re-subscribes the flagged asset for a fresh snapshot.
+        self._phemex_books: dict[str, PhemexBook] = {}
+        self._phemex_resync: set[str] = set()
         # Optional 5-minute liquidity recorder; attach before start().
         self.recorder = None
         self._liquidity_frames = 0
@@ -343,7 +502,17 @@ class StreamingBookHub:
             if venue == "okx":
                 self._liquidity_frames += 1
         try:
-            quote = parse_stream_message(venue, message, received_at=now)
+            quote = parse_stream_message(
+                venue, message, received_at=now,
+                phemex_books=self._phemex_books if venue == "phemex" else None,
+            )
+        except PhemexBookResync as exc:
+            # A delta arrived with no snapshot: the book is unknown.
+            # Drop any stored quote so snapshot() stops serving it and
+            # flag the asset; _run re-subscribes for a fresh snapshot.
+            self._phemex_resync.add(exc.asset)
+            self._quotes.pop(("phemex", exc.asset), None)
+            return False
         except QuoteUnavailable:
             return False
         if quote is None or quote.asset not in self.assets:
@@ -374,6 +543,8 @@ class StreamingBookHub:
             url = LIGHTER_PUBLIC_WS
         elif venue == "kucoin":
             url = KUCOIN_FUTURES_WS
+        elif venue == "phemex":
+            url = PHEMEX_PUBLIC_WS
         else:
             raise ValueError("Unsupported quote stream venue")
         attempts = 0
@@ -396,6 +567,12 @@ class StreamingBookHub:
                     self._connected[venue] = True
                     self._blocked_until[venue] = None
                     self._blocked_status[venue] = None
+                    if venue == "phemex":
+                        # A fresh socket re-snapshots every symbol; drop
+                        # the old books so a stale delta can never apply
+                        # to a pre-reconnect book.
+                        self._phemex_books = {}
+                        self._phemex_resync = set()
                     last_book = datetime.now(UTC)
                     last_ping = time.monotonic()
                     attempts = 0
@@ -450,6 +627,15 @@ class StreamingBookHub:
                                 "topic": f"/contractMarket/tickerV2:{VENUE_BOOK_SYMBOLS[venue][asset]}",
                                 "privateChannel": False, "response": True,
                             }))
+                    elif venue == "phemex":
+                        # One orderbook_p.subscribe per asset on the
+                        # single socket. The first frame per symbol is a
+                        # 30-level snapshot, then incremental deltas only.
+                        for asset in self.assets:
+                            await socket.send(json.dumps({
+                                "id": 1, "method": "orderbook_p.subscribe",
+                                "params": [VENUE_BOOK_SYMBOLS[venue][asset]],
+                            }))
                     while True:
                         try:
                             message = await asyncio.wait_for(socket.recv(),
@@ -458,6 +644,16 @@ class StreamingBookHub:
                                 await socket.send(json.dumps({"type": "pong"}))
                             elif self.accept(venue, message):
                                 last_book = datetime.now(UTC)
+                            if venue == "phemex" and self._phemex_resync:
+                                # A delta arrived with no snapshot: ask
+                                # for a fresh snapshot for that asset
+                                # instead of scoring a half-known book.
+                                for asset in sorted(self._phemex_resync):
+                                    await socket.send(json.dumps({
+                                        "id": 1, "method": "orderbook_p.subscribe",
+                                        "params": [VENUE_BOOK_SYMBOLS[venue][asset]],
+                                    }))
+                                self._phemex_resync.clear()
                         except TimeoutError:
                             pass
                         if venue in ("okx", "bitget") and time.monotonic()-last_ping >= 20:

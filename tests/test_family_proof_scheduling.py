@@ -46,7 +46,9 @@ def test_all_seven_sources_and_horizons_are_reviewed_before_evidence_stales():
 
 def test_missing_unsupported_and_wrong_quote_are_deferred_without_fake_proof():
     assert select_family_proof_scope([], hour_slot=0) is None
-    for venue in ("dydx","phemex","kucoin"):
+    # Phemex now has a book adapter, so it provides source-matched bid/ask
+    # snapshots (same as KuCoin) and is no longer deferred here.
+    for venue in ("dydx","kucoin"):
         assert select_family_proof_scope([(venue,"BTCUSDT","USDT")], hour_slot=18) is None
     assert supports_quote_source("okx", "USDT")
     assert supports_quote_source("bitget", "USDT")

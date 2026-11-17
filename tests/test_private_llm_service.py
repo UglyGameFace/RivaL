@@ -74,6 +74,104 @@ def test_no_unauthorized_or_malformed_inference(gateway):
     assert calls == []
 
 
+def test_research_without_authorization_header_is_rejected(gateway):
+    server, calls = gateway
+    payload = json.dumps(
+        {"asset": "BTC", "evidence": {"sources": []}}).encode("utf-8")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{server.server_port}/v1/research",
+        data=payload, method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(request, timeout=3)
+    assert excinfo.value.code == 401
+    assert calls == []
+
+
+def test_research_passes_through_backend_token_usage(monkeypatch):
+    server = Gateway("127.0.0.1", 0, token="t" * 48, model="lfm3")
+
+    class Response:
+        status = 200
+
+        def __init__(self, value):
+            self.payload = json.dumps(value).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _max):
+            return self.payload
+
+    def backend(request, timeout):
+        if request.full_url.endswith("/apply-template"):
+            return Response({"prompt": "valid template"})
+        if request.full_url.endswith("/tokenize"):
+            return Response({"tokens": [7] * 100})
+        return Response({"choices": [{"finish_reason": "stop", "message": {
+            "content": json.dumps({
+                "direction": "up", "confidence": "high",
+                "thesis": "Guaranteed profit with BTC rally", "risk": "None",
+            })}}], "usage": {"prompt_tokens": 180, "completion_tokens": 42,
+                            "total_tokens": 222}})
+
+    try:
+        monkeypatch.setattr(SERVICE["urllib"].request, "urlopen", backend)
+        result = server.infer("BTC", {
+            "asset": "BTC", "analysis": "synthetic_connectivity_test_only",
+            "sources": [{"venue": "okx", "status": "quotes_missing"}],
+        })
+        assert result["usage"] == {"prompt_tokens": 180,
+                                   "completion_tokens": 42,
+                                   "total_tokens": 222}
+    finally:
+        server.server_close()
+
+
+def test_research_omits_usage_when_backend_reports_none(monkeypatch):
+    server = Gateway("127.0.0.1", 0, token="t" * 48, model="lfm3")
+
+    class Response:
+        status = 200
+
+        def __init__(self, value):
+            self.payload = json.dumps(value).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _max):
+            return self.payload
+
+    def backend(request, timeout):
+        if request.full_url.endswith("/apply-template"):
+            return Response({"prompt": "valid template"})
+        if request.full_url.endswith("/tokenize"):
+            return Response({"tokens": [7] * 100})
+        return Response({"choices": [{"finish_reason": "stop", "message": {
+            "content": json.dumps({
+                "direction": "up", "confidence": "high",
+                "thesis": "Guaranteed profit with BTC rally", "risk": "None",
+            })}}]})
+
+    try:
+        monkeypatch.setattr(SERVICE["urllib"].request, "urlopen", backend)
+        result = server.infer("BTC", {
+            "asset": "BTC", "analysis": "synthetic_connectivity_test_only",
+            "sources": [{"venue": "okx", "status": "quotes_missing"}],
+        })
+        assert "usage" not in result
+    finally:
+        server.server_close()
+
+
 def test_one_authenticated_private_research_request(gateway):
     server, calls = gateway
     status, result = send(server)

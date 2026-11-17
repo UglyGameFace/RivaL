@@ -63,6 +63,24 @@ cx.state.evidence={
 };
 assert.match(cx.sourcePanel(),/KuCoin exact source gaps/);
 assert.match(cx.opsXMarket(),/No fitted model/);
+assert.match(cx.opsXMarketHostScopes(),/Host per-scope evidence not published/);
+cx.state.evidence.host.xmarket_scope_progress=[
+ {asset:'BTC',horizon:15,status:'shadow_issuing',stored_artifacts:2,
+  shadow_rows_24h:77,fresh_native_sources:2,expected_native_sources:2,
+  latest_shadow_at:at,missing_native_sources:[],stale_native_sources:[]},
+ {asset:'ETH',horizon:5,status:'waiting_for_fit',stored_artifacts:0,
+  shadow_rows_24h:0,fresh_native_sources:1,expected_native_sources:2,
+  latest_shadow_at:null,missing_native_sources:['kalshi'],stale_native_sources:[]}
+];
+assert.match(cx.opsXMarket(),/Host issuance by asset and timeframe/);
+assert.match(cx.opsXMarket(),/BTC · 15m/);
+assert.match(cx.opsXMarket(),/Research shadows issuing/);
+assert.match(cx.opsXMarket(),/Research shadows issued · 24h: 77/);
+assert.match(cx.opsXMarket(),/ETH · 5m/);
+assert.match(cx.opsXMarket(),/Waiting for eligible fit/);
+assert.match(cx.opsXMarket(),/Missing: kalshi/);
+assert.doesNotMatch(cx.opsXMarketHostScopes(),/model_weights|PRIVATE/);
+delete cx.state.evidence.host.xmarket_scope_progress;
 cx.v2scope('BTC',5);
 assert.match(document.drawer,/Report model identity/);
 assert.match(document.drawer,/No fitted model in chosen report/);

@@ -156,6 +156,43 @@ def _scope(family: str, asset: str) -> str:
     return ALL_SCOPE if family == ALL_FAMILY else asset
 
 
+# One batched outcome read per 100 stream keys (500 parameters) stays under
+# SQLite's 999-parameter floor as well as PostgreSQL's limit; the per-stream
+# primary-key reads it replaces ran one query per stream per target.
+_OUTCOME_BATCH_KEYS = 100
+
+
+def _fetch_outcomes(conn, keys, model_version: str) -> dict[tuple, int]:
+    """Graded outcome per (venue, contract, quote, horizon, reference).
+
+    One batched read per chunk instead of one primary-key SELECT per
+    contributing stream. The keys are the audit table's primary key minus
+    model_version, which is filtered once for the whole batch; the settled
+    and outcome predicates match the per-stream read exactly.
+    """
+    found: dict[tuple, int] = {}
+    for start in range(0, len(keys), _OUTCOME_BATCH_KEYS):
+        chunk = keys[start:start + _OUTCOME_BATCH_KEYS]
+        groups = ",".join("(?,?,?,?,?)" for _ in chunk)
+        params: list = [model_version]
+        for venue, contract, quote, horizon, reference in chunk:
+            params.extend((venue, contract, quote, horizon, reference))
+        rows = conn.execute(
+            f"""SELECT venue,contract,quote,horizon_minutes,reference_opened_at,
+                       outcome_up
+                FROM perp_forward_audit
+                WHERE model_version=? AND settled_at IS NOT NULL AND outcome_up IN (0,1)
+                  AND (venue,contract,quote,horizon_minutes,reference_opened_at)
+                      IN ({groups})""",
+            tuple(params),
+        ).fetchall()
+        for row in rows:
+            found[(str(row["venue"]), str(row["contract"]), str(row["quote"]),
+                   int(row["horizon_minutes"]),
+                   str(row["reference_opened_at"]))] = int(row["outcome_up"])
+    return found
+
+
 def _sha(weights) -> str:
     return hashlib.sha256(json.dumps(
         list(weights), separators=(",", ":"), allow_nan=False).encode()).hexdigest()
@@ -186,6 +223,14 @@ class CrossModel:
     # -- state ---------------------------------------------------------------
 
     @staticmethod
+    def _decode_state(row, size: int):
+        """Validate a stored state row exactly as _load does, without a connection."""
+        weights = [float(x) for x in json.loads(row["weights_json"])]
+        if len(weights) != size or not all(math.isfinite(x) for x in weights):
+            raise ValueError("cross model state does not match its input contract")
+        return weights, int(row["updates"])
+
+    @staticmethod
     def _load(conn, family: str, scope: str, horizon: int, size: int):
         row = conn.execute(
             """SELECT weights_json,updates,trained_through,weights_sha256
@@ -195,10 +240,7 @@ class CrossModel:
         ).fetchone()
         if row is None:
             return [0.0] * size, 0
-        weights = [float(x) for x in json.loads(row["weights_json"])]
-        if len(weights) != size or not all(math.isfinite(x) for x in weights):
-            raise ValueError("cross model state does not match its input contract")
-        return weights, int(row["updates"])
+        return CrossModel._decode_state(row, size)
 
     @staticmethod
     def _save(conn, family, scope, horizon, weights, updates, through, clock):
@@ -304,11 +346,21 @@ class CrossModel:
         Lessons are applied oldest first. A target learns once: with its
         majority outcome, or not at all when the exchanges tie or too few
         are graded within ``LABEL_PATIENCE``. Returns the lessons applied.
+
+        Fetch-release-compute-write: one short read borrow fetches the
+        waiting targets, every contributing stream's graded outcome in
+        batched reads, and every learner state; the connection is released
+        while labels and weight updates are computed in Python; one short
+        write borrow persists the learned marks and states. Learning used
+        to hold one of eight pool connections across the whole batch while
+        issuing one primary-key SELECT per stream per target.
         """
         self.initialize()
         stamp = utc(now)
         clock = stamp.isoformat()
-        lessons = 0
+        # Phase 1: batched reads in one short borrow. No outcome is decided
+        # here; the streams of every waiting target are collected first so
+        # their grades come back in as few queries as the batch allows.
         with self.store.connect() as conn:
             waiting = conn.execute(
                 """SELECT asset,horizon_minutes,reference_opened_at,
@@ -318,54 +370,84 @@ class CrossModel:
                    ORDER BY target_opened_at,asset,horizon_minutes LIMIT ?""",
                 ((stamp - TARGET_BAR).isoformat(), LEARN_BATCH),
             ).fetchall()
-            states: dict[tuple[str, str, int], list] = {}
+            streams: list[list[tuple[str, str, str]]] = []
+            keys: list[tuple] = []
+            seen: set[tuple] = set()
             for row in waiting:
-                asset, horizon = str(row["asset"]), int(row["horizon_minutes"])
-                reference = str(row["reference_opened_at"])
-                graded = ups = 0
-                # Primary-key reads: one per contributing stream.
-                for venue, contract, quote in json.loads(row["streams_json"]):
-                    outcome = conn.execute(
-                        """SELECT outcome_up FROM perp_forward_audit
-                           WHERE venue=? AND contract=? AND quote=?
-                             AND horizon_minutes=? AND model_version=?
-                             AND reference_opened_at=?
-                             AND settled_at IS NOT NULL AND outcome_up IN (0,1)""",
-                        (venue, contract, quote, horizon, model_version, reference),
-                    ).fetchone()
-                    if outcome is not None:
-                        graded += 1
-                        ups += int(outcome["outcome_up"])
-                expected = len(json.loads(row["streams_json"]))
-                closes = datetime.fromisoformat(str(row["target_opened_at"])) + TARGET_BAR
-                if graded < expected and stamp < closes + LABEL_PATIENCE:
-                    continue  # some exchanges are still ungraded: wait
-                label = majority_label(graded, ups)
+                parsed = [(str(venue), str(contract), str(quote))
+                          for venue, contract, quote in json.loads(row["streams_json"])]
+                streams.append(parsed)
+                for venue, contract, quote in parsed:
+                    key = (venue, contract, quote, int(row["horizon_minutes"]),
+                           str(row["reference_opened_at"]))
+                    if key not in seen:
+                        seen.add(key)
+                        keys.append(key)
+            outcomes = _fetch_outcomes(conn, keys, model_version)
+            raw_states = {
+                (str(row["family"]), str(row["scope"]), int(row["horizon_minutes"])): row
+                for row in conn.execute(
+                    """SELECT family,scope,horizon_minutes,weights_json,updates
+                       FROM rival_cross_model_state"""
+                ).fetchall()
+            }
+        # Phase 2: compute with no connection held. A corrupt state still
+        # raises before anything is written, and a target that is still
+        # waiting on grades, ties, or has unusable features is marked
+        # learned (or left waiting) exactly as the single-borrow version did.
+        states: dict[tuple[str, str, int], list] = {}
+        marks: list[tuple] = []
+        lessons = 0
+        for row, parsed in zip(waiting, streams):
+            asset, horizon = str(row["asset"]), int(row["horizon_minutes"])
+            reference = str(row["reference_opened_at"])
+            graded = ups = 0
+            for venue, contract, quote in parsed:
+                outcome = outcomes.get((venue, contract, quote, horizon, reference))
+                if outcome is not None:
+                    graded += 1
+                    ups += outcome
+            expected = len(parsed)
+            closes = datetime.fromisoformat(str(row["target_opened_at"])) + TARGET_BAR
+            if graded < expected and stamp < closes + LABEL_PATIENCE:
+                continue  # some exchanges are still ungraded: wait
+            label = majority_label(graded, ups)
+            marks.append((label, clock, asset, horizon, reference))
+            if label is None:
+                continue
+            features = tuple(float(x) for x in json.loads(row["features_json"]))
+            if len(features) != CROSS_INPUTS:
+                continue
+            for family in FAMILIES:
+                inputs = model_inputs(family, asset, features)
+                key = (family, _scope(family, asset), horizon)
+                if key not in states:
+                    raw = raw_states.get(key)
+                    if raw is None:
+                        weights, updates = [0.0] * len(inputs), 0
+                    else:
+                        weights, updates = self._decode_state(raw, len(inputs))
+                    states[key] = [weights, updates, reference]
+                weights = states[key][0]
+                error = label - _sigmoid(sum(w * x for w, x in zip(weights, inputs)))
+                for index, value in enumerate(inputs):
+                    penalty = 0.0 if index == 0 else L2 * weights[index]
+                    weights[index] += LEARNING_RATE * (error * value - penalty)
+                states[key][1] += 1
+                states[key][2] = max(states[key][2], reference)
+            lessons += 1
+        if not marks and not states:
+            return 0
+        # Phase 3: one short write borrow. Nothing was written before this
+        # point, so a failure above leaves no partial marks.
+        with self.store.connect() as conn:
+            for label, learned_at, asset, horizon, reference in marks:
                 conn.execute(
                     """UPDATE rival_cross_model_examples
                        SET label_up=?, learned_at=?
                        WHERE asset=? AND horizon_minutes=? AND reference_opened_at=?""",
-                    (label, clock, asset, horizon, reference),
+                    (label, learned_at, asset, horizon, reference),
                 )
-                if label is None:
-                    continue
-                features = tuple(float(x) for x in json.loads(row["features_json"]))
-                if len(features) != CROSS_INPUTS:
-                    continue
-                for family in FAMILIES:
-                    inputs = model_inputs(family, asset, features)
-                    key = (family, _scope(family, asset), horizon)
-                    if key not in states:
-                        weights, updates = self._load(conn, *key, len(inputs))
-                        states[key] = [weights, updates, reference]
-                    weights = states[key][0]
-                    error = label - _sigmoid(sum(w * x for w, x in zip(weights, inputs)))
-                    for index, value in enumerate(inputs):
-                        penalty = 0.0 if index == 0 else L2 * weights[index]
-                        weights[index] += LEARNING_RATE * (error * value - penalty)
-                    states[key][1] += 1
-                    states[key][2] = max(states[key][2], reference)
-                lessons += 1
             for (family, scope, horizon), (weights, updates, through) in states.items():
                 self._save(conn, family, scope, horizon, weights, updates, through, clock)
         return lessons

@@ -1,9 +1,11 @@
 name: RivaL one-shot verified XMarket train-only research
 
-# One-shot, source-authenticated training-only research after the OKX V5
-# provenance repair. No cron, deployment, archive backfill, Drive writes,
-# model imports, promotion or sealed test scoring. A merged workflow-file
-# update or explicit manual dispatch triggers the bounded research job.
+# One-shot source-authenticated research after the four-asset original-source
+# readbacks in run 43975283077. The fixed split dates are pinned to the
+# November 16 UTC original-source recovery anchor, NOT selected from model
+# scores. No cron, deployment, archive backfill, Drive writes, model imports,
+# promotion or sealed validation/test scoring. This merged workflow update
+# triggers one bounded read-only four-asset research pass.
 on:
   push:
     branches: [main]
@@ -64,9 +66,9 @@ jobs:
             --asset ${{ matrix.asset }} \
             --manifests-dir data/archive-v1-restore \
             --okx-source-integrity okx-v5-public-history-5m-v1 \
-            --train-end "2026-09-19T00:00:00+00:00" \
-            --test-start "2026-10-17T00:00:00+00:00" \
-            --trained-through "2026-11-13T23:55:00+00:00" \
+            --train-end "2026-09-21T00:00:00+00:00" \
+            --test-start "2026-10-19T00:00:00+00:00" \
+            --trained-through "2026-11-15T23:55:00+00:00" \
             --out "xmarket-research/${{ matrix.asset }}.json"
       - name: Upload only sanitized research results
         if: always()

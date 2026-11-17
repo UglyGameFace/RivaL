@@ -74,6 +74,16 @@ def test_probe_renders_actual_views_through_read_only_connections(learning_store
 
     _setup(learning_store)
     _shadow(learning_store)
+    from parlay_bot.discord_app import xmarket_status
+
+    original_read = xmarket_status.read
+    lifecycle_assets = []
+
+    def tracked_read(store, *, asset, now=None):
+        lifecycle_assets.append(asset)
+        return original_read(store, asset=asset, now=now)
+
+    monkeypatch.setattr(xmarket_status, "read", tracked_read)
     attempts = []
 
     class Connection:
@@ -108,4 +118,5 @@ def test_probe_renders_actual_views_through_read_only_connections(learning_store
     assert set(attempts) <= {"SELECT", "WITH"}
     accepted = probe.checked_report(probe.MARKER + json.dumps(report), report["source_sha256"])
     assert len(accepted["scopes"]) == 12
+    assert sorted(lifecycle_assets) == ["BTC", "ETH", "SOL", "XRP"]
     assert all(p["ledger_counts_match"] for p in accepted["panels"].values())

@@ -41,6 +41,7 @@ def host_report():
     async def render():
         dummy = SimpleNamespace()
         panels = {}
+        btc_lifecycle = None
         for section, horizon in (("overview", 5), ("models", 15)):
             home = GuidedHome(owner_id=1, location=dummy, builder=dummy, collector=None,
                 market=market, targets=dummy, paper=dummy, quotes=dummy, profit=None,
@@ -51,6 +52,7 @@ def host_report():
                 embeds = await home.render_embeds()
                 lifecycle = _cached_page_read(_xmarket_record, market, "BTC", 0,
                                                max_age_seconds=60)
+                btc_lifecycle = lifecycle
                 text = "\n".join(f.value for e in embeds for f in e.fields
                                  if f.name.startswith("XMarket"))
                 scopes = lifecycle.get("scopes", [])
@@ -64,7 +66,7 @@ def host_report():
                 }
             finally:
                 home.stop()
-        return panels
+        return panels, btc_lifecycle
 
     try:
         files = tuple("src/parlay_bot/discord_app/" + name + ".py"
@@ -72,10 +74,32 @@ def host_report():
         output["source_sha256"] = {p: hashlib.sha256(Path(p).read_bytes()).hexdigest()
                                     for p in files}
         with statement_timeout(8_000):
-            output["scopes"] = [{"asset": asset, **scope}
-                for asset in ("BTC", "ETH", "SOL", "XRP")
-                for scope in read(store, asset=asset).get("scopes", [])]
-            output["panels"] = asyncio.run(render())
+            # Render the real Discord views first. Their own 60-second
+            # lifecycle cache already contains a fresh BTC read; re-querying
+            # BTC before rendering needlessly doubles the acceptance workload.
+            output["panels"], btc = asyncio.run(render())
+            if not isinstance(btc, dict) or btc.get("status") != "recorded":
+                raise ValueError("BTC renderer lifecycle unavailable")
+            output["scopes"] = [
+                {"asset": "BTC", **scope} for scope in btc.get("scopes", [])
+            ]
+            # The three other assets have independent read-only queries;
+            # concurrent source observations avoid multiplying the worst-case
+            # remote-console wall time. asyncio.to_thread propagates the
+            # existing statement_timeout context without relaxing its bound.
+            async def other_assets():
+                return await asyncio.gather(*(
+                    asyncio.to_thread(read, store, asset=asset)
+                    for asset in ("ETH", "SOL", "XRP")
+                ))
+
+            for asset, result in zip(
+                    ("ETH", "SOL", "XRP"), asyncio.run(other_assets())):
+                if not isinstance(result, dict) or result.get("status") != "recorded":
+                    raise ValueError("XMarket lifecycle unavailable")
+                output["scopes"].extend(
+                    {"asset": asset, **scope} for scope in result.get("scopes", [])
+                )
         return output
     finally:
         store.close()

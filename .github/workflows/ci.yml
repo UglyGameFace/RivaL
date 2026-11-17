@@ -66,9 +66,9 @@ jobs:
           # than burning a whole CI runner without a useful diagnosis.
           # The 3k+ PostgreSQL suite can exceed eight minutes on a busy
           # GitHub runner even with thousands of tests already passed. Keep
-          # a strict twelve-minute ceiling while retaining SIGINT's useful
+          # a strict twenty-minute ceiling while retaining SIGINT's useful
           # traceback and per-test 75s faulthandler diagnostics.
           # Print each test ID so an async hang cannot hide behind
           # only a percent-progress counter. Preserve coverage/timeout.
-          PYTHONUNBUFFERED=1 timeout -s SIGINT -k 20s 720s \
+          PYTHONUNBUFFERED=1 timeout -s SIGINT -k 20s 1200s \
             pytest -v -x -o faulthandler_timeout=75

@@ -29,10 +29,16 @@ for required in git cmake c++; do
   fi
 done
 
-# b12024 includes the LFM3 JSON-grammar and reasoning-budget fixes in
-# upstream #31374 and #31380. Pin the verified immutable release commit.
-REF=b12024
-EXPECTED_SHA=ddf48f85c933c1f438212a02eb21e7b001d2d37d
+# b12480 includes the LFM3 JSON-grammar and reasoning-budget fixes in
+# upstream #31374 and #31380 (first present in b12024). Pin the verified
+# immutable release commit.
+# Bump from b12024: b12024's ui-assets.cmake requires workbox[hash].js in the
+# downloaded llama-ui archive, but the current archive no longer ships it
+# (the UI moved to SvelteKit's service-worker.js), so the Discloud LLM ZIP
+# build failed three times identically. b12480's ui-assets.cmake accepts
+# either service-worker.js or workbox[hash].js, matching the current archive.
+REF=b12480
+EXPECTED_SHA=7f106b545965d601eb875ec8d2381288ee9b98f9
 if [ ! -d runtime/llama.cpp ]; then
   git clone --depth 1 --branch "$REF" https://github.com/ggml-org/llama.cpp.git runtime/llama.cpp
 fi

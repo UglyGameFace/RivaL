@@ -627,6 +627,12 @@ function build(payload,identity){
         bulk_upstream_empty_assets:numberOrNull(h.kucoin_gap_recovery?.bulk_upstream_empty_assets,4),
         does_not_prove_source_recovery:true
       },
+      pending_backlog:{
+        status:oneOf(h.pending_backlog?.status,['recorded','unavailable']),
+        pending_paths_14d:numberOrNull(h.pending_backlog?.pending_paths_14d,10000000),
+        due_pending_paths_14d:numberOrNull(h.pending_backlog?.due_pending_paths_14d,10000000),
+        unique_due_targets_14d:numberOrNull(h.pending_backlog?.unique_due_targets_14d,10000000),
+      },
       xmarket_exports:cleanXmarketExports(h.xmarket_exports),
       xmarket_scope_progress:scopeProgress,
       recent_forward_calls:cleanForwardCalls(h.recent_forward_calls),

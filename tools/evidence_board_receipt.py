@@ -703,6 +703,10 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
             "attempted_exact_gaps_14d": None,
             "bulk_upstream_empty_assets": None,
         },
+        "pending_backlog": {
+            "status": "unavailable", "pending_paths_14d": None,
+            "due_pending_paths_14d": None, "unique_due_targets_14d": None,
+        },
         "live_call_delivery": {
             "status": "unavailable", "active_channels": None,
             "recent_accepted_delivery_rows": None,
@@ -781,6 +785,24 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
                         row.get("bulk_status") == "upstream_empty"
                         for row in assets),
                 }
+
+    # The pending-paths backlog is a capacity watch, not a performance
+    # claim: counts only, never raw rows or identities. A due path is one
+    # whose target window has opened; unique targets collapse the two
+    # correlated long/short sides of one target into one count. Unknown
+    # stays unknown: a missing or negative count leaves the block
+    # unavailable instead of publishing a zero.
+    if isinstance(paths, dict):
+        pending = _nonnegative(paths.get("pending_paths_14d"))
+        due = _nonnegative(paths.get("due_pending_paths_14d"))
+        unique = _nonnegative(paths.get("unique_due_targets_14d"))
+        if pending is not None and due is not None and unique is not None:
+            host["pending_backlog"] = {
+                "status": "recorded",
+                "pending_paths_14d": pending,
+                "due_pending_paths_14d": due,
+                "unique_due_targets_14d": unique,
+            }
 
     # The channel opt-in and API-accepted message receipts are observable,
     # unlike whether a Discord user actually saw the call. Never publish IDs.

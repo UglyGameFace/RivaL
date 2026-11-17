@@ -95,6 +95,29 @@ class ReceiptTests(unittest.TestCase):
         unknown, _ = summarize_host(None)
         self.assertIsNone(unknown["kucoin_gap_recovery"]["queued_exact_gaps_14d"])
 
+    def test_pending_backlog_publishes_counts_and_unique_targets(self) -> None:
+        host, _ = summarize_host({"path_targets": {
+            "pending_paths_14d": 5, "due_pending_paths_14d": 4,
+            "unique_due_targets_14d": 2,
+        }})
+        self.assertEqual(host["pending_backlog"], {
+            "status": "recorded", "pending_paths_14d": 5,
+            "due_pending_paths_14d": 4, "unique_due_targets_14d": 2,
+        })
+        bad, _ = summarize_host({"path_targets": {
+            "pending_paths_14d": 5, "due_pending_paths_14d": -1,
+            "unique_due_targets_14d": 2,
+        }})
+        self.assertEqual(bad["pending_backlog"]["status"], "unavailable")
+        missing, _ = summarize_host({"path_targets": {
+            "pending_paths_14d": 5, "due_pending_paths_14d": 4,
+        }})
+        self.assertEqual(missing["pending_backlog"]["status"], "unavailable")
+        unknown, _ = summarize_host(None)
+        self.assertIsNone(unknown["pending_backlog"]["pending_paths_14d"])
+        self.assertIsNone(
+            unknown["pending_backlog"]["unique_due_targets_14d"])
+
     def test_live_call_delivery_shows_exact_opt_in_and_model_without_ids(self) -> None:
         host, _ = summarize_host({"advance_forecasts": {
             "channel_cards": {"status": "recorded", "active": 0,

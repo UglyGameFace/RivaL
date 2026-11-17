@@ -536,3 +536,69 @@ def test_kucoin_gap_receipt_fails_closed_if_persistence_unavailable():
     assert result["status"] == "read_unavailable"
     assert result["assets"] == []
     assert result["does_not_prove_gap_recovery"]
+
+
+def _insert_pending_path(conn, *, venue, contract, quote, asset, horizon,
+                         side, reference, issued, target):
+    conn.execute(
+        """INSERT INTO rival_forward_paths
+         (venue,contract,quote,asset,horizon_minutes,model_version,side,
+          reference_opened_at,issued_at,target_opened_at,reference_close,
+          sigma_horizon,tp1_probability,tp2_probability,tp1_baseline,
+          tp2_baseline,signed_return_p10,signed_return_p50,
+          signed_return_p90,training_count,cohort_count,training_sha256,state)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (venue, contract, quote, asset, horizon,
+         "prospective-logistic-persistent-v3", side,
+         reference.isoformat(), issued.isoformat(), target.isoformat(),
+         100.0, 0.01, 0.6, 0.55, 0.54, 0.5, -0.01, 0.0, 0.01, 10, 5,
+         "a" * 64, "pending"),
+    )
+
+
+def test_path_target_progress_counts_unique_due_targets_not_sides(
+    learning_store,
+):
+    """The backlog census counts distinct opportunities, not correlated sides.
+
+    Two pending sides (long + short) of one target are one unique target;
+    a second target window on the same venue/contract/quote is a second;
+    a pending path whose target has not opened yet is pending but not due.
+    """
+    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+    from parlay_bot.perpetuals.path_forward import ProspectivePathLedger
+
+    stamp = datetime(2026, 11, 16, 17, tzinfo=UTC)
+    PerpetualMarketStore(learning_store).initialize()
+    ProspectivePathLedger(learning_store).initialize()
+    with learning_store.connect() as conn:
+        # Target A: 15m, both sides, target opened 1h ago (due).
+        for side in ("long", "short"):
+            _insert_pending_path(
+                conn, venue="hyperliquid", contract="BTC", quote="USDC",
+                asset="BTC", horizon=15, side=side,
+                reference=stamp - timedelta(hours=2),
+                issued=stamp - timedelta(hours=2, minutes=-5),
+                target=stamp - timedelta(hours=1))
+        # Target B: 5m, both sides, same venue/contract/quote but a
+        # different target window 10m ago (due, second unique target).
+        for side in ("long", "short"):
+            _insert_pending_path(
+                conn, venue="hyperliquid", contract="BTC", quote="USDC",
+                asset="BTC", horizon=5, side=side,
+                reference=stamp - timedelta(minutes=30),
+                issued=stamp - timedelta(minutes=25),
+                target=stamp - timedelta(minutes=10))
+        # Target C: 15m, long only, target opens in 30m (pending, not due).
+        _insert_pending_path(
+            conn, venue="hyperliquid", contract="ETH", quote="USDC",
+            asset="ETH", horizon=15, side="long",
+            reference=stamp - timedelta(minutes=5),
+            issued=stamp - timedelta(minutes=5),
+            target=stamp + timedelta(minutes=30))
+    result = host._path_target_progress(learning_store, stamp)
+    assert result["status"] == "settlement_backlog"
+    assert result["pending_paths_14d"] == 5
+    assert result["due_pending_paths_14d"] == 4
+    assert result["unique_due_targets_14d"] == 2
+    assert result["read_only"] is True

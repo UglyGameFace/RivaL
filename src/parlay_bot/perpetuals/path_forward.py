@@ -355,17 +355,26 @@ class ProspectivePathLedger:
             count+=int(result.rowcount==1)
         return count
 
-    def _ready_paths(self, conn, *, stamp: datetime, current: bool) -> list:
-        """Read at most MAX_SETTLE source paths from one disjoint age queue."""
+    def _ready_paths(self, conn, *, stamp: datetime, current: bool,
+                     horizons=(15, 60), limit=MAX_SETTLE) -> list:
+        """Read at most ``limit`` source paths from one disjoint age queue.
+
+        ``horizons`` restricts which horizons may be selected. Settlement
+        itself is horizon-generic (one complete 5-minute candle per 5
+        minutes of horizon); callers admit 5-minute paths only from
+        capacity the 15/60-minute queues did not use, so a faster-due
+        horizon can never displace a longer-horizon path.
+        """
         comparison = ">=" if current else "<"
         direction = "DESC" if current else "ASC"
+        placeholders = ",".join("?" for _ in horizons)
         rows = conn.execute(
                 f"""WITH ready AS (
                        SELECT p.venue,p.contract,p.quote,p.horizon_minutes,
                               p.reference_opened_at,p.issued_at,p.target_opened_at
                        FROM rival_forward_paths p
                        WHERE p.state='pending' AND p.target_opened_at<=?
-                        AND p.target_opened_at>=? AND p.horizon_minutes IN (15,60)
+                        AND p.target_opened_at>=? AND p.horizon_minutes IN ({placeholders})
                         AND p.target_opened_at {comparison} ?
                         AND p.side IN ('long','short')
                         AND (SELECT COUNT(*) FROM perp_market_candles c
@@ -392,8 +401,9 @@ class ProspectivePathLedger:
                             p.horizon_minutes,p.reference_opened_at,p.issued_at,p.side""",
                 ((stamp-timedelta(minutes=5)).isoformat(),
                  (stamp-timedelta(days=14)).isoformat(),
+                 *horizons,
                  (stamp-CURRENT_SETTLEMENT_WINDOW).isoformat(),
-                 stamp.isoformat(),stamp.isoformat(),MAX_SETTLE),
+                 stamp.isoformat(), stamp.isoformat(), limit),
             ).fetchall()
         paths = {}
         for row in rows:
@@ -419,6 +429,23 @@ class ProspectivePathLedger:
             current_limit = MAX_SETTLE-min(reserved, len(backlog))
             selected = current[:current_limit]
             selected += backlog[:MAX_SETTLE-len(selected)]
+            # 5-minute paths settle only from capacity the 15/60-minute
+            # queues did not use, with the same current/backlog split.
+            # They issue ~3x as often as 15-minute paths, so sharing one
+            # queue would let them crowd out longer horizons; strict
+            # leftover priority bounds them to MAX_SETTLE total per cycle
+            # without ever displacing a 15/60-minute path.
+            remaining = MAX_SETTLE-len(selected)
+            if remaining > 0:
+                current5 = self._ready_paths(
+                    conn, stamp=stamp, current=True, horizons=(5,), limit=remaining)
+                backlog5 = self._ready_paths(
+                    conn, stamp=stamp, current=False, horizons=(5,), limit=remaining)
+                reserved5 = max(1, remaining//5) if remaining > 1 else 0
+                current5_limit = remaining-min(reserved5, len(backlog5))
+                selected5 = current5[:current5_limit]
+                selected5 += backlog5[:remaining-len(selected5)]
+                selected += selected5
             waiting = [row for path in selected for row in path]
             scored=ambiguous=0
             paths={}

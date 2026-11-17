@@ -840,6 +840,7 @@ class Gateway(ThreadingHTTPServer):
                 raise ValueError("local inference response rejected")
             raw = response.read(50_000)
         data = json.loads(raw)
+        usage = _backend_usage(data)
         choice = data["choices"][0]
         if choice.get("finish_reason") == "length":
             raise ValueError("local model exhausted generation token budget")
@@ -913,7 +914,34 @@ class Gateway(ThreadingHTTPServer):
             grounded["research_checks"] = result["checks"]
             grounded["checks_are_hypotheses_only"] = True
             grounded["inference_profile"] = "extended"
+        if usage is not None:
+            # Token counts straight from the backend response. The evidence
+            # probe divides completion_tokens by its own wall clock for a
+            # real tokens/second; without a usage block it reports latency
+            # only and tokens/second stays null, never estimated.
+            grounded["usage"] = usage
         return grounded
+
+
+def _backend_usage(data: object) -> dict | None:
+    """Bounded token-usage block from a llama-server response, or None.
+
+    Only a well-formed usage dict with non-negative integer counts is
+    accepted; anything else (missing, wrong types, absurd values) yields
+    None so callers report latency only instead of a fabricated rate.
+    """
+    if not isinstance(data, dict):
+        return None
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    out = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = usage.get(key)
+        if type(value) is not int or value < 0 or value > 1_000_000:
+            return None
+        out[key] = value
+    return out
 
 
 def inference_failure_kind(exc: Exception, *, mode: str) -> str:

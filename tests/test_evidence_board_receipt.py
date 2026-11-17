@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+import threading
+import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +20,8 @@ from evidence_board_github import (
     read_public_intelligence,
 )
 from evidence_board_receipt import (
+    LLM_GENERATION_PROBE_PROGRAM,
+    LLM_METRICS_CMD,
     LLM_METRICS_MARKER,
     _artifact_prefix,
     _collection_block,
@@ -818,6 +824,54 @@ class LlmMetricsTests(unittest.TestCase):
         raw["generation_probe"] = "authenticated_generation"
         self.assertTrue(summarize_llm_metrics(raw)["inference_verified"])
 
+    def test_generation_timing_fields_are_carried_when_probe_verified(self) -> None:
+        raw = self._valid_raw()
+        raw.update({
+            "inference_verified": True,
+            "generation_probe": "authenticated_generation",
+            "latency_ms_p50": 5230.4, "latency_ms_p95": 5230.4,
+            "tokens_per_second": 8.024, "requests_sampled": 1,
+            "generation_errors": 0,
+        })
+        clean = summarize_llm_metrics(raw)
+        self.assertTrue(clean["inference_verified"])
+        self.assertEqual(clean["latency_ms_p50"], 5230.4)
+        self.assertEqual(clean["latency_ms_p95"], 5230.4)
+        self.assertEqual(clean["tokens_per_second"], 8.024)
+        self.assertEqual(clean["requests_sampled"], 1)
+        self.assertEqual(clean["generation_errors"], 0)
+
+    def test_generation_failure_stays_unverified_but_observed(self) -> None:
+        raw = self._valid_raw()
+        raw.update({"inference_verified": False, "requests_sampled": 1,
+                    "generation_errors": 1})
+        clean = summarize_llm_metrics(raw)
+        self.assertEqual(clean["status"], "observed")
+        self.assertFalse(clean["inference_verified"])
+        self.assertEqual(clean["generation_errors"], 1)
+        self.assertIsNone(clean["latency_ms_p50"])
+        self.assertIsNone(clean["tokens_per_second"])
+
+    def test_generation_marker_is_parsed_and_verifies(self) -> None:
+        raw = self._valid_raw()
+        raw.update({
+            "inference_verified": True,
+            "generation_probe": "authenticated_generation",
+            "latency_ms_p50": 5230.4, "latency_ms_p95": 5230.4,
+            "tokens_per_second": 8.024, "requests_sampled": 1,
+            "generation_errors": 0,
+        })
+        marker = LLM_METRICS_MARKER + json.dumps(raw)
+        shell = {"stdout": "some log line\n" + marker + "\n trailing\n"}
+        with patch("evidence_board_receipt._read_llm_console",
+                   return_value=shell):
+            result = read_intelligence_metrics()
+        self.assertEqual(result["status"], "observed")
+        self.assertEqual(result["probe"], "llm_console_v1_status")
+        self.assertTrue(result["inference_verified"])
+        self.assertEqual(result["latency_ms_p95"], 5230.4)
+        self.assertEqual(result["tokens_per_second"], 8.024)
+
     def test_invalid_or_missing_host_fields_are_unavailable_not_healthy(self) -> None:
         self.assertEqual(summarize_llm_metrics(None)["status"], "unavailable")
         self.assertIsNone(summarize_llm_metrics(None)["memory_pressure_pct"])
@@ -873,6 +927,182 @@ class LlmMetricsTests(unittest.TestCase):
         with patch("evidence_board_receipt._read_llm_console",
                    return_value={"stdout": LLM_METRICS_MARKER + "{not json"}):
             self.assertEqual(read_intelligence_metrics()["status"], "unavailable")
+
+
+class LlmGenerationProbeTests(unittest.TestCase):
+    """The console probe program itself, run against a stub gateway.
+
+    The program runs inside the LFM3 container in production; here it runs
+    in a subprocess against a local stub that mimics the gateway's
+    authenticated /v1/status and /v1/research routes.
+    """
+
+    TOKEN = "s" * 48
+
+    def setUp(self) -> None:
+        self.mode = "ok"
+        self.research_calls = 0
+        test = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def _auth_ok(self):
+                return (self.headers.get("Authorization", "")
+                        == "Bearer " + LlmGenerationProbeTests.TOKEN)
+
+            def _json(self, data, status=200):
+                payload = json.dumps(data).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def do_GET(self):
+                if self.path != "/v1/status":
+                    self._json({"error": "not_found"}, 404)
+                    return
+                if not self._auth_ok():
+                    self._json({"error": "unauthorized"}, 401)
+                    return
+                self._json({
+                    "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
+                    "ready": True, "source_sha": "b" * 40,
+                    "repair_state": "healthy", "repair_count": 0,
+                    "runtime_context_tokens": 4096,
+                    "memory": {"current_mb": 1190, "limit_mb": 4088,
+                               "peak_mb": 1300, "oom_kills": 0},
+                })
+
+            def do_POST(self):
+                if self.path != "/v1/research":
+                    self._json({"error": "not_found"}, 404)
+                    return
+                if not self._auth_ok():
+                    self._json({"error": "unauthorized"}, 401)
+                    return
+                test.research_calls += 1
+                length = int(self.headers.get("Content-Length", "0"))
+                self.rfile.read(length)
+                if test.mode == "busy_then_ok" and test.research_calls == 1:
+                    self._json({"error": "inference_busy"}, 429)
+                    return
+                if test.mode == "error_503":
+                    self._json({"error": "inference_failed",
+                                "failure_kind": "backend_timeout"}, 503)
+                    return
+                time.sleep(0.05)
+                grounded = {
+                    "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
+                    "direction": "uncertain", "confidence": "low",
+                    "grounding_status": "insufficient_evidence",
+                    "grounded_by": "deterministic_historical_evidence_policy",
+                    "informational_only": True, "uncalibrated": True,
+                }
+                if test.mode == "ungrounded":
+                    grounded["direction"] = "up"
+                    grounded["confidence"] = "high"
+                if test.mode != "no_usage":
+                    grounded["usage"] = {"prompt_tokens": 180,
+                                         "completion_tokens": 42,
+                                         "total_tokens": 222}
+                self._json(grounded)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+
+    def _run_probe(self, token=TOKEN):
+        env = dict(os.environ)
+        env["RIVAL_LLM_PORT"] = str(self.port)
+        env["RIVAL_LLM_SHARED_TOKEN"] = token
+        return subprocess.run(
+            [sys.executable, "-c", LLM_GENERATION_PROBE_PROGRAM],
+            env=env, capture_output=True, text=True, timeout=90,
+            check=False,
+        )
+
+    def _marker(self, stdout):
+        for line in stdout.splitlines():
+            if line.startswith(LLM_METRICS_MARKER):
+                return json.loads(line[len(LLM_METRICS_MARKER):])
+        return None
+
+    def test_probe_verifies_real_authenticated_generation(self):
+        result = self._run_probe()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        marker = self._marker(result.stdout)
+        self.assertIsNotNone(marker)
+        self.assertTrue(marker["inference_verified"])
+        self.assertEqual(marker["generation_probe"],
+                         "authenticated_generation")
+        self.assertGreater(marker["latency_ms_p50"], 0)
+        self.assertEqual(marker["latency_ms_p50"], marker["latency_ms_p95"])
+        self.assertGreater(marker["tokens_per_second"], 0)
+        self.assertLess(marker["tokens_per_second"], 5000)
+        self.assertEqual(marker["generation_errors"], 0)
+        self.assertEqual(marker["requests_sampled"], 1)
+        self.assertEqual(marker["status_http"], 200)
+        self.assertEqual(marker["model"], "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M")
+
+    def test_probe_retries_once_when_gateway_busy(self):
+        self.mode = "busy_then_ok"
+        result = self._run_probe()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        marker = self._marker(result.stdout)
+        self.assertTrue(marker["inference_verified"])
+        self.assertEqual(self.research_calls, 2)
+
+    def test_probe_reports_failure_without_poisoning_status(self):
+        self.mode = "error_503"
+        result = self._run_probe()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        marker = self._marker(result.stdout)
+        self.assertFalse(marker["inference_verified"])
+        self.assertEqual(marker["generation_errors"], 1)
+        self.assertEqual(marker["status_http"], 200)
+        self.assertTrue(marker["ready"])
+        self.assertNotIn("generation_probe", marker)
+        self.assertNotIn("latency_ms_p95", marker)
+
+    def test_probe_rejects_ungrounded_generation(self):
+        self.mode = "ungrounded"
+        result = self._run_probe()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        marker = self._marker(result.stdout)
+        self.assertFalse(marker["inference_verified"])
+        self.assertEqual(marker["generation_errors"], 1)
+
+    def test_probe_verifies_without_usage_but_reports_no_rate(self):
+        self.mode = "no_usage"
+        result = self._run_probe()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        marker = self._marker(result.stdout)
+        self.assertTrue(marker["inference_verified"])
+        self.assertNotIn("tokens_per_second", marker)
+
+    def test_probe_fails_closed_with_wrong_token(self):
+        result = self._run_probe(token="w" * 48)
+        self.assertIsNone(self._marker(result.stdout))
+
+    def test_metrics_command_carries_the_probe_program(self):
+        import base64
+        import re
+
+        match = re.search(
+            r"base64\.b64decode\('([^']+)'\)", LLM_METRICS_CMD)
+        self.assertIsNotNone(match)
+        decoded = base64.b64decode(match.group(1)).decode("utf-8")
+        self.assertEqual(decoded, LLM_GENERATION_PROBE_PROGRAM)
 
 
 class CombinedPayloadBudgetTests(unittest.TestCase):

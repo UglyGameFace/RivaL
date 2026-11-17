@@ -6,6 +6,7 @@ Only a GitHub Actions main-branch job with a GitHub OIDC identity may publish.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -975,28 +976,120 @@ LLM_REPAIR_STATES = {
 # The gateway's authenticated /v1/status (services/rival-llm/service.py)
 # returns model, ready, source_sha, repair_state, repair_count,
 # runtime_context_tokens and a cgroup memory snapshot. It does NOT measure
-# generation latency, tokens per second, DNS/upstream health or database
-# pressure, so those stay null unless a future host probe emits them.
+# generation latency or tokens per second, so those stay null unless the
+# host probe below emits them. DNS/upstream health and database pressure
+# are still not measured by any host probe and stay null.
 # The console probe below runs INSIDE the LFM3 container, reads the token
 # and port from that container's own environment, and prints only this
 # bounded marker. No secret ever leaves the container in the receipt.
+#
+# Generation probe: after the status read, the same program issues ONE real
+# authenticated generation through the gateway's /v1/research route with the
+# same synthetic, read-only body the release verifier uses (no historical
+# claims, no quotes, no database writes, no orders, no user evidence). The
+# response must be the safely-grounded shape (uncertain/low, insufficient
+# evidence) or the generation is not counted as verified. Wall-clock
+# latency is reported as both p50 and p95 (a single sample per cycle);
+# tokens/second is completion_tokens from the gateway's usage block divided
+# by that wall clock, and stays null when the backend reports no usage --
+# never estimated. This is local LFM3 inference: zero API spend, so the AI
+# budget lockdown (no automatic LLM spending) is untouched. Cadence is the
+# receipt workflow itself (every 10 minutes): one 140-token generation per
+# cycle. A 429 means the single-slot gateway is busy serving the bot, so
+# the probe waits 10s and retries once, then reports the failure honestly
+# instead of queuing behind bot traffic. A failed generation never poisons
+# the status fields: they still publish, only inference_verified is False.
+LLM_GENERATION_PROBE_PROGRAM = '''
+import json, os, time, urllib.error, urllib.request
+
+port = os.environ.get("RIVAL_LLM_PORT", "8765")
+token = os.environ.get("RIVAL_LLM_SHARED_TOKEN", "")
+root = "http://127.0.0.1:" + port
+headers = {"Authorization": "Bearer " + token}
+t0 = time.monotonic()
+with urllib.request.urlopen(
+    urllib.request.Request(root + "/v1/status", headers=headers),
+    timeout=10,
+) as resp:
+    status = json.loads(resp.read(200000))
+    status_http = resp.status
+memory = status.get("memory") if isinstance(status.get("memory"), dict) else {}
+marker = {
+    "model": status.get("model"),
+    "ready": status.get("ready"),
+    "source_sha": status.get("source_sha"),
+    "repair_state": status.get("repair_state"),
+    "repair_count": status.get("repair_count"),
+    "runtime_context_tokens": status.get("runtime_context_tokens"),
+    "memory": memory,
+    "status_latency_ms": round((time.monotonic() - t0) * 1000, 1),
+    "status_http": status_http,
+    "requests_sampled": 1,
+    "generation_errors": 0,
+}
+probe = {"asset": "BTC", "evidence": {
+    "asset": "BTC", "analysis": "unvalidated_research",
+    "horizon_minutes": 5, "sources": []}}
+generation = None
+elapsed_s = 0.0
+for attempt in (0, 1):
+    if attempt:
+        time.sleep(10)
+    start = time.monotonic()
+    req = urllib.request.Request(
+        root + "/v1/research",
+        data=json.dumps(probe).encode("utf-8"),
+        headers={**headers, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            req, timeout=45 if attempt == 0 else 30,
+        ) as resp:
+            generation = json.loads(resp.read(5000))
+            elapsed_s = time.monotonic() - start
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429 and attempt == 0:
+            continue
+        break
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        break
+    break
+verified = (
+    isinstance(generation, dict)
+    and generation.get("model") == status.get("model")
+    and generation.get("direction") == "uncertain"
+    and generation.get("confidence") == "low"
+    and generation.get("grounding_status") == "insufficient_evidence"
+    and generation.get("grounded_by") == "deterministic_historical_evidence_policy"
+    and generation.get("informational_only") is True
+    and generation.get("uncalibrated") is True
+)
+if verified:
+    marker["inference_verified"] = True
+    marker["generation_probe"] = "authenticated_generation"
+    marker["latency_ms_p50"] = round(elapsed_s * 1000, 1)
+    marker["latency_ms_p95"] = round(elapsed_s * 1000, 1)
+    usage = generation.get("usage")
+    if isinstance(usage, dict):
+        completion = usage.get("completion_tokens")
+        if type(completion) is int and completion > 0 and elapsed_s > 0:
+            marker["tokens_per_second"] = round(completion / elapsed_s, 3)
+else:
+    marker["inference_verified"] = False
+    marker["generation_errors"] = 1
+print("RIVAL_LLM_METRICS_RECEIPT=" + json.dumps(marker, separators=(",", ":")))
+'''
+# The console runs one shell command; the probe program is shipped base64
+# (the same shape as the release verifier in verify_live.py) so the
+# readable program above stays reviewable here instead of a one-liner.
+# Worst case inside the 110s console timeout: status 10s + generation 45s
+# + 10s backoff + retry 30s = 95s.
+_LLM_PROBE_B64 = base64.b64encode(
+    LLM_GENERATION_PROBE_PROGRAM.encode("utf-8")).decode("ascii")
 LLM_METRICS_CMD = (
-    "python -c 'import json,os,time,urllib.request;"
-    "t=time.monotonic();"
-    "p=os.environ.get(\"RIVAL_LLM_PORT\",\"8765\");"
-    "k=os.environ.get(\"RIVAL_LLM_SHARED_TOKEN\",\"\");"
-    "q=urllib.request.Request(\"http://127.0.0.1:\"+p+\"/v1/status\","
-    "headers={\"Authorization\":\"Bearer \"+k});"
-    "r=urllib.request.urlopen(q,timeout=10);"
-    "d=json.loads(r.read(200000));"
-    "m=d.get(\"memory\") if isinstance(d.get(\"memory\"),dict) else {};"
-    "print(\"RIVAL_LLM_METRICS_RECEIPT=\"+json.dumps({"
-    "\"model\":d.get(\"model\"),\"ready\":d.get(\"ready\"),"
-    "\"source_sha\":d.get(\"source_sha\"),\"repair_state\":d.get(\"repair_state\"),"
-    "\"repair_count\":d.get(\"repair_count\"),"
-    "\"runtime_context_tokens\":d.get(\"runtime_context_tokens\"),"
-    "\"memory\":m,\"status_latency_ms\":round((time.monotonic()-t)*1000,1),"
-    "\"status_http\":r.status},separators=(\",\",\":\")))'"
+    "python -c \"import base64;exec(base64.b64decode('"
+    + _LLM_PROBE_B64 + "'))\""
 )
 
 
@@ -1114,9 +1207,10 @@ def read_intelligence_metrics() -> dict:
     The publisher never holds the LFM3 bearer token: the console command
     runs inside the container and only the bounded marker line is parsed.
     Until the deployed host emits that marker, every metric is unavailable
-    rather than a fabricated healthy value. Generation itself is NOT
-    verified by this probe; that needs a host-side authenticated
-    generation probe the service does not yet emit.
+    rather than a fabricated healthy value. The same console program also
+    issues one real authenticated /v1/research generation per cycle, so a
+    verified generation flips inference_verified; a failed generation
+    leaves it False while the status fields still publish.
     """
     unavailable = summarize_llm_metrics(None)
     shell = _read_llm_console(LLM_METRICS_CMD)

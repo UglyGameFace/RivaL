@@ -490,3 +490,234 @@ def test_independent_readback_never_changes_training_trigger_or_uploads_original
         "src/parlay_bot/research/xmarket_training.py",
     ]
     assert "should_run=false" in trainer
+
+
+PIN = "okx-v5-public-history-5m-v1"
+
+
+def _stub_drive(monkeypatch):
+    class Drive:
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(proof, "Settings", lambda: object())
+    monkeypatch.setattr(proof, "_drive", lambda _: Drive())
+
+
+def _stub_audit_and_admission(monkeypatch, tmp_path):
+    (tmp_path / "complete.manifest.json").write_text("{}")
+    monkeypatch.setattr(proof, "audit_partition", lambda _: {
+        "venue": "okx", "contract": "SOL-USDT-SWAP", "month": "2026-09",
+        "rows": 8640, "full_calendar_month_verified": True,
+    })
+    monkeypatch.setattr(proof, "verify_xmarket_admission", _admission_exact)
+
+
+async def _admission_exact(*_args, **_kwargs):
+    return {"status": "exact_features_joined", "verified_native_fidelity": {
+        "polymarket": True, "kalshi": True,
+    }, "horizons": {str(h): {"split_eligible": True} for h in (5, 15, 60)}}
+
+
+@pytest.mark.asyncio
+async def test_step8_restore_passes_pinned_okx_family(monkeypatch, tmp_path):
+    """Step 8 must restore with the PR #633 single-family OKX pin.
+
+    research_after_source restores with --okx-source-integrity
+    okx-v5-public-history-5m-v1; the unpinned step-8 restore instead
+    considers every OKX family and fails closed on any divergent original.
+    """
+    from parlay_bot.research import archive_training
+
+    _stub_drive(monkeypatch)
+    _stub_audit_and_admission(monkeypatch, tmp_path)
+    seen = {}
+
+    async def production_restore(**kwargs):
+        seen.update(kwargs)
+        return {
+            "months_requested": kwargs["months"],
+            "restored": {"okx": ["private-id/original-path"]},
+            "excluded": {},
+            "okx_selected_source_integrity": kwargs.get("okx_source_integrity"),
+            "recorded_candles": {
+                "restored": [], "source_files": [], "partitions": [],
+                "missing_backup_days": [],
+            },
+        }
+
+    monkeypatch.setattr(archive_training, "restore_verified_months", production_restore)
+    result = await proof.verify(asset="SOL", root=tmp_path, now=NOW, lookback_days=90,
+                                xmarket_admission=True)
+    assert seen["okx_source_integrity"] == PIN
+    assert result["input_restoration"]["okx_selected_source_integrity"] == PIN
+    assert result["input_restoration"]["excluded_reason_classes"] == {}
+
+
+@pytest.mark.asyncio
+async def test_step8_pinned_restore_skips_rival_okx_family(monkeypatch, tmp_path):
+    """A pinned step-8 restore skips the rival OKX family instead of conflicting.
+
+    The bridge raises NativeMonthConflictError exactly when no pin is passed,
+    mirroring the divergent-original exclusion seen on SOL/XRP. The real
+    restore_verified_months must therefore reach the pinned branch.
+    """
+    from parlay_bot.research import (
+        bitget_source_bridge,
+        recorded_candles,
+        source_native,
+    )
+    from parlay_bot.research.source_native import NativeMonthConflictError
+
+    _stub_drive(monkeypatch)
+    _stub_audit_and_admission(monkeypatch, tmp_path)
+
+    async def bitget_restore(*_args, **_kwargs):
+        return []
+
+    async def source_restore(*_args, venue, source_integrity=None, **_kwargs):
+        if venue == "okx":
+            if source_integrity is None:
+                raise NativeMonthConflictError({
+                    "schema": "rival-native-month-conflict-v2",
+                    "venue": "okx", "contract": "SOL-USDT-SWAP", "quote": "USDT",
+                    "month": "2026-09",
+                    "comparison": {"differing_fields": ["close"]},
+                })
+            assert source_integrity == PIN
+        return []
+
+    async def recorded_restore(*_args, **_kwargs):
+        return {"restored": [], "source_files": [], "missing_backup_days": [],
+                "partitions": []}
+
+    monkeypatch.setattr(bitget_source_bridge, "restore_verified_bitget_market_months",
+                        bitget_restore)
+    monkeypatch.setattr(source_native, "restore_verified_source_months", source_restore)
+    monkeypatch.setattr(recorded_candles, "restore_recorded_partitions",
+                        recorded_restore)
+    result = await proof.verify(asset="SOL", root=tmp_path, now=NOW, lookback_days=90,
+                                xmarket_admission=True)
+    assert result["input_restoration"]["excluded_reason_classes"] == {}
+    assert result["input_restoration"]["okx_selected_source_integrity"] == PIN
+    assert result["status"] == "verified_original_readback"
+
+
+@pytest.mark.asyncio
+async def test_xmarket_admission_receipt_carries_unverified_source_diagnostics(
+    monkeypatch, tmp_path,
+):
+    """An unverified source must keep its blocked reason and pair counts.
+
+    Step 6 publishes blocked_reason/paired_points/overlap_coverage/
+    mismatch_rate; step 8 previously discarded all four, so a fidelity
+    flip between the two steps could not be classified from its artifact.
+    """
+    from parlay_bot.research import archive_training, xmarket_history, xmarket_training
+
+    class Drive:
+        async def read_verified_research_reports(self, **kwargs):
+            return [("private-drive-id", b"{}")], None
+
+    def frames(root, *, target_asset):
+        import pandas as pd
+
+        table = pd.DataFrame(index=pd.date_range("2026-11-08", periods=2, tz="UTC"))
+        return {"bitget|BTCUSDT|USDT": (table, "causal-features")}, {}
+
+    monkeypatch.setattr(archive_training, "load_frames_manifests", frames)
+    monkeypatch.setattr(xmarket_history, "validate_bundle", lambda doc: {
+        "asset": "BTC", "samples": [], **doc,
+    })
+    monkeypatch.setattr(xmarket_history, "combine", lambda bundles: {
+        "samples": [{"source": source, "at": "2026-11-08T00:05:00+00:00"}
+                    for source in ("polymarket", "kalshi")],
+        "verification": {
+            "polymarket": {"status": "unverified",
+                           "blocked_reason": "insufficient_overlap_coverage",
+                           "paired_points": 601, "overlap_coverage": 0.75,
+                           "mismatch_rate": 0.0},
+            "kalshi": {"status": "unverified",
+                       "blocked_reason": "insufficient_exact_pairs",
+                       "paired_points": 12, "overlap_coverage": 0.4,
+                       "mismatch_rate": 0.0119},
+        },
+    })
+    monkeypatch.setattr(xmarket_training, "train_run", lambda *a, **k: {
+        "artifact": None, "report": {
+            "training_status": "admission_only", "input_count": 18,
+            "dispersion_venues": [], "row_admission": {},
+            "overlap_evidence": {"eligible": False, "by_stream": {}, "splits": {}},
+            "effective_window": {"rows": 0},
+        },
+    })
+    receipt = await proof.verify_xmarket_admission(
+        Drive(), asset="BTC", root=tmp_path, now=NOW,
+    )
+    assert receipt["verified_native_fidelity"] == {
+        "polymarket": False, "kalshi": False,
+    }
+    assert receipt["native_source_fidelity"] == {
+        "polymarket": {"status": "unverified",
+                       "blocked_reason": "insufficient_overlap_coverage",
+                       "paired_points": 601, "overlap_coverage": 0.75,
+                       "mismatch_rate": 0.0},
+        "kalshi": {"status": "unverified",
+                   "blocked_reason": "insufficient_exact_pairs",
+                   "paired_points": 12, "overlap_coverage": 0.4,
+                   "mismatch_rate": 0.0119},
+    }
+
+
+@pytest.mark.asyncio
+async def test_step8_receipt_surfaces_okx_source_conflict_evidence(
+    monkeypatch, tmp_path,
+):
+    """An excluded OKX source must carry its conflict month/fields, not only its class."""
+    from parlay_bot.research import archive_training
+
+    _stub_drive(monkeypatch)
+    _stub_audit_and_admission(monkeypatch, tmp_path)
+
+    async def production_restore(**kwargs):
+        return {
+            "months_requested": kwargs["months"],
+            "restored": {"gate": []},
+            "excluded": {"okx": {
+                "reason": "NativeMonthConflictError", "detail": "conflicting native month snapshots",
+                "source_conflict": {
+                    "schema": "rival-native-month-conflict-v2",
+                    "venue": "okx", "contract": "SOL-USDT-SWAP", "quote": "USDT",
+                    "month": "2026-09",
+                    "comparison": {
+                        "first_rows": 8640, "second_rows": 8640,
+                        "all_candle_fields_identical": False,
+                        "differing_fields": ["close", "volume_base"],
+                        "price_fields_differ": True,
+                        "volume_fields_differ": True,
+                        "trade_count_differs": False,
+                        "grid_or_identity_fields_differ": False,
+                        "semantic_fields_equal": False,
+                        "identical_except_first_observed_at": False,
+                    },
+                },
+            }},
+            "okx_selected_source_integrity": PIN,
+            "recorded_candles": {
+                "restored": [], "source_files": [], "partitions": [],
+                "missing_backup_days": [],
+            },
+        }
+
+    monkeypatch.setattr(archive_training, "restore_verified_months", production_restore)
+    result = await proof.verify(asset="SOL", root=tmp_path, now=NOW, lookback_days=90,
+                                xmarket_admission=True)
+    assert result["input_restoration"]["excluded_reason_classes"] == {
+        "okx": "NativeMonthConflictError",
+    }
+    conflict = result["input_restoration"]["excluded_source_conflicts"]["okx"]
+    assert conflict["month"] == "2026-09"
+    assert conflict["comparison"]["differing_fields"] == ["close", "volume_base"]
+    assert conflict["comparison"]["price_fields_differ"] is True
+    assert conflict["comparison"]["volume_fields_differ"] is True
+    assert "private-" not in json.dumps(result)

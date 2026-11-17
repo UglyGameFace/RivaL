@@ -660,6 +660,20 @@ def _path_target_progress(store, now: datetime) -> dict:
                  (now-timedelta(days=14)).isoformat(),
                  (now+timedelta(minutes=65)).isoformat(),now.isoformat()),
             ).fetchall()
+            # Census of independent overdue targets: the two correlated
+            # long/short sides of one target collapse into one count, so
+            # this — unlike pending_paths_14d — is the number of distinct
+            # opportunities waiting on settlement. No horizon restriction:
+            # 5-minute paths are due targets too. Counts only, no raw rows.
+            unique_due = conn.execute(
+                """SELECT COUNT(DISTINCT venue || ':' || contract || ':' ||
+                          quote || ':' || target_opened_at) AS unique_due_targets
+                   FROM rival_forward_paths
+                   WHERE state='pending' AND target_opened_at>=?
+                     AND target_opened_at<=?""",
+                ((now-timedelta(days=14)).isoformat(),
+                 (now-timedelta(minutes=5)).isoformat()),
+            ).fetchone()["unique_due_targets"]
         issued = sum(int(row["issued_24h"]) for row in lifecycle)
         due = sum(int(row["due_pending_14d"]) for row in lifecycle)
         oldest = [row["oldest_due_target_at"] for row in lifecycle
@@ -677,6 +691,7 @@ def _path_target_progress(store, now: datetime) -> dict:
             "resolved_path_sides_24h": sum(int(row["resolved_24h"]) for row in lifecycle),
             "pending_paths_14d": sum(int(row["pending_14d"]) for row in lifecycle),
             "due_pending_paths_14d": due,
+            "unique_due_targets_14d": int(unique_due),
             "oldest_due_target_at": min(oldest) if oldest else None,
             "lifecycle_by_horizon": [dict(row) for row in lifecycle],
             "settlement_sample": (_path_settlement_sample(store, now) if due else

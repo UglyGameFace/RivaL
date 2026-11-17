@@ -33,7 +33,8 @@ def test_merge_verifies_original_admission_after_source_publication_without_anot
     collect = source.index("--max-windows \"$WINDOW_BUDGET\" --publish")
     proof = source.index("python tools/verify_recorded_partial_restore.py")
     assert proof > collect
-    stage = source.split("- name: Verify recovered chronological admission", 1)[1]
+    collector_only = source.split("\n  research_after_source:", 1)[0]
+    stage = collector_only.split("- name: Verify recovered chronological admission", 1)[1]
     assert "if: github.event_name == 'push'" in stage
     assert "--lookback-days 90 --xmarket-admission" in stage
     assert '--root "data/recorded-private-originals/$ASSET"' in stage
@@ -65,3 +66,27 @@ def test_verified_four_asset_train_only_pass_keeps_frozen_holdouts_and_no_writes
     assert "Research XMarket feature subsets without publishing models" in source
     assert "Upload only sanitized research results" in source
     assert "--max-windows" not in source
+
+
+def test_source_to_offline_model_handoff_runs_only_after_verified_source():
+    source = (WORKFLOWS / "xmarket-source-recovery.yml").read_text()
+    assert "needs: [anchor, source]" in source
+    assert "needs.source.result == 'success'" in source
+    assert "github.ref == 'refs/heads/main'" in source
+    assert "github.event.schedule == '43 20 * * *'" in source
+    assert "inputs.evaluate_models == true" in source
+    assert "INPUT_PUBLISH: ${{ inputs.publish_qualified_offline_candidates }}" in source
+    assert "EVENT_SCHEDULE: ${{ github.event.schedule }}" in source
+    assert "arguments+=(--publish-passing)" in source
+    assert '--as-of "$AS_OF"' in source
+    assert "persist-credentials: false" in source
+    assert "rival-archive-model-training" in source
+    assert "cancel-in-progress: false" in source
+    handoff = source.split("\n  research_after_source:", 1)[1]
+    assert "--max-windows" not in handoff
+    assert "xmarket_unattended_lifecycle.py" in handoff
+    assert "restore_archive_months.py" in handoff
+    assert "if-no-files-found: warn" in handoff
+    assert "xmarket-native-to-model-" in handoff
+    assert "data/native-reports/model-lifecycle-" in handoff
+    assert "--publish" not in handoff.replace("--publish-passing", "")

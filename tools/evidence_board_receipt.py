@@ -427,8 +427,18 @@ def summarize_xmarket_report(doc: dict, modified_at: str | None) -> dict | None:
     if status not in ("blocked", "fitted", "accepted", "rejected"):
         status = "unverified"
     window = doc.get("effective_window")
+    # A validated source report may identify an actual fitted artifact. A
+    # blocked report has a model family but NO model version to claim as fit.
+    family = "xmarket_v1" if doc.get("family") == "xmarket_v1" else None
+    claimed_version = doc.get("model_version")
+    version = (claimed_version if family and status in (
+        "fitted", "accepted", "rejected"
+    ) and isinstance(claimed_version, str)
+        and re.fullmatch(r"xmarket-[a-z0-9-]{1,79}", claimed_version)
+        else None)
     return {
         "asset": asset, "horizon": horizon, "status": status,
+        "family": family, "model_version": version,
         "pm_status": pm.get("status") if pm.get("status") in (
             "verified", "unverified", "blocked"
         ) else "unknown",

@@ -55,12 +55,19 @@ cx.state.evidence={
  database:{status:'verified_read',weight_updates_observed:102,qualified_paper_scopes:0,evaluated_paper_scopes:12},
  drive:{status:'verified_reports',latest_report_at:at,reports:[{asset:'BTC',horizon:5,status:'blocked',
   pm_status:'unverified',kalshi_status:'unverified',pm_pairs:0,kalshi_pairs:0,eligible_rows:0,
-  reason:'no_prospective_export',report_modified_at:at}]},
+  reason:'no_prospective_export',report_modified_at:at,
+  family:'xmarket_v1',model_version:null}]},
  performance:{scopes:[{asset:'BTC',horizon:15,paired_outcomes:285,model_brier:0.227,
   baseline_brier:0.235,after_cost_qualified:false}]},
  intelligence:{status:'verified',prs:[],runs:[]}
 };
 assert.match(cx.sourcePanel(),/KuCoin exact source gaps/);
+assert.match(cx.evidencePage(),/No fitted model/);
+cx.state.evidence.drive.reports[0].status='fitted';
+cx.state.evidence.drive.reports[0].model_version='xmarket-offline-v1';
+assert.match(cx.evidencePage(),/xmarket_v1 \/ xmarket-offline-v1/);
+cx.state.evidence.drive.reports[0].status='blocked';
+cx.state.evidence.drive.reports[0].model_version=null;
 assert.match(cx.sourcePanel(),/2 queued/);
 assert.match(cx.sourcePanel(),/1 due/);
 assert.match(cx.sourcePanel(),/Discord Live Calls/);

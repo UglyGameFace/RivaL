@@ -202,6 +202,10 @@ function build(payload,identity){
     return {
       asset:r.asset,horizon:r.horizon,
       status:oneOf(r.status,s),
+      family:oneOf(r.family,['xmarket_v1']),
+      model_version:r.family==='xmarket_v1' && ['fitted','accepted','rejected'].includes(r.status) &&
+        typeof r.model_version==='string' && /^xmarket-[a-z0-9-]{1,79}$/.test(r.model_version)
+        ?r.model_version:null,
       pm_status:oneOf(r.pm_status,['verified','unverified','blocked','unknown']),
       kalshi_status:oneOf(r.kalshi_status,['verified','unverified','blocked','unknown']),
       pm_pairs:numberOrNull(r.pm_pairs,1000000),kalshi_pairs:numberOrNull(r.kalshi_pairs,1000000),

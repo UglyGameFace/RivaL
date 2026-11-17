@@ -139,6 +139,23 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(result["reason"], "offline_gates_passed")
         self.assertNotIn("after_cost_qualified", result)
 
+    def test_real_fitted_model_identity_never_fabricated_for_blocked_report(self) -> None:
+        doc = {"schema": "rival-xmarket-model-v1",
+               "family": "xmarket_v1", "asset": "ETH",
+               "horizon_minutes": 15, "training_status": "blocked",
+               "model_version": "xmarket-offline-v1"}
+        blocked = summarize_xmarket_report(doc, None)
+        self.assertEqual(blocked["family"], "xmarket_v1")
+        self.assertIsNone(blocked["model_version"])
+        doc["training_status"] = "fitted"
+        fitted = summarize_xmarket_report(doc, None)
+        self.assertEqual(fitted["model_version"], "xmarket-offline-v1")
+        doc["model_version"] = "PRIVATE<script>"
+        self.assertIsNone(summarize_xmarket_report(doc, None)["model_version"])
+        doc["model_version"] = "xmarket-offline-v1"
+        doc["family"] = "unknown"
+        self.assertIsNone(summarize_xmarket_report(doc, None)["model_version"])
+
     def test_recent_online_weight_change_is_not_prediction_edge(self) -> None:
         host, db = summarize_host({
             "outcome": "verified",

@@ -54,7 +54,10 @@ async function main(){
   xmarket_exports:{recent_completed_days_pending:4,eligible_before:now,
    published:[{asset:'BTC',exported_days:1,latest_exported_day:'2026-11-12',drive_file_id:'PRIVATE'}],
    pending_by_asset:[{asset:'ETH',days:1}],password:'PRIVATE'}},
-  drive:{reports:[{asset:'BTC',horizon:5,reason:'insufficient_exact_pairs'}]},
+  drive:{reports:[{asset:'BTC',horizon:5,reason:'insufficient_exact_pairs',
+   family:'xmarket_v1',model_version:'xmarket-offline-v1',status:'blocked'},
+   {asset:'ETH',horizon:15,status:'fitted',
+    family:'xmarket_v1',model_version:'xmarket-offline-v1'}]},
   performance:{status:'observed',captured_at:now,sampling_policy:'per-asset-horizon-close-v3',
    scopes:[{asset:'BTC',horizon:5,model_version:'prospective-logistic-persistent-v3',
     paired_outcomes:100,model_brier:.2,baseline_brier:.3,unique_target_windows:20,venue_count:5,
@@ -105,6 +108,10 @@ async function main(){
  assert.ok(!Object.hasOwn(receipt.host.kucoin_gap_recovery,'contract'));
  assert.equal(receipt.host.xmarket_exports.published[0].latest_exported_day,'2026-11-12');
  assert.equal(receipt.drive.reports[0].reason,'insufficient_exact_pairs');
+ assert.equal(receipt.drive.reports[0].model_version,null,
+  'A blocked scope cannot claim a fitted artifact');
+ assert.equal(receipt.drive.reports[1].family,'xmarket_v1');
+ assert.equal(receipt.drive.reports[1].model_version,'xmarket-offline-v1');
  assert.equal(receipt.performance.model,'prospective-logistic-persistent-v3');
  assert.equal(receipt.performance.status,'observed');
  assert.equal(receipt.performance.after_cost_qualified,false,

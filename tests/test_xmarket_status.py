@@ -76,6 +76,62 @@ def test_an_invalid_stored_fit_is_not_called_a_ready_model(learning_store):
     assert scopes[1]["status"] == "fit_unavailable"
 
 
+
+def test_lifecycle_reads_one_bounded_fit_query_per_coin(learning_store):
+    _setup(learning_store, horizons=(5, 15, 60))
+    statements = []
+
+    class CountingConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, sql, params=()):
+            statements.append((sql, tuple(params)))
+            assert sql.lstrip().upper().startswith("SELECT")
+            return self.connection.execute(sql, params)
+
+    class CountingStore:
+        @contextmanager
+        def connect(self):
+            with learning_store.connect() as conn:
+                yield CountingConnection(conn)
+
+    result = read(CountingStore(), asset="BTC", now=NOW)
+    assert result["status"] == "recorded"
+    assert len(result["scopes"]) == 3
+    assert len(statements) == 2, "one model query plus one shadow query"
+    model_sql, params = statements[0]
+    assert "ROW_NUMBER() OVER" in model_sql
+    assert "PARTITION BY horizon_minutes" in model_sql
+    assert "recency_rank<=20" in model_sql
+    assert params == ("BTC", NOW.isoformat())
+
+
+def test_latest_twenty_fit_limit_is_independent_for_each_horizon(learning_store):
+    _setup(learning_store, horizons=(5, 15, 60))
+    from tests.xmarket_fixtures import valid_doc
+
+    with learning_store.connect() as conn:
+        for horizon in (5, 15, 60):
+            doc = json.dumps(valid_doc(asset="BTC", horizon=horizon, now=NOW))
+            for i in range(25):
+                conn.execute(
+                    "INSERT INTO rival_xmarket_models "
+                    "(asset,horizon_minutes,model_sha256,trained_through,"
+                    "gates_passed,imported_at,drive_file_id,document) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    ("BTC", horizon, f"{horizon*100+i:064x}",
+                     (NOW-timedelta(days=25-i)).isoformat(), 1,
+                     (NOW-timedelta(hours=2)).isoformat(),
+                     f"fixture-{horizon}-{i}", doc),
+                )
+    result = read(learning_store, asset="BTC", now=NOW)
+    assert result["status"] == "recorded"
+    assert {x["horizon_minutes"]: x["imported"] for x in result["scopes"]} == {
+        5: 20, 15: 20, 60: 20,
+    }
+
+
 def test_lifecycle_read_uses_selects_only_and_never_initializes_schema(learning_store):
     _setup(learning_store)
 

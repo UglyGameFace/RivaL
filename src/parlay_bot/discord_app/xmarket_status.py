@@ -15,17 +15,22 @@ def read(store, *, asset: str, now: datetime | None = None) -> dict:
     if clock.utcoffset() is None:
         raise ValueError("XMarket status requires an aware clock")
     clock = clock.astimezone(UTC)
-    fits = []
-    for horizon in (5, 15, 60):
-        found = optional_rows(store,
-            "SELECT horizon_minutes,document FROM rival_xmarket_models "
-            "WHERE asset=? AND horizon_minutes=? AND gates_passed=1 AND imported_at<=? "
-            "ORDER BY trained_through DESC LIMIT 20", (asset, horizon, clock.isoformat()),
-            what="XMarket imported-fit status")
-        if found is None:
-            return {"status": "unavailable", "partial": True, "asset": asset,
-                    "checked_at": clock.isoformat()}
-        fits.extend(found)
+    # The old renderer issued three separate imported-fit SELECTs for every
+    # asset (12 for four coins) before it could display a single lifecycle.
+    # Keep the same 20-newest-per-horizon gate with one source-authentic,
+    # bounded query; never load all historical model documents into Python.
+    fits = optional_rows(store,
+        "SELECT horizon_minutes,document FROM ("
+        "SELECT horizon_minutes,document,ROW_NUMBER() OVER ("
+        "PARTITION BY horizon_minutes ORDER BY trained_through DESC"
+        ") AS recency_rank FROM rival_xmarket_models "
+        "WHERE asset=? AND horizon_minutes IN (5,15,60) "
+        "AND gates_passed=1 AND imported_at<=?"
+        ") AS ranked WHERE recency_rank<=20",
+        (asset, clock.isoformat()), what="XMarket imported-fit status")
+    if fits is None:
+        return {"status": "unavailable", "partial": True, "asset": asset,
+                "checked_at": clock.isoformat()}
     rows = optional_rows(store,
         "SELECT horizon_minutes,COUNT(*) AS issued,MAX(issued_at) AS latest_at,"
         "SUM(CASE WHEN settled_at IS NOT NULL AND settled_at<=? "

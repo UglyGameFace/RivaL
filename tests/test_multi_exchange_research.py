@@ -103,6 +103,11 @@ def test_report_splits_quote_coverage_by_reference_venue(tmp_path):
         # No issued rows yet: the split exists and is empty, not missing.
         assert a.report(asset="BTC", horizon_minutes=5, now=now)[
             "quote_coverage_by_reference_venue"] == {}
+        assert a.reference_venue_coverage(
+            asset="BTC", horizon_minutes=5, now=now) == {
+            "settled": 0, "quote_pairs": 0,
+            "quote_coverage_by_reference_venue": {},
+        }
         assert a.issue(now=now) == 1
         # Second target without hyperliquid: okx becomes the reference venue.
         later = now + timedelta(minutes=10)
@@ -135,6 +140,13 @@ def test_report_splits_quote_coverage_by_reference_venue(tmp_path):
         split = proof["quote_coverage_by_reference_venue"]
         assert sum(v["settled"] for v in split.values()) == proof["settled"]
         assert sum(v["paired"] for v in split.values()) == proof["quote_pairs"]
+        # The receipt reads the same split through the cheap one-query
+        # helper — identical values, no table creation, no calibration.
+        helper = a.reference_venue_coverage(
+            asset="BTC", horizon_minutes=5, now=later + timedelta(minutes=9))
+        assert helper["quote_coverage_by_reference_venue"] == split
+        assert helper["settled"] == proof["settled"]
+        assert helper["quote_pairs"] == proof["quote_pairs"]
     finally:
         store.close()
 

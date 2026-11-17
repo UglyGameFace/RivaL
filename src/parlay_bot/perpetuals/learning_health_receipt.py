@@ -15,6 +15,7 @@ from parlay_bot.discord_app.home import _performance_cycles
 from parlay_bot.perpetuals.advance_forecasts import read_advance_receipt
 from parlay_bot.perpetuals.dashboard_forward_receipt import read_forward_calls
 from parlay_bot.perpetuals.family_quotes import SUPPORTED_QUOTE_SOURCES
+from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
 from parlay_bot.perpetuals.proof_progress import proof_progress
 from parlay_bot.perpetuals.xmarket_quote_receipt import read_xmarket_quotes
 from parlay_bot.perpetuals.xmarket_watchdog_receipt import read_xmarket_watchdog
@@ -59,6 +60,35 @@ def _status(value, now: datetime) -> dict:
     else:
         result["expired"] = value["expired"]
     return result
+
+
+def _reference_venue_coverage(store, best: dict, now: datetime) -> dict:
+    """One cheap read-only query: the best scope's settled/paired counts
+    split by reference venue. Same 30-day window and predicates as
+    MultiExchangeResearch.report(), so the split partitions the section's
+    own headline settled/quote_pairs — never the stored audit's
+    targets/closed_quotes, which cover a different window. A missing
+    ledger degrades to unavailable; it never masks the proof itself.
+    """
+    scope = {
+        "status": "unavailable",
+        "asset": best["asset"],
+        "horizon_minutes": best["horizon_minutes"],
+    }
+    try:
+        split = MultiExchangeResearch(store).reference_venue_coverage(
+            asset=best["asset"],
+            horizon_minutes=best["horizon_minutes"],
+            now=now,
+        )
+    except Exception:  # noqa: BLE001 - optional diagnostic must not mask proof
+        return scope
+    scope["status"] = "recorded"
+    scope["settled"] = split["settled"]
+    scope["quote_pairs"] = split["quote_pairs"]
+    scope["quote_coverage"] = split["quote_pairs"] / split["settled"] if split["settled"] else 0.0
+    scope["quote_coverage_by_reference_venue"] = split["quote_coverage_by_reference_venue"]
+    return scope
 
 
 def _future_proof(store, now: datetime) -> dict:
@@ -174,6 +204,8 @@ def _future_proof(store, now: datetime) -> dict:
                 "fresh_scopes": sum(r["fresh"] for r in snapshots),
                 "qualified_paper_scopes": sum(r["qualified_paper"] for r in snapshots),
                 "best_exact_source": best,
+                "reference_venue_coverage": _reference_venue_coverage(
+                    store, best, now),
                 "xmarket_v1": xmarket_proof,
                 "does_not_prove_real_fills": True,
             }

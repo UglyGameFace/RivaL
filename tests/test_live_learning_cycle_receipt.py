@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from parlay_bot.perpetuals import learning_health_receipt as host
+from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
+from parlay_bot.storage.hot import SQLiteHotStore
 
 RELAY = runpy.run_path(str(
     Path(__file__).resolve().parents[1] / "tools/discloud_learning_cycle_receipt.py"
@@ -632,3 +634,92 @@ def test_path_target_progress_counts_unique_due_targets_not_sides(
     assert result["due_pending_paths_14d"] == 4
     assert result["unique_due_targets_14d"] == 2
     assert result["read_only"] is True
+
+
+def test_host_forward_proof_publishes_reference_venue_coverage_split(
+        tmp_path, monkeypatch):
+    """The host receipt carries the per-reference-venue split for the best
+    scope — the diagnostic that says which venues actually earn coverage."""
+    now = datetime(2026, 11, 3, 3, tzinfo=UTC)
+    store = SQLiteHotStore(tmp_path / "receipt-split.sqlite")
+    try:
+        MultiExchangeResearch(store).initialize()
+        first = now - timedelta(days=1)
+        second = now - timedelta(hours=23)
+        with store.connect() as conn:
+            for target, venue, contract, quote, outcome in (
+                    (first, "hyperliquid", "BTC", "USDC", 1),
+                    (second, "okx", "BTCUSDT", "USDT", 0)):
+                conn.execute(
+                    """INSERT INTO perp_multi_forward
+                       (asset,horizon_minutes,target_opened_at,issued_at,
+                        model_version,probability_up,reference_probability_up,
+                        reference_venue,reference_contract,reference_quote,
+                        reference_opened_at,contributor_count,
+                        contributors_json,settled_at,outcome_up,
+                        challenger_brier,incumbent_brier)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ("BTC", 5, target.isoformat(),
+                     (now - timedelta(days=1)).isoformat(),
+                     "ten-venue-fusion-shadow-v1", .62, .5, venue, contract,
+                     quote, (target - timedelta(minutes=5)).isoformat(),
+                     3, "[]", now.isoformat(), outcome, .01, .25),
+                )
+            # Only the hyperliquid-referenced target ever sees a book quote.
+            conn.execute(
+                """INSERT INTO perp_multi_quote_shadow
+                   (asset,horizon_minutes,target_opened_at,venue,entry_at,
+                    entry_bid,entry_ask,state,exit_at,exit_bid,exit_ask,
+                    challenger_gross_bps,incumbent_gross_bps)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("BTC", 5, first.isoformat(), "hyperliquid",
+                 (first - timedelta(minutes=5)).isoformat(), 100.0, 100.1,
+                 "EXIT_QUOTED", first.isoformat(), 101.0, 101.1, 5.0, 4.0),
+            )
+
+        def fake(_store, *, asset, venue, now):
+            if venue == "hyperliquid" and asset == "BTC":
+                return {"status": "recorded", "evaluations": [{
+                    "quote": "USDC", "horizon": 5, "fresh": True,
+                    "candidate": {
+                        "valid": True, "targets": 150, "days": 21,
+                        "eligible_quotes": 160, "closed_quotes": 120,
+                        "quote_coverage": .75,
+                        "checks": {
+                            "future_outcomes": True,
+                            "beats_baselines": False,
+                            "quote_coverage": False,
+                            "after_cost_paper": False,
+                            "valid_records": True,
+                        },
+                    },
+                    "paper_qualified": False,
+                }]}
+            return {"status": "no_evaluations", "evaluations": []}
+
+        monkeypatch.setattr(host, "proof_progress", fake)
+        report = host._future_proof(store, now)
+        assert report["status"] == "recorded"
+        assert report["best_exact_source"]["asset"] == "BTC"
+        assert report["best_exact_source"]["horizon_minutes"] == 5
+        section = report["reference_venue_coverage"]
+        assert section["status"] == "recorded"
+        assert section["asset"] == "BTC"
+        assert section["horizon_minutes"] == 5
+        assert section["settled"] == 2
+        assert section["quote_pairs"] == 1
+        assert section["quote_coverage"] == pytest.approx(.5)
+        assert section["quote_coverage_by_reference_venue"] == {
+            "hyperliquid": {"settled": 1, "paired": 1, "coverage": 1.0},
+            "okx": {"settled": 1, "paired": 0, "coverage": 0.0},
+        }
+        # The split partitions the section's own headline numbers, and it
+        # is the same split report() returns for the same scope.
+        split = section["quote_coverage_by_reference_venue"]
+        assert sum(v["settled"] for v in split.values()) == section["settled"]
+        assert sum(v["paired"] for v in split.values()) == section["quote_pairs"]
+        assert split == MultiExchangeResearch(store).report(
+            asset="BTC", horizon_minutes=5, now=now,
+        )["quote_coverage_by_reference_venue"]
+    finally:
+        store.close()

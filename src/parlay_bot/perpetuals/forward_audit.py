@@ -1610,7 +1610,7 @@ class ForwardAccuracyMonitor:
                     # Path priors likewise: CPU work, before the transaction,
                     # with each reference bar's samples carried across cycles.
                     path_options = None
-                    if path_ready and horizon in (15, 60):
+                    if path_ready and horizon in (5, 15, 60):
                         memo_key = (venue, contract, quote, horizon)
                         path_memo = path_memos.pop(memo_key, None) or {}
                         try:
@@ -1709,7 +1709,7 @@ class ForwardAccuracyMonitor:
                                 _LOG.exception("RivaL shadow model failed; incumbent preserved")
                             finally:
                                 conn.execute("RELEASE SAVEPOINT rival_shadow_prediction")
-                            if path_ready and horizon in (15, 60):
+                            if path_ready and horizon in (5, 15, 60):
                                 # These are independent paper outcomes, not
                                 # trading signals; a malformed research model
                                 # cannot roll back the incumbent transaction.

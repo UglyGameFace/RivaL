@@ -1,6 +1,9 @@
 """Guard against independent workflows racing the same Drive-backed source cursor."""
 
+from datetime import datetime
 from pathlib import Path
+
+from parlay_bot.research.xmarket_training import HOLDOUT_DAYS
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
@@ -44,9 +47,6 @@ def test_merge_verifies_original_admission_after_source_publication_without_anot
 
 
 def test_verified_four_asset_train_only_pass_keeps_frozen_holdouts_and_no_writes():
-    from datetime import datetime
-    from parlay_bot.research.xmarket_training import HOLDOUT_DAYS
-
     source = (WORKFLOWS / "xmarket-train-only-research.yml").read_text()
     train_end = datetime.fromisoformat("2026-09-21T00:00:00+00:00")
     test_start = datetime.fromisoformat("2026-10-19T00:00:00+00:00")

@@ -169,6 +169,7 @@ def proof_progress(store, *, asset: str, venue: str,
                 "age_seconds": int(age.total_seconds()),
                 "fresh": current, "candidate": candidate, "reason": reason,
                 "paper_qualified": bool(candidate and candidate.get("qualified_paper")),
+                "promotion_status": str(record["status"]),
                 "xmarket_v1": xmarket,
             })
         except (ValueError, TypeError, KeyError, OverflowError):

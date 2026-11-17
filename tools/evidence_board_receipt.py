@@ -32,7 +32,42 @@ XMARKET_STAGES = {
     "waiting_for_fit", "imported_no_shadow_rows", "shadow_issuing", "read_unavailable",
 }
 INGEST_URL = "https://rival-evidence-collector.staytrippynlw.workers.dev/ingest"
+INGEST_ATTEMPT_URL = "https://rival-evidence-collector.staytrippynlw.workers.dev/ingest-attempt"
+COLLECTOR_LATEST_URL = "https://rival-evidence-collector.staytrippynlw.workers.dev/latest"
 AUDIENCE = "https://rival-evidence-collector.staytrippynlw.workers.dev"
+# A redundant trigger (push / workflow_run flood) must not re-hit Discloud,
+# Drive and the receiver while a receipt younger than this stands. Schedule
+# runs are the cadence backbone and never coalesce.
+COALESCE_FRESH_SECONDS = 300
+COLLECTION_EVENTS = ("schedule", "workflow_dispatch", "push", "workflow_run")
+# Per-source reliability reporting (Delivery 1): every upstream is tracked
+# independently, with its own freshness bar. A failed read is unavailable,
+# never zero; a genuinely measured zero stays a zero with status ok (or
+# measured_zero where the read itself reports "nothing found").
+SOURCE_NAMES = (
+    "discloud_forecast", "discloud_learning", "postgres", "drive",
+    "github", "intelligence", "intelligence_host", "performance",
+)
+SOURCE_FRESHNESS_SECONDS = {
+    "discloud_forecast": 900, "discloud_learning": 900, "postgres": 3600,
+    "drive": 86400, "github": 3600, "intelligence": 3600,
+    "intelligence_host": 3600, "performance": 3600,
+}
+SOURCE_STATUSES = {
+    "ok", "unreachable", "auth_failed", "failed_read", "no_records",
+    "measured_zero", "not_configured", "stale",
+}
+ATTEMPT_OUTCOMES = ("accepted", "failed", "coalesced")
+ATTEMPT_REASON = re.compile(r"[a-z0-9_]{1,80}")
+# Failure reasons that are safe to publish: fixed labels only, never raw
+# provider bodies, tokens, URLs, or private identifiers.
+READ_ERROR_LABELS = {
+    "drive_credentials_not_configured": ("not_configured", "credentials_not_configured"),
+    "host_credentials_not_configured": ("not_configured", "credentials_not_configured"),
+    "drive_access_token_unavailable": ("auth_failed", "drive_access_token_unavailable"),
+    "github_oidc_not_available": ("auth_failed", "github_oidc_not_available"),
+    "github_oidc_token_missing": ("auth_failed", "github_oidc_token_missing"),
+}
 PAIR_MARKER = "RIVAL_PAIRED_SCORE_RECEIPT="
 PAIR_CMD = ("python -c 'import sys;sys.path.insert(0,\"src\");"
             "from parlay_bot.perpetuals.evidence_score_receipt import main;main()'")
@@ -54,6 +89,32 @@ def _url_json(url: str, *, method: str = "GET", body: bytes | None = None,
 
 def _nonnegative(value: object) -> int | None:
     return value if type(value) is int and 0 <= value <= 10_000_000 else None
+
+
+def _sha_prefix(value: object) -> str | None:
+    """A 12-hex-char artifact identifier; never a full digest or weights."""
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{12}", value):
+        return value
+    return None
+
+
+def _artifact_prefix(document: dict) -> str | None:
+    """Canonical-JSON SHA prefix, the same identity the host import stores.
+
+    The host keys an imported artifact by sha256 of the canonical document
+    (sorted keys, compact separators). Recomputing it here from the same
+    parsed Drive document lets the board match a report to its host import
+    without ever publishing a full digest, weights or Drive file ID.
+    """
+    import hashlib
+
+    try:
+        digest = hashlib.sha256(
+            json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    except (TypeError, ValueError):
+        return None
+    return digest[:12]
 
 
 def _iso_timestamp(value: object) -> str | None:
@@ -114,6 +175,10 @@ def _xmarket_scope_progress(value: object) -> list[dict] | None:
             "latest_shadow_at": _iso_timestamp(row.get("latest_shadow_at")),
             "fresh_native_sources": _nonnegative(row.get("fresh_native_sources")),
             "expected_native_sources": 2,
+            "latest_artifact_sha256_prefix": _sha_prefix(
+                row.get("latest_artifact_sha256_prefix")),
+            "latest_trained_through": _iso_timestamp(
+                row.get("latest_trained_through")),
             "missing_native_sources": sorted(set(row.get("missing_native_sources", []))
                 & {"polymarket", "kalshi"}) if isinstance(
                 row.get("missing_native_sources"), list) and all(
@@ -134,7 +199,8 @@ def _recent_forecast_summary(source: object) -> dict:
     weights, lineages, account IDs, passwords or broker order identifiers.
     """
     unavailable = {"status": "read_unavailable", "captured_at": None,
-                   "window_hours": 6, "rows": [], "not_trading_calls": True}
+                   "window_hours": 6, "rows": [], "rows_per_scope": 3,
+                   "not_trading_calls": True}
     if not isinstance(source, dict) or source.get("status") not in (
         "observed", "no_recent_forecasts",
     ):
@@ -142,15 +208,20 @@ def _recent_forecast_summary(source: object) -> dict:
     at = _iso_timestamp(source.get("captured_at"))
     if not at:
         return unavailable
-    rows, scopes = [], set()
+    rows, counts = [], {}
     raw = source.get("rows")
     if not isinstance(raw, list):
         return unavailable
-    for row in raw[:12]:
+    from datetime import datetime as _dt
+
+    capture = _dt.fromisoformat(at)
+    for row in raw[:36]:
         if not isinstance(row, dict):
             continue
         asset, horizon = row.get("asset"), row.get("horizon")
-        if asset not in ASSETS or horizon not in HORIZONS or (asset, horizon) in scopes:
+        if asset not in ASSETS or horizon not in HORIZONS:
+            continue
+        if counts.get((asset, horizon), 0) >= 3:
             continue
         venue, quote = row.get("venue"), row.get("quote")
         if (not isinstance(venue, str)
@@ -161,7 +232,17 @@ def _recent_forecast_summary(source: object) -> dict:
         issued, target = _iso_timestamp(row.get("issued_at")), _iso_timestamp(
             row.get("target_close_at")
         )
-        if issued is None or target is None:
+        opened = _iso_timestamp(row.get("target_opened_at"))
+        settled_raw = row.get("settled_at")
+        settled = (_iso_timestamp(settled_raw) if settled_raw is not None
+                   else None)
+        if issued is None or target is None or opened is None:
+            continue
+        # The audited outcome target is the close of a five-minute candle.
+        if ((_dt.fromisoformat(target) - _dt.fromisoformat(opened))
+                .total_seconds() != 300):
+            continue
+        if settled_raw is not None and settled is None:
             continue
         prob, baseline, lead = (row.get("probability_up"),
                                 row.get("baseline_up"), row.get("lead_seconds"))
@@ -184,23 +265,421 @@ def _recent_forecast_summary(source: object) -> dict:
             status == "settled" and outcome not in (0, 1)
         ) or (status != "settled" and outcome is not None):
             continue
-        scopes.add((asset, horizon))
+        # Preserve the original host event clock: an open target cannot
+        # have closed yet, a settled/ungraded/awaiting target cannot claim
+        # a future close, and a settlement cannot predate its target close.
+        if ((status == "open" and _dt.fromisoformat(target) <= capture)
+                or (status != "open"
+                    and _dt.fromisoformat(target) > capture)):
+            continue
+        if status == "settled":
+            if (settled is None
+                    or _dt.fromisoformat(settled) < _dt.fromisoformat(target)
+                    or (_dt.fromisoformat(settled) - capture).total_seconds() > 120):
+                continue
+        elif settled is not None:
+            continue
+        counts[(asset, horizon)] = counts.get((asset, horizon), 0) + 1
         rows.append({
             "asset": asset, "horizon": horizon, "venue": venue,
-            "quote": quote, "issued_at": issued, "target_close_at": target,
+            "quote": quote, "issued_at": issued,
+            "target_opened_at": opened, "target_close_at": target,
+            "settled_at": settled if status == "settled" else None,
             "probability_up": round(float(prob), 6),
             "baseline_up": round(float(baseline), 6),
             "direction": direction, "status": status,
             "lead_seconds": round(float(lead), 2),
             "outcome_up": outcome if status == "settled" else None,
-            "model_version": "prospective-logistic-persistent-v3",
+            # The model version is a receipt-wide constant; the signed
+            # receiver re-attaches it so rows do not repeat it 36 times.
         })
     status = "observed" if rows else (
         "no_recent_forecasts" if source["status"] == "no_recent_forecasts"
         else "read_unavailable"
     )
     return {"status": status, "captured_at": at, "window_hours": 6,
-            "rows": rows, "not_trading_calls": True}
+            "rows_per_scope": 3, "rows": rows, "not_trading_calls": True}
+
+
+def _finite_number(value: object, *, limit: float) -> float | None:
+    if type(value) in (int, float) and -limit <= float(value) <= limit:
+        return round(float(value), 6)
+    return None
+
+
+def _paper_checks(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    keys = ("future_outcomes", "beats_baselines", "quote_coverage",
+            "after_cost_paper", "valid_records")
+    out = {}
+    for key in keys:
+        if type(value.get(key)) is not bool:
+            return None
+        out[key] = value[key]
+    return out
+
+
+def _paper_scope_row(value: object) -> dict | None:
+    """One exact-source paper evaluation: counts, gates, cost, promotion."""
+    if not isinstance(value, dict):
+        return None
+    asset, horizon = value.get("asset"), value.get("horizon_minutes")
+    venue, quote = value.get("venue"), value.get("quote")
+    if (asset not in ASSETS or type(horizon) is not int or horizon not in HORIZONS
+            or not isinstance(venue, str)
+            or re.fullmatch(r"[a-z0-9_-]{2,28}", venue) is None
+            or not isinstance(quote, str)
+            or re.fullmatch(r"[A-Z]{2,8}", quote) is None
+            or type(value.get("fresh")) is not bool
+            or type(value.get("qualified_paper")) is not bool):
+        return None
+    checks = _paper_checks(value.get("checks"))
+    coverage = value.get("quote_coverage")
+    if (checks is None or type(coverage) not in (int, float)
+            or not 0 <= float(coverage) <= 1):
+        return None
+    row = {
+        "asset": asset, "venue": venue, "quote": quote,
+        "horizon_minutes": horizon, "fresh": value["fresh"],
+        "targets": _nonnegative(value.get("targets")),
+        "days": _nonnegative(value.get("days")),
+        "eligible_quotes": _nonnegative(value.get("eligible_quotes")),
+        "closed_quotes": _nonnegative(value.get("closed_quotes")),
+        "quote_coverage": round(float(coverage), 4),
+        "missing_quote_windows": _nonnegative(value.get("missing_quote_windows")),
+        "qualified_paper": value["qualified_paper"],
+        "checks": checks,
+        "does_not_prove_real_fills": True,
+    }
+    if (row["targets"] is None or row["days"] is None
+            or row["eligible_quotes"] is None or row["closed_quotes"] is None):
+        return None
+    # A trade count is a count like every other one: _nonnegative caps
+    # it at 10,000,000 (Delivery 4 -- an unbounded int here passed
+    # straight into the signed receipt and the collector stored it).
+    trades = _nonnegative(value.get("trades"))
+    if trades is not None:
+        row["trades"] = trades
+    gain = _finite_number(value.get("gain"), limit=10)
+    if gain is not None:
+        row["gain"] = gain
+    severe = _finite_number(value.get("severe_lower_bps"), limit=100_000)
+    if severe is not None:
+        row["severe_lower_bps"] = severe
+    if value.get("promotion_status") in ("promoted_paper", "demoted", "held"):
+        row["promotion_status"] = value["promotion_status"]
+    return row
+
+
+def _xmarket_paper_scopes(value: object) -> list[dict]:
+    """Aggregate the 71 source evaluations to one row per asset/horizon.
+
+    The signed receipt is capped at 80KB, so full per-venue rows cannot be
+    published; the aggregate keeps every scope's gate tallies, venue list
+    and worst counts, and says so in the UI instead of sampling venues.
+    """
+    if not isinstance(value, list):
+        return []
+    grouped: dict[tuple, dict] = {}
+    for row in value:
+        if not isinstance(row, dict):
+            continue
+        asset, horizon = row.get("asset"), row.get("horizon_minutes")
+        venue = row.get("venue")
+        if (asset not in ASSETS or type(horizon) is not int
+                or horizon not in HORIZONS or not isinstance(venue, str)
+                or re.fullmatch(r"[a-z0-9_-]{2,28}", venue) is None
+                or row.get("status") not in ("recorded", "invalid_saved_evidence")
+                or type(row.get("fresh")) is not bool
+                or type(row.get("qualified_paper")) is not bool):
+            continue
+        key = (asset, horizon)
+        agg = grouped.setdefault(key, {
+            "asset": asset, "horizon": horizon, "sources_evaluated": 0,
+            "fresh_valid_sources": 0, "qualified_sources": 0,
+            "venue_count": 0, "min_targets": None, "min_days": None,
+            "min_coverage": None, "failing_checks": {},
+            "_venues": set(),
+        })
+        agg["sources_evaluated"] += 1
+        agg["_venues"].add(venue)
+        agg["venue_count"] = len(agg["_venues"])
+        if row["status"] != "recorded":
+            continue
+        if row["fresh"]:
+            agg["fresh_valid_sources"] += 1
+            if row["qualified_paper"]:
+                agg["qualified_sources"] += 1
+            checks = _paper_checks(row.get("checks"))
+            if checks is not None:
+                for name, passed in checks.items():
+                    if not passed:
+                        agg["failing_checks"][name] = (
+                            agg["failing_checks"].get(name, 0) + 1)
+        targets, days = _nonnegative(row.get("targets")), _nonnegative(row.get("days"))
+        coverage = row.get("quote_coverage")
+        if targets is not None:
+            agg["min_targets"] = targets if agg["min_targets"] is None else min(
+                agg["min_targets"], targets)
+        if days is not None:
+            agg["min_days"] = days if agg["min_days"] is None else min(
+                agg["min_days"], days)
+        if type(coverage) in (int, float) and 0 <= float(coverage) <= 1:
+            agg["min_coverage"] = (float(coverage) if agg["min_coverage"] is None
+                                   else min(agg["min_coverage"], float(coverage)))
+    out = []
+    for agg in sorted(grouped.values(), key=lambda r: (r["asset"], r["horizon"])):
+        row = {key: value for key, value in agg.items()
+               if not key.startswith("_")}
+        row["min_coverage"] = (round(row["min_coverage"], 4)
+                               if row["min_coverage"] is not None else None)
+        out.append(row)
+    return out[:12]
+
+
+def _paper_proof(value: object) -> dict:
+    """Authoritative paper-evaluation gates; zero qualified is a real result."""
+    out = {
+        "status": "unavailable", "evaluated_scopes": None,
+        "fresh_scopes": None, "qualified_paper_scopes": None,
+        "best_exact_source": None,
+        "xmarket_v1": {"status": "unavailable", "evaluated_scopes": None,
+                       "fresh_scopes": None, "qualified_paper_scopes": None,
+                       "scopes": [], "scope_handoff": None},
+        "does_not_prove_real_fills": True,
+    }
+    if not isinstance(value, dict):
+        return out
+    if value.get("status") in ("recorded", "no_evaluations", "unavailable"):
+        out["status"] = value["status"]
+    out["evaluated_scopes"] = _nonnegative(value.get("evaluated_scopes"))
+    out["fresh_scopes"] = _nonnegative(value.get("fresh_scopes"))
+    out["qualified_paper_scopes"] = _nonnegative(
+        value.get("qualified_paper_scopes"))
+    best = _paper_scope_row(value.get("best_exact_source"))
+    if best is not None:
+        out["best_exact_source"] = best
+    xm = value.get("xmarket_v1")
+    if isinstance(xm, dict):
+        x = out["xmarket_v1"]
+        if xm.get("status") in ("recorded", "no_evaluations", "unavailable"):
+            x["status"] = xm["status"]
+        x["evaluated_scopes"] = _nonnegative(xm.get("evaluated_scopes"))
+        x["fresh_scopes"] = _nonnegative(xm.get("fresh_scopes"))
+        x["qualified_paper_scopes"] = _nonnegative(
+            xm.get("qualified_paper_scopes"))
+        x["scopes"] = _xmarket_paper_scopes(xm.get("scopes"))
+        handoff = xm.get("scope_handoff")
+        if isinstance(handoff, dict) and handoff.get("status") == "recorded":
+            # Counts only: per-scope handoff rows would repeat the scope
+            # table above inside the 80KB signed receipt.
+            x["scope_handoff"] = {
+                "fitted_scopes": _nonnegative(handoff.get("fitted_scopes")),
+                "issuing_scopes": _nonnegative(handoff.get("issuing_scopes")),
+                "issuing_scopes_with_fresh_source_evaluation": _nonnegative(
+                    handoff.get("issuing_scopes_with_fresh_source_evaluation")),
+                "issuing_scopes_missing_supported_source_evaluation": _nonnegative(
+                    handoff.get(
+                        "issuing_scopes_missing_supported_source_evaluation")),
+                "does_not_prove_edge": True,
+            }
+    return out
+
+
+def _model_artifacts(report: object, forecast_status: object,
+                     scope_rows: object) -> dict:
+    """Exact serving-artifact identities: version plus truncated digests."""
+    out = {"status": "unavailable", "incumbent": None, "xmarket": []}
+    if not isinstance(report, dict):
+        return out
+    lineage = report.get("actual_learning")
+    if isinstance(lineage, dict) and lineage.get("status") not in (
+            "read_unavailable", "unavailable", None):
+        version = lineage.get("model_version")
+        version = (version if isinstance(version, str)
+                   and re.fullmatch(r"[a-z][a-z0-9-]{1,79}", version) else None)
+        status = lineage.get("status")
+        status = (status if isinstance(status, str) and status in (
+            "weight_updates_observed", "no_recent_weight_change_proven",
+            "insufficient_comparable_snapshots", "no_lineage") else "unknown")
+        lab = lineage.get("lab") if isinstance(lineage.get("lab"), dict) else {}
+        lab_status = lab.get("status")
+        out["status"] = "recorded"
+        out["incumbent"] = {
+            "family": "prospective-logistic",
+            "model_version": version,
+            "serving_status": ("serving" if forecast_status == "fresh"
+                               else "unverified"),
+            "lineage_status": status,
+            "weights_sha256_prefix": _sha_prefix(
+                lineage.get("latest_weights_sha256_prefix")),
+            "seed_sha256_prefix": _sha_prefix(
+                lineage.get("latest_seed_sha256_prefix")),
+            "online_training_updates": _nonnegative(
+                lineage.get("latest_online_training_updates")),
+            "sampled_forecasts": _nonnegative(lineage.get("sampled_forecasts")),
+            "sampled_streams": _nonnegative(
+                lineage.get("sampled_model_streams")),
+            "verified_weight_updates": _nonnegative(
+                lineage.get("streams_with_verified_weight_updates")),
+            "lab": {
+                "status": (lab_status if lab_status in (
+                    "not_initialized", "recorded", "no_saved_learners")
+                    else "unknown"),
+                "sampled_streams": _nonnegative(lab.get("sampled_streams")),
+                "streams_with_training_updates": _nonnegative(
+                    lab.get("streams_with_training_updates")),
+                "latest_checkpoint_at": _iso_timestamp(
+                    lab.get("latest_checkpoint_at")),
+            },
+            "proves_improvement": False,
+        }
+    for row in scope_rows if isinstance(scope_rows, list) else []:
+        if (isinstance(row, dict) and type(row.get("stored_artifacts")) is int
+                and row["stored_artifacts"] > 0):
+            out["xmarket"].append({
+                "asset": row["asset"], "horizon": row["horizon"],
+                "artifact_sha256_prefix": _sha_prefix(
+                    row.get("latest_artifact_sha256_prefix")),
+                "trained_through": _iso_timestamp(
+                    row.get("latest_trained_through")),
+                "latest_imported_at": _iso_timestamp(
+                    row.get("latest_imported_at")),
+                "stored_artifacts": row["stored_artifacts"],
+            })
+    out["xmarket"] = sorted(out["xmarket"],
+                            key=lambda r: (r["asset"], r["horizon"]))
+    return out
+
+
+def _research_loop(value: object) -> dict:
+    """Model Lab queue: real experiment statuses, never a leaderboard."""
+    out = {"status": "unavailable", "enabled": None,
+           "drive_folder_ids_present": None, "recent_by_status": {},
+           "recent_submitted_to_drive": None}
+    if not isinstance(value, dict):
+        return out
+    if value.get("status") in ("recorded", "unavailable"):
+        out["status"] = value["status"]
+    if type(value.get("enabled")) is bool:
+        out["enabled"] = value["enabled"]
+    if type(value.get("drive_folder_ids_present")) is bool:
+        out["drive_folder_ids_present"] = value["drive_folder_ids_present"]
+    by_status = value.get("recent_by_status")
+    if isinstance(by_status, dict):
+        for key, count in list(by_status.items())[:16]:
+            if (isinstance(key, str)
+                    and re.fullmatch(r"[a-z][a-z0-9_-]{2,40}", key)
+                    and type(count) is int and 0 <= count <= 16):
+                out["recent_by_status"][key] = count
+    out["recent_submitted_to_drive"] = _nonnegative(
+        value.get("recent_submitted_to_drive"))
+    return out
+
+
+def _xmarket_quotes(value: object) -> dict:
+    """Source-exact quote/entry availability per fitted XMarket scope."""
+    out = {"status": "unavailable", "window_start": None,
+           "captured_at": None, "scopes": [],
+           "counts_are_independent_targets": False,
+           "does_not_prove_prediction_edge": True}
+    if not isinstance(value, dict):
+        return out
+    if value.get("status") in ("recorded", "no_fitted_scopes", "read_unavailable"):
+        out["status"] = value["status"]
+    out["window_start"] = _iso_timestamp(value.get("window_start"))
+    out["captured_at"] = _iso_timestamp(value.get("captured_at"))
+    rows = value.get("scopes")
+    if not isinstance(rows, list):
+        return out
+    grouped: dict[tuple, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        asset, horizon = row.get("asset"), row.get("horizon_minutes")
+        venue, quote = row.get("venue"), row.get("quote")
+        if (asset not in ASSETS or type(horizon) is not int
+                or horizon not in HORIZONS or not isinstance(venue, str)
+                or re.fullmatch(r"[a-z0-9_-]{2,28}", venue) is None
+                or not isinstance(quote, str)
+                or re.fullmatch(r"[A-Z]{2,8}", quote) is None):
+            continue
+        key = (asset, horizon)
+        agg = grouped.setdefault(key, {
+            "asset": asset, "horizon": horizon,
+            "forecast_rows": 0, "decisive_forecast_rows": 0,
+            "entry_rows": 0, "closed_exit_rows": 0, "missed_exit_rows": 0,
+            "elapsed_unmatched_decisive_rows": 0,
+            "latest_entry_at": None, "latest_exit_at": None, "venues": [],
+        })
+        for field in ("forecast_rows", "decisive_forecast_rows", "entry_rows",
+                      "closed_exit_rows", "missed_exit_rows",
+                      "elapsed_unmatched_decisive_rows"):
+            count = _nonnegative(row.get(field))
+            if count is not None:
+                agg[field] += count
+        for source, target in (("latest_entry_at", "latest_entry_at"),
+                               ("latest_exit_at", "latest_exit_at")):
+            stamp = _iso_timestamp(row.get(source))
+            if stamp is not None and (agg[target] is None or stamp > agg[target]):
+                agg[target] = stamp
+        agg["venues"].append({
+            "venue": venue, "quote": quote,
+            "entry_rows": _nonnegative(row.get("entry_rows")),
+            "closed_exit_rows": _nonnegative(row.get("closed_exit_rows")),
+            "missed_exit_rows": _nonnegative(row.get("missed_exit_rows")),
+        })
+    out["scopes"] = sorted(
+        ({**agg, "venues": sorted(agg["venues"], key=lambda v: v["venue"])}
+         for agg in grouped.values()),
+        key=lambda r: (r["asset"], r["horizon"]))[:5]
+    return out
+
+
+def _xmarket_watchdog(value: object) -> dict:
+    """Issuance watchdog: census, boot, silence incidents per scope."""
+    out = {"status": "unavailable", "operational_status": "unverified",
+           "census_status": None, "scope_checked_at": None,
+           "scope_age_seconds": None, "watchdog_checked_at": None,
+           "boot_started_at": None, "fitted_scopes": None,
+           "issuing_scopes": None, "silent_scopes": None,
+           "open_silence_incidents": None, "resolved_silence_incidents": None,
+           "scopes": [], "does_not_prove_prediction_edge": True}
+    if not isinstance(value, dict):
+        return out
+    if value.get("status") in ("fresh", "stale_or_boot_unverified",
+                               "not_recorded", "read_unavailable"):
+        out["status"] = value["status"]
+    if value.get("operational_status") in ("healthy", "degraded", "pending",
+                                           "unverified"):
+        out["operational_status"] = value["operational_status"]
+    if value.get("census_status") in ("recorded", "not_initialized"):
+        out["census_status"] = value["census_status"]
+    out["scope_checked_at"] = _iso_timestamp(value.get("scope_checked_at"))
+    out["scope_age_seconds"] = _nonnegative(value.get("scope_age_seconds"))
+    out["watchdog_checked_at"] = _iso_timestamp(value.get("watchdog_checked_at"))
+    out["boot_started_at"] = _iso_timestamp(value.get("boot_started_at"))
+    for field in ("fitted_scopes", "issuing_scopes", "silent_scopes",
+                  "open_silence_incidents", "resolved_silence_incidents"):
+        out[field] = _nonnegative(value.get(field))
+    for row in value.get("scopes", [])[:12]:
+        if not isinstance(row, dict):
+            continue
+        asset, horizon = row.get("asset"), row.get("horizon_minutes")
+        if (asset not in ASSETS or type(horizon) is not int
+                or horizon not in HORIZONS
+                or row.get("status") not in (
+                    "invalid_import_clock", "import_grace",
+                    "insufficient_incumbents", "issuing", "silent")):
+            continue
+        out["scopes"].append({
+            "asset": asset, "horizon": horizon, "status": row["status"],
+            "shadow_rows": _nonnegative(row.get("shadow_rows")),
+        })
+    out["scopes"] = sorted(out["scopes"],
+                           key=lambda r: (r["asset"], r["horizon"]))
+    return out
 
 
 def summarize_host(report: dict | None) -> tuple[dict, dict]:
@@ -213,6 +692,11 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
         "xmarket_imported_scopes": None,
         "xmarket_stage": "read_unavailable", "xmarket_exports": None,
         "xmarket_scope_progress": None,
+        "model_artifacts": _model_artifacts(None, None, None),
+        "research_loop": _research_loop(None),
+        "paper_proof": _paper_proof(None),
+        "xmarket_quotes": _xmarket_quotes(None),
+        "xmarket_watchdog": _xmarket_watchdog(None),
         "kucoin_gap_recovery": {
             "status": "unavailable", "assets_observed": None,
             "queued_exact_gaps_14d": None, "due_exact_gaps_14d": None,
@@ -320,6 +804,14 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
     host["recent_forward_calls"] = _recent_forecast_summary(
         report.get("recent_forward_calls")
     )
+    host["model_artifacts"] = _model_artifacts(
+        report, host["forecast_status"], host["xmarket_scope_progress"])
+    host["research_loop"] = _research_loop(report.get("research_loop"))
+    host["paper_proof"] = _paper_proof(report.get("forward_proof"))
+    host["xmarket_quotes"] = _xmarket_quotes(
+        report.get("xmarket_quote_progress"))
+    host["xmarket_watchdog"] = _xmarket_watchdog(
+        report.get("xmarket_watchdog"))
     lineage = report.get("actual_learning")
     if isinstance(lineage, dict) and lineage.get("status") not in (
         "read_unavailable", "unavailable", None
@@ -402,6 +894,179 @@ def read_intelligence_host() -> dict:
     return result
 
 
+LLM_METRICS_MARKER = "RIVAL_LLM_METRICS_RECEIPT="
+LLM_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9/_.-]{0,79}:[A-Za-z0-9_.-]{1,40}$")
+LLM_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+LLM_REPAIR_STATES = {
+    "healthy", "warming", "backend_health_check_failed", "cooldown",
+    "quarantined", "repairing", "repair_failed",
+}
+# The gateway's authenticated /v1/status (services/rival-llm/service.py)
+# returns model, ready, source_sha, repair_state, repair_count,
+# runtime_context_tokens and a cgroup memory snapshot. It does NOT measure
+# generation latency, tokens per second, DNS/upstream health or database
+# pressure, so those stay null unless a future host probe emits them.
+# The console probe below runs INSIDE the LFM3 container, reads the token
+# and port from that container's own environment, and prints only this
+# bounded marker. No secret ever leaves the container in the receipt.
+LLM_METRICS_CMD = (
+    "python -c 'import json,os,time,urllib.request;"
+    "t=time.monotonic();"
+    "p=os.environ.get(\"RIVAL_LLM_PORT\",\"8765\");"
+    "k=os.environ.get(\"RIVAL_LLM_SHARED_TOKEN\",\"\");"
+    "q=urllib.request.Request(\"http://127.0.0.1:\"+p+\"/v1/status\","
+    "headers={\"Authorization\":\"Bearer \"+k});"
+    "r=urllib.request.urlopen(q,timeout=10);"
+    "d=json.loads(r.read(200000));"
+    "m=d.get(\"memory\") if isinstance(d.get(\"memory\"),dict) else {};"
+    "print(\"RIVAL_LLM_METRICS_RECEIPT=\"+json.dumps({"
+    "\"model\":d.get(\"model\"),\"ready\":d.get(\"ready\"),"
+    "\"source_sha\":d.get(\"source_sha\"),\"repair_state\":d.get(\"repair_state\"),"
+    "\"repair_count\":d.get(\"repair_count\"),"
+    "\"runtime_context_tokens\":d.get(\"runtime_context_tokens\"),"
+    "\"memory\":m,\"status_latency_ms\":round((time.monotonic()-t)*1000,1),"
+    "\"status_http\":r.status},separators=(\",\",\":\")))'"
+)
+
+
+def _llm_memory(value: object) -> dict | None:
+    """Bounded cgroup memory snapshot; unknown fields stay null, never zero."""
+    if not isinstance(value, dict):
+        return None
+    keys = ("current_mb", "limit_mb", "peak_mb", "anon_mb", "file_mb",
+            "file_mapped_mb", "gateway_rss_mb", "backend_rss_mb")
+    out = {key: _nonnegative(value.get(key)) for key in keys}
+    out["oom_kills"] = _nonnegative(value.get("oom_kills"))
+    return out
+
+
+def summarize_llm_metrics(raw: object) -> dict:
+    """Validate a host-emitted LFM3 metrics dict; never fabricate health.
+
+    A status-endpoint read proves authenticated backend readiness only.
+    ``inference_verified`` stays False unless the host also proves an
+    authenticated generation probe (``generation_probe`` marker); the
+    current /v1/status probe never sets it. Prompts, tokens, conversations,
+    private endpoints and secrets are never accepted fields.
+    """
+    unavailable = {
+        "status": "unavailable", "probe": "host_probe_not_emitted",
+        "captured_at": None, "model": None, "ready": None,
+        "inference_verified": False, "source_sha": None,
+        "repair_state": None, "repair_count": None,
+        "runtime_context_tokens": None, "memory": None,
+        "memory_pressure_pct": None, "status_latency_ms": None,
+        "status_http": None, "latency_ms_p50": None,
+        "latency_ms_p95": None, "tokens_per_second": None,
+        "requests_sampled": None, "generation_errors": None,
+        "fallback_count": None, "cpu_pct": None, "dns_ok": None,
+        "upstream_ok": None, "db_pressure": None,
+    }
+    if not isinstance(raw, dict):
+        return unavailable
+    model = raw.get("model")
+    if not isinstance(model, str) or LLM_MODEL_RE.fullmatch(model) is None:
+        return unavailable
+    ready = raw.get("ready")
+    if type(ready) is not bool:
+        return unavailable
+    out = dict(unavailable)
+    out["status"] = "observed"
+    out["model"] = model
+    out["ready"] = ready
+    out["inference_verified"] = bool(
+        raw.get("inference_verified") is True
+        and raw.get("generation_probe") == "authenticated_generation"
+    )
+    sha = raw.get("source_sha")
+    out["source_sha"] = sha if isinstance(sha, str) and LLM_SHA_RE.fullmatch(sha) else None
+    state = raw.get("repair_state")
+    out["repair_state"] = state if state in LLM_REPAIR_STATES else None
+    out["repair_count"] = _nonnegative(raw.get("repair_count"))
+    out["runtime_context_tokens"] = _nonnegative(
+        raw.get("runtime_context_tokens"))
+    memory = _llm_memory(raw.get("memory"))
+    out["memory"] = memory
+    current, limit = (memory or {}).get("current_mb"), (memory or {}).get("limit_mb")
+    if (type(current) is int and type(limit) is int and limit > 0):
+        out["memory_pressure_pct"] = round(min(current / limit * 100, 1000), 1)
+    latency = raw.get("status_latency_ms")
+    out["status_latency_ms"] = (
+        round(float(latency), 1)
+        if type(latency) in (int, float) and 0 <= latency <= 120_000 else None)
+    http = raw.get("status_http")
+    if http is not None:
+        if http != 200:
+            return unavailable
+        out["status_http"] = 200
+    for key, maximum in (("latency_ms_p50", 600_000), ("latency_ms_p95", 600_000)):
+        value = raw.get(key)
+        out[key] = (round(float(value), 1) if type(value) in (int, float)
+                    and 0 <= value <= maximum else None)
+    tps = raw.get("tokens_per_second")
+    out["tokens_per_second"] = (
+        round(float(tps), 3) if type(tps) in (int, float)
+        and 0 <= tps <= 100_000 else None)
+    for key in ("requests_sampled", "generation_errors", "fallback_count"):
+        out[key] = _nonnegative(raw.get(key))
+    cpu = raw.get("cpu_pct")
+    out["cpu_pct"] = (round(float(cpu), 1) if type(cpu) in (int, float)
+                      and 0 <= cpu <= 100 else None)
+    for key in ("dns_ok", "upstream_ok"):
+        out[key] = raw.get(key) if type(raw.get(key)) is bool else None
+    pressure = raw.get("db_pressure")
+    out["db_pressure"] = pressure if pressure in (
+        "none", "elevated", "saturated") else None
+    out["captured_at"] = _iso_timestamp(raw.get("captured_at"))
+    return out
+
+
+def _read_llm_console(command: str) -> dict | None:
+    """Run one read-only console command inside the LFM3 container."""
+    token, app_id = os.getenv("DISCLOUD_TOKEN"), os.getenv("DISCLOUD_LLM_APP_ID")
+    if not token or not app_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", app_id):
+        return None
+    url = "https://api.discloud.app/v2/app/" + parse.quote(app_id, safe="") + "/console"
+    response = _url_json(
+        url, method="PUT", body=json.dumps({"command": command}).encode("utf-8"),
+        headers={"api-token": token, "Content-Type": "application/json"},
+        timeout=110, limit=3_000_000,
+    )
+    apps = response.get("apps")
+    shell = apps.get("shell") if isinstance(apps, dict) else None
+    return shell if isinstance(shell, dict) else None
+
+
+def read_intelligence_metrics() -> dict:
+    """Authenticated LFM3 health via the host's own /v1/status probe.
+
+    The publisher never holds the LFM3 bearer token: the console command
+    runs inside the container and only the bounded marker line is parsed.
+    Until the deployed host emits that marker, every metric is unavailable
+    rather than a fabricated healthy value. Generation itself is NOT
+    verified by this probe; that needs a host-side authenticated
+    generation probe the service does not yet emit.
+    """
+    unavailable = summarize_llm_metrics(None)
+    shell = _read_llm_console(LLM_METRICS_CMD)
+    if not shell:
+        return unavailable
+    for line in str(shell.get("stdout", "")).splitlines():
+        if not line.startswith(LLM_METRICS_MARKER):
+            continue
+        try:
+            parsed = json.loads(line[len(LLM_METRICS_MARKER):])
+        except ValueError:
+            return unavailable
+        clean = summarize_llm_metrics(parsed)
+        if clean["status"] != "observed":
+            return unavailable
+        clean["captured_at"] = datetime.now(UTC).isoformat()
+        clean["probe"] = "llm_console_v1_status"
+        return clean
+    return unavailable
+
+
 def _oauth_access_token() -> str:
     parts = {
         "client_id": os.getenv("RIVAL_DRIVE_OAUTH_CLIENT_ID", ""),
@@ -431,7 +1096,8 @@ def _drive_json(path: str, token: str, *, limit: int = 400_000) -> dict:
     )
 
 
-def summarize_xmarket_report(doc: dict, modified_at: str | None) -> dict | None:
+def summarize_xmarket_report(doc: dict, modified_at: str | None,
+                             artifact_prefix: str | None = None) -> dict | None:
     """Validate the model contract before making per-scope claims."""
     if not isinstance(doc, dict) or doc.get("schema") != "rival-xmarket-model-v1":
         return None
@@ -476,9 +1142,20 @@ def summarize_xmarket_report(doc: dict, modified_at: str | None) -> dict | None:
     ) and isinstance(claimed_version, str)
         and re.fullmatch(r"xmarket-[a-z0-9-]{1,79}", claimed_version)
         else None)
+    failures = doc.get("gate_failures")
+    # Four short failures bound the signed receipt (80KB collector cap):
+    # 80 chars keeps real failure messages whole ("split too small:
+    # train=0 val=0 test=12" is 38 chars) while the 12-report Drive
+    # section stays under ~8.5KB even at maximum length.
+    gate_failures = ([
+        failure[:80] for failure in failures[:4]
+        if isinstance(failure, str) and failure
+    ] if isinstance(failures, list) else [])
     return {
         "asset": asset, "horizon": horizon, "status": status,
         "family": family, "model_version": version,
+        "artifact_sha256_prefix": _sha_prefix(artifact_prefix),
+        "gate_failures": gate_failures,
         "pm_status": pm.get("status") if pm.get("status") in (
             "verified", "unverified", "blocked"
         ) else "unknown",
@@ -547,7 +1224,9 @@ def read_drive() -> dict:
                 "files/" + parse.quote(file_id, safe="") + "?alt=media",
                 token, limit=100_000,
             )
-            item = summarize_xmarket_report(document, info.get("modifiedTime"))
+            item = summarize_xmarket_report(
+                document, info.get("modifiedTime"),
+                _artifact_prefix(document))
             if item is None or (item["asset"], item["horizon"]) != (asset, horizon):
                 raise ValueError("mismatched_report_identity")
             out["reports"].append(item)
@@ -701,47 +1380,316 @@ def _github_oidc() -> str:
     return value
 
 
-def publish() -> int:
-    host, db = summarize_host(None)
+def classify_read_error(exc: BaseException) -> tuple[str, str | None]:
+    """Map one upstream read failure to a publishable (status, reason).
+
+    Only fixed labels leave the runner. Service unreachable, auth failure,
+    stale data, no records, failed read and genuinely measured zero stay
+    distinct: an auth failure must never be reported as "unavailable" with
+    no further detail, and a failed read must never become a zero.
+    """
+    if isinstance(exc, ValueError) and str(exc) in READ_ERROR_LABELS:
+        return READ_ERROR_LABELS[str(exc)]
+    if isinstance(exc, error.HTTPError):
+        if exc.code in (401, 403):
+            return "auth_failed", f"auth_http_{exc.code}"
+        if exc.code == 429:
+            return "failed_read", "rate_limited_http_429"
+        if exc.code >= 500:
+            return "unreachable", "upstream_http_5xx"
+        return "failed_read", "upstream_http_error"
+    if isinstance(exc, TimeoutError):
+        return "unreachable", "timeout"
+    if isinstance(exc, (error.URLError, OSError)):
+        return "unreachable", "network_error"
+    if isinstance(exc, (ValueError, KeyError, TypeError)):
+        return "failed_read", "invalid_response"
+    return "failed_read", "read_failed"
+
+
+def _source_detail(status: str, reason: str | None = None,
+                   checked_at: str | None = None) -> dict:
+    return {
+        "status": status if status in SOURCE_STATUSES else "failed_read",
+        "reason": reason if reason is None or ATTEMPT_REASON.fullmatch(reason) else "read_failed",
+        "checked_at": _iso_timestamp(checked_at) or datetime.now(UTC).isoformat(),
+    }
+
+
+def _error_detail(exc: BaseException | None, checked_at: str) -> dict:
+    if exc is None:
+        return _source_detail("failed_read", "read_failed", checked_at)
+    status, reason = classify_read_error(exc)
+    return _source_detail(status, reason, checked_at)
+
+
+def _collection_block(*, coalesced: bool = False) -> dict:
+    """Provenance for this collection attempt: trigger, run, attempt.
+
+    The collector stores this with the signed receipt, so the dashboard can
+    show the last scheduled attempt separately from the last successful
+    signed publication, and a failure reason when they differ.
+    """
+    event = os.getenv("GITHUB_EVENT_NAME", "")
+    run_id = os.getenv("GITHUB_RUN_ID", "")
+    attempt = os.getenv("GITHUB_RUN_ATTEMPT", "")
+    return {
+        "event": event if event in COLLECTION_EVENTS else "unknown",
+        "run_id": run_id if re.fullmatch(r"\d{5,18}", run_id) else None,
+        "run_attempt": (int(attempt) if attempt.isdigit()
+                        and 1 <= int(attempt) <= 100 else None),
+        "attempted_at": datetime.now(UTC).isoformat(),
+        "coalesced": coalesced,
+    }
+
+
+def _recent_receipt_is_fresh(max_age_seconds: int = COALESCE_FRESH_SECONDS) -> bool:
+    """True when the collector already serves a receipt younger than the window.
+
+    Public GET-only read of the signed snapshot. Any failure fails open to a
+    full collection: a broken freshness check must never suppress evidence.
+    """
     try:
-        host, db = summarize_host(read_host())
+        latest = _url_json(COLLECTOR_LATEST_URL, timeout=8, limit=20_000)
+        at = _iso_timestamp(latest.get("captured_at"))
+        if not at:
+            return False
+        age = (datetime.now(UTC) - datetime.fromisoformat(at)).total_seconds()
+        return 0 <= age < max_age_seconds
     except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
-        pass  # A failed read is unavailable, never zero.
+        return False
+
+
+def _report_attempt(jwt: str, outcome: str, reason: str | None) -> None:
+    """Best-effort signed attempt record (failed / coalesced runs).
+
+    Uses the same GitHub OIDC identity as a receipt, so only a real
+    main-branch run can claim an attempt; the collector never lets an
+    attempt overwrite the last good snapshot. Failures here are swallowed:
+    attempt reporting must never turn a failed run into a second failure.
+    """
+    if outcome not in ATTEMPT_OUTCOMES or not jwt:
+        return
+    block = _collection_block(coalesced=outcome == "coalesced")
+    body = {"schema_version": 1, "kind": "collection-attempt",
+            "event": block["event"], "run_id": block["run_id"],
+            "run_attempt": block["run_attempt"],
+            "attempted_at": block["attempted_at"], "outcome": outcome,
+            "reason": reason if reason is None or ATTEMPT_REASON.fullmatch(reason) else "read_failed"}
+    try:
+        _url_json(
+            INGEST_ATTEMPT_URL, method="POST",
+            body=json.dumps(body, separators=(",", ":")).encode(),
+            headers={"Authorization": "Bearer " + jwt,
+                     "Content-Type": "application/json",
+                     "Accept": "application/json",
+                     "User-Agent": "RivaL-Evidence-Board/1.0"},
+            timeout=15, limit=5_000,
+        )
+    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
+        pass
+
+
+def _attempt_reason(exc: BaseException) -> str:
+    label = str(exc)
+    if label.startswith(("receiver_http_", "oidc_provider_http_",
+                         "receiver_health_", "receiver_anonymous_")) \
+            and len(label) <= 80 and ATTEMPT_REASON.fullmatch(label):
+        return label
+    return "publication_failed"
+
+
+def _host_source_details(host: dict, db: dict, errors: dict,
+                         checked_at: str) -> dict:
+    """Per-source status for the Discloud host and PostgreSQL reads.
+
+    Forecast/learning freshness comes from the host receipt itself, so a
+    stale forecast is reported stale (not failed), and a host read with no
+    recorded forecast is no_records (not zero, not failed).
+    """
+    forecast_status = host.get("forecast_status")
+    learning_status = host.get("learning_status")
+    forecast = {
+        "fresh": ("ok", None),
+        "stale_or_clock_invalid": ("stale", "stale_or_clock_invalid"),
+        "not_recorded": ("no_records", "no_records_found"),
+    }.get(forecast_status, ("failed_read", "host_field_unavailable"))
+    learning = {
+        "fresh": ("ok", None),
+        "stale_or_clock_invalid": ("stale", "stale_or_clock_invalid"),
+        "not_recorded": ("no_records", "no_records_found"),
+    }.get(learning_status, ("failed_read", "host_field_unavailable"))
+    details = {
+        "discloud_forecast": _source_detail(*forecast, checked_at),
+        "discloud_learning": _source_detail(*learning, checked_at),
+    }
+    if "host" in errors:
+        host_error = _error_detail(errors["host"], checked_at)
+        details["discloud_forecast"] = host_error
+        details["discloud_learning"] = host_error
+    if db.get("status") == "verified_read":
+        details["postgres"] = _source_detail("ok", None, checked_at)
+    elif "database" in errors:
+        details["postgres"] = _error_detail(errors["database"], checked_at)
+    else:
+        details["postgres"] = _source_detail(
+            "no_records", "no_records_found", checked_at)
+    return details
+
+
+def _drive_source_detail(drive: dict, errors: dict, checked_at: str) -> dict:
+    if drive.get("status") in ("verified_reports", "verified_metadata"):
+        if drive.get("reports_considered") == 0:
+            return _source_detail("no_records", "no_records_found", checked_at)
+        return _source_detail("ok", None, checked_at)
+    if "drive" in errors:
+        return _error_detail(errors["drive"], checked_at)
+    folder = os.getenv("RIVAL_DRIVE_REPORTS_FOLDER_ID", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", folder):
+        return _source_detail("not_configured", "credentials_not_configured", checked_at)
+    return _source_detail("failed_read", "incomplete_listing", checked_at)
+
+
+def _snapshot_source_detail(value: dict, errors: dict, key: str,
+                            checked_at: str, *, ok_status: str) -> dict:
+    """GitHub / Intelligence detail from a snapshot dict."""
+    if value.get("status") == ok_status:
+        return _source_detail("ok", None, checked_at)
+    if key in errors:
+        return _error_detail(errors[key], checked_at)
+    if key in ("github", "intelligence") and not os.getenv("GITHUB_TOKEN", ""):
+        return _source_detail("not_configured", "credentials_not_configured", checked_at)
+    return _source_detail("failed_read", "read_failed", checked_at)
+
+
+def build_source_details(host: dict, db: dict, drive: dict, github: dict,
+                         intelligence: dict, intelligence_host: dict,
+                         performance: dict, errors: dict,
+                         checked_at: str | None = None) -> dict:
+    """One reliability entry per upstream, each with its freshness bar."""
+    at = checked_at or datetime.now(UTC).isoformat()
+    details = _host_source_details(host, db, errors, at)
+    details["drive"] = _drive_source_detail(drive, errors, at)
+    details["github"] = _snapshot_source_detail(
+        github, errors, "github", at, ok_status="verified")
+    details["intelligence"] = _snapshot_source_detail(
+        intelligence, errors, "intelligence", at, ok_status="verified")
+    host_status = intelligence_host.get("status")
+    if host_status in ("online", "offline"):
+        # Offline is a genuine observation of the Intelligence app, not a
+        # failed read; the value itself carries the bad news.
+        details["intelligence_host"] = _source_detail("ok", None, at)
+    elif "intelligence_host" in errors:
+        details["intelligence_host"] = _error_detail(errors["intelligence_host"], at)
+    elif not os.getenv("DISCLOUD_TOKEN", "") or not os.getenv("DISCLOUD_LLM_APP_ID", ""):
+        details["intelligence_host"] = _source_detail(
+            "not_configured", "credentials_not_configured", at)
+    else:
+        details["intelligence_host"] = _source_detail("failed_read", "read_failed", at)
+    if performance.get("status") in ("observed", "partial"):
+        details["performance"] = _source_detail("ok", None, at)
+    elif performance.get("status") == "no_pairs":
+        details["performance"] = _source_detail(
+            "measured_zero", "no_pairs_measured", at)
+    elif "performance" in errors:
+        details["performance"] = _error_detail(errors["performance"], at)
+    else:
+        details["performance"] = _source_detail("failed_read", "read_failed", at)
+    for name in SOURCE_NAMES:
+        details[name]["freshness_seconds"] = SOURCE_FRESHNESS_SECONDS[name]
+    return details
+
+
+def publish() -> int:
+    checked_at = datetime.now(UTC).isoformat()
+    event = os.getenv("GITHUB_EVENT_NAME", "")
+    # Redundant flood triggers coalesce onto a receipt younger than 5 min
+    # instead of re-hitting Discloud, Drive and the receiver. Schedule runs
+    # always collect: they are the cadence backbone.
+    if event in ("workflow_run", "push") and _recent_receipt_is_fresh():
+        try:
+            jwt = _github_oidc()
+        except (error.HTTPError, error.URLError, OSError, TimeoutError,
+                ValueError, KeyError, TypeError):
+            jwt = ""
+        if jwt:
+            _report_attempt(jwt, "coalesced", None)
+        print(json.dumps({"publication": "coalesced",
+                          "reason": "recent_receipt_within_300s",
+                          "source": "read-only",
+                          "no_trades_or_db_writes": True}, sort_keys=True))
+        return 0
+    errors: dict[str, BaseException] = {}
+    host_report: dict | None = None
+    try:
+        host_report = read_host()
+    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+        errors["host"] = exc
+    try:
+        host, db = summarize_host(host_report)
+    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+        errors["host"] = exc
+        host, db = summarize_host(None)
     try:
         drive = read_drive()
-    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
+    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+        errors["drive"] = exc
         drive = {"status": "unavailable", "reports_considered": None,
                  "latest_report_at": None, "reports": []}
     try:
         github = read_github_snapshot(os.getenv("GITHUB_TOKEN", ""))
-    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
+    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+        errors["github"] = exc
         github = {"status": "unavailable", "fetched_at": None,
                   "prs": [], "runs": []}
     try:
         intelligence = read_public_intelligence(os.getenv("GITHUB_TOKEN", ""))
-    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
+    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+        errors["intelligence"] = exc
         intelligence = {"status": "unavailable", "prs": [], "runs": []}
     try:
         intelligence_host = read_intelligence_host()
-    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
+    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+        errors["intelligence_host"] = exc
         intelligence_host = {"status": "unavailable", "inference_verified": False}
     try:
-        performance = read_paired_performance()
+        intelligence_metrics = read_intelligence_metrics()
     except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
+        intelligence_metrics = summarize_llm_metrics(None)
+    try:
+        performance = read_paired_performance()
+    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+        errors["performance"] = exc
         performance = {"status": "unavailable", "scopes": []}
+    if host_report is None:
+        # read_host returns None only when Discloud credentials are absent
+        # or malformed; keep that distinct from a network/auth failure.
+        errors["host"] = ValueError("host_credentials_not_configured")
     now = datetime.now(UTC).isoformat()
+    sources = build_source_details(
+        host, db, drive, github, intelligence, intelligence_host,
+        performance, errors, checked_at)
     payload = {
         "schema_version": 1, "captured_at": now,
+        "collection": _collection_block(),
+        "sources": sources,
         "host": host, "database": db, "drive": drive,
         "github": github, "intelligence": intelligence,
-        "intelligence_host": intelligence_host, "performance": performance,
+        "intelligence_host": intelligence_host,
+        "intelligence_metrics": intelligence_metrics,
+        "performance": performance,
     }
     try:
         jwt = _github_oidc()
     except error.HTTPError as exc:
         raise ValueError(f"oidc_provider_http_{int(exc.code)}") from None
-    result = _submit_signed_receipt(payload, jwt)
+    try:
+        result = _submit_signed_receipt(payload, jwt)
+    except ValueError as exc:
+        _report_attempt(jwt, "failed", _attempt_reason(exc))
+        raise
     if result.get("status") not in ("accepted", "stale_ignored"):
+        _report_attempt(jwt, "failed", "receipt_not_accepted")
         raise ValueError("receipt_not_accepted")
     # The only logged output is a bounded status. Never print provider output.
     print(json.dumps({
@@ -749,7 +1697,11 @@ def publish() -> int:
         "database": db["status"], "drive": drive["status"],
         "drive_scopes": drive["reports_considered"],
         "github": github["status"], "intelligence": intelligence["status"],
+        "intelligence_metrics": intelligence_metrics["status"],
+        "llm_inference_verified": intelligence_metrics["inference_verified"],
         "performance": performance["status"],
+        "sources": {name: details["status"]
+                    for name, details in sources.items()},
         "source": "read-only", "no_trades_or_db_writes": True,
     }, sort_keys=True))
     return 0

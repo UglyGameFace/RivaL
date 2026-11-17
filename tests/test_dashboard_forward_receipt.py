@@ -34,14 +34,15 @@ class _Conn:
     def execute(self, sql, params):
         self.sql.append(sql)
         assert sql.lstrip().upper().startswith("SELECT ")
-        assert "ORDER BY issued_at DESC LIMIT 1" in sql
-        assert len(params) == 5
+        assert "ORDER BY issued_at DESC LIMIT ?" in sql
+        assert len(params) == 6
         assert params[2] == "prospective-logistic-persistent-v3"
+        assert params[5] == 3
         asset, horizon = params[0], params[1]
 
         class _Result:
-            def fetchone(_self):
-                return self.row if self.row and (asset, horizon) == ("BTC", 5) else None
+            def fetchall(_self):
+                return [self.row] if self.row and (asset, horizon) == ("BTC", 5) else []
         return _Result()
 
 
@@ -65,7 +66,8 @@ class ForwardDashboardReceiptTests(unittest.TestCase):
         result = read_forward_calls(store, NOW)
         self.assertEqual(result["status"], "observed")
         self.assertTrue(result["not_trading_calls"])
-        self.assertEqual(len(store.conn.sql), MAX_ITEMS)
+        self.assertEqual(len(store.conn.sql), 12)
+        self.assertEqual(MAX_ITEMS, 36)
         self.assertEqual(len(result["rows"]), 1)
         row = result["rows"][0]
         self.assertEqual(row["direction"], "UP")
@@ -75,6 +77,11 @@ class ForwardDashboardReceiptTests(unittest.TestCase):
         self.assertNotIn("contract", row)
         self.assertNotIn("weights_sha256", row)
         self.assertEqual(row["lead_seconds"], 240)
+        # Bounded history carries the target window and settlement clock.
+        self.assertEqual(row["target_opened_at"], (NOW - timedelta(minutes=2)).isoformat())
+        self.assertIsNone(row["settled_at"])
+        self.assertEqual(result["rows_per_scope"], 3)
+        self.assertEqual(result["window_hours"], 6)
 
     def test_causality_issuance_after_close_rejected(self):
         row = sample()
@@ -104,11 +111,14 @@ class ForwardDashboardReceiptTests(unittest.TestCase):
         row["issued_at"] = (NOW - timedelta(minutes=6)).isoformat()
         result = _row(row, asset="BTC", horizon=5, now=NOW)
         self.assertEqual(result["status"], "awaiting_settlement")
+        self.assertEqual(result["target_opened_at"], (NOW - timedelta(minutes=7)).isoformat())
+        self.assertIsNone(result["settled_at"])
         row["outcome_up"] = 1
         row["settled_at"] = (NOW - timedelta(seconds=45)).isoformat()
         result = _row(row, asset="BTC", horizon=5, now=NOW)
         self.assertEqual(result["status"], "settled")
         self.assertEqual(result["outcome_up"], 1)
+        self.assertEqual(result["settled_at"], (NOW - timedelta(seconds=45)).isoformat())
         row["settled_at"] = (NOW - timedelta(minutes=3)).isoformat()
         self.assertIsNone(_row(row, asset="BTC", horizon=5, now=NOW))
 

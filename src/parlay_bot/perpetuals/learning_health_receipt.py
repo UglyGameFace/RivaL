@@ -6,6 +6,7 @@ receipts are read through the same functions used by the Discord scorecard.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -20,6 +21,24 @@ from parlay_bot.perpetuals.xmarket_watchdog_receipt import read_xmarket_watchdog
 from parlay_bot.storage.hot import PostgresHotStore
 
 MARKER = "RIVAL_LEARNING_CYCLE_RECEIPT="
+INCUMBENT_MODEL_VERSION = "prospective-logistic-persistent-v3"
+
+
+def _sha_prefix(value: object) -> str | None:
+    """A 12-hex-char artifact identifier; never a full digest or weights."""
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{64}", value):
+        return value[:12].lower()
+    return None
+
+
+def _iso_or_none(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > 40:
+        return None
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return stamp.astimezone(UTC).isoformat() if stamp.utcoffset() is not None else None
 
 
 def _status(value, now: datetime) -> dict:
@@ -88,11 +107,22 @@ def _future_proof(store, now: datetime) -> dict:
                                 "missing_quote_windows": xmarket["missing_quote_windows"],
                                 "checks": dict(xmarket["checks"]),
                             })
+                            # Optional scoring detail, only when the saved
+                            # verdict actually carries it; never defaulted.
+                            if type(xmarket.get("trades")) is int:
+                                scoped["trades"] = xmarket["trades"]
+                            for key in ("gain", "severe_lower_bps"):
+                                value = xmarket.get(key)
+                                if type(value) in (int, float):
+                                    scoped[key] = value
+                        if item.get("promotion_status") in (
+                                "promoted_paper", "demoted", "held"):
+                            scoped["promotion_status"] = item["promotion_status"]
                         xmarket_scopes.append(scoped)
                     candidate = item["candidate"]
                     if candidate is None or not candidate.get("valid"):
                         continue
-                    snapshots.append({
+                    snapshot = {
                         "asset": asset, "venue": venue, "quote": currency,
                         "horizon_minutes": item["horizon"],
                         "fresh": item["fresh"],
@@ -103,7 +133,17 @@ def _future_proof(store, now: datetime) -> dict:
                         "quote_coverage": candidate["quote_coverage"],
                         "qualified_paper": item["paper_qualified"],
                         "checks": candidate["checks"],
-                    })
+                    }
+                    if type(candidate.get("trades")) is int:
+                        snapshot["trades"] = candidate["trades"]
+                    for key in ("gain", "severe_lower_bps"):
+                        value = candidate.get(key)
+                        if type(value) in (int, float):
+                            snapshot[key] = value
+                    if item.get("promotion_status") in (
+                            "promoted_paper", "demoted", "held"):
+                        snapshot["promotion_status"] = item["promotion_status"]
+                    snapshots.append(snapshot)
         xmarket_proof = {
             "status": ("recorded" if xmarket_scopes else
                        "unavailable" if unavailable else "no_evaluations"),
@@ -289,10 +329,21 @@ def _actual_learning_progress(store, now: datetime) -> dict:
                         "streams_with_training_updates":
                         sum(int(row["updates"]) > 0 for row in lab),
                         "latest_checkpoint_at": lab[0]["trained_at"] if lab else None})
+    latest = snapshots[0] if snapshots else None
     return {
         "status": ("weight_updates_observed" if changed else
                    "no_recent_weight_change_proven" if compared else
                    "insufficient_comparable_snapshots" if rows else "no_lineage"),
+        # The lineage rows that issued these forecasts identify the exact
+        # serving artifact: model family/version plus a truncated weight
+        # digest and seed digest. A digest prefix identifies the artifact;
+        # it is not the weights and cannot reconstruct them.
+        "model_version": INCUMBENT_MODEL_VERSION,
+        "latest_weights_sha256_prefix": (
+            _sha_prefix(latest["weights_sha256"]) if latest is not None else None),
+        "latest_seed_sha256_prefix": (
+            _sha_prefix(latest["historical_seed_sha256"])
+            if latest is not None else None),
         "sampled_forecasts": len(rows),
         "sampled_model_streams": len(newest),
         "streams_with_before_after": len(compared),
@@ -753,9 +804,36 @@ def _xmarket_progress(store, now: datetime) -> dict:
             inputs = conn.execute("SELECT asset,source,COUNT(*) AS points,MAX(at) AS latest_source_at "
                 "FROM rival_xmarket_observations WHERE asset IN ('BTC','ETH','SOL','XRP') "
                 "AND source IN ('polymarket','kalshi') AND at>=? GROUP BY asset,source", (since,)).fetchall()
-            fits = conn.execute("SELECT asset,horizon_minutes,COUNT(*) AS imported_artifacts, "
-                "MAX(imported_at) AS latest_imported_at "
-                "FROM rival_xmarket_models WHERE gates_passed=1 GROUP BY asset,horizon_minutes").fetchall()
+            fits = conn.execute("SELECT asset,horizon_minutes,model_sha256,"
+                "trained_through,imported_at "
+                "FROM rival_xmarket_models WHERE gates_passed=1 "
+                "ORDER BY imported_at DESC LIMIT 60").fetchall()
+            # One bounded read identifies the latest imported artifact per
+            # scope (12-char digest prefix + training window end). The full
+            # digest and the private Drive file ID never leave the host.
+            artifact_by_scope: dict = {}
+            for row in fits:
+                key = (row["asset"], int(row["horizon_minutes"]))
+                entry = artifact_by_scope.setdefault(key, {
+                    "asset": row["asset"], "horizon_minutes": key[1],
+                    "imported_artifacts": 0, "latest_imported_at": None,
+                    "latest_artifact_sha256_prefix": None,
+                    "latest_trained_through": None,
+                })
+                entry["imported_artifacts"] += 1
+                imported = row["imported_at"]
+                if (entry["latest_imported_at"] is None
+                        or str(imported) >= str(entry["latest_imported_at"])):
+                    entry["latest_imported_at"] = imported
+                    entry["latest_artifact_sha256_prefix"] = _sha_prefix(
+                        row["model_sha256"])
+                    entry["latest_trained_through"] = _iso_or_none(
+                        row["trained_through"])
+            fits = [{"asset": entry["asset"],
+                     "horizon_minutes": entry["horizon_minutes"],
+                     "imported_artifacts": entry["imported_artifacts"],
+                     "latest_imported_at": entry["latest_imported_at"]}
+                    for entry in artifact_by_scope.values()]
             rows = conn.execute("SELECT asset,horizon_minutes,COUNT(*) AS issued,MAX(issued_at) AS latest_at "
                 "FROM rival_model_shadow_forecasts WHERE asset IN ('BTC','ETH','SOL','XRP') "
                 "AND horizon_minutes IN (5,15,60) AND family='xmarket_v1' AND issued_at>=? "
@@ -792,7 +870,7 @@ def _xmarket_progress(store, now: datetime) -> dict:
         # Reuse the already bounded, read-only aggregate queries to expose
         # each of the 12 asset/horizon handoffs without model documents,
         # private Drive IDs, inferred predictions, or further DB requests.
-        fit_by_scope = {(r["asset"], int(r["horizon_minutes"])): r for r in fits}
+        fit_by_scope = artifact_by_scope
         shadow_by_scope = {(r["asset"], int(r["horizon_minutes"])): r for r in rows}
         pending_by_asset = {r["asset"]: int(r["days"]) for r in pending}
         scope_progress = []
@@ -819,6 +897,10 @@ def _xmarket_progress(store, now: datetime) -> dict:
                     "stored_gate_passing_artifacts": stored,
                     "shadow_rows_24h": issued,
                     "latest_imported_at": fit["latest_imported_at"] if fit else None,
+                    "latest_artifact_sha256_prefix": (
+                        fit["latest_artifact_sha256_prefix"] if fit else None),
+                    "latest_trained_through": (
+                        fit["latest_trained_through"] if fit else None),
                     "latest_shadow_at": shadow["latest_at"] if shadow else None,
                     "fresh_native_sources": len(fresh_sources),
                     "expected_native_sources": 2,

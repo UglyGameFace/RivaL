@@ -31,15 +31,34 @@ async function main(){
  };
  const issued=new Date(Date.now()-120000).toISOString();
  const target=new Date(Date.now()+180000).toISOString();
+ const opened=new Date(Date.now()-120000).toISOString();
  const oldTarget=new Date(Date.now()-120000).toISOString();
+ const oldOpened=new Date(Date.now()-420000).toISOString();
  const olderIssue=new Date(Date.now()-300000).toISOString();
- const payload={schema_version:1,captured_at:now,host:{
+ const payload={schema_version:1,captured_at:now,
+  collection:{event:'schedule',run_id:'123456789',run_attempt:1,
+   attempted_at:new Date(Date.now()-60000).toISOString(),coalesced:false,
+   run_url:'PRIVATE'},
+  sources:{
+   discloud_forecast:{status:'stale',reason:'stale_or_clock_invalid',checked_at:now,freshness_seconds:900},
+   discloud_learning:{status:'ok',reason:null,checked_at:now,freshness_seconds:900},
+   postgres:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
+   drive:{status:'failed_read',reason:'incomplete_listing',checked_at:now,freshness_seconds:86400},
+   github:{status:'not_configured',reason:'credentials_not_configured',checked_at:now,freshness_seconds:3600},
+   intelligence:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
+   intelligence_host:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
+   performance:{status:'measured_zero',reason:'no_pairs_measured',checked_at:now,freshness_seconds:3600},
+   attacker_source:{status:'ok',reason:'PRIVATE',checked_at:now},
+   bad_reason:{status:'ok',reason:'DROP TABLE',checked_at:now}},
+  host:{
   recent_forward_calls:{status:'observed',captured_at:now,window_hours:6,not_trading_calls:true,
-   rows:[{asset:'BTC',horizon:5,venue:'okx',quote:'USDT',issued_at:issued,target_close_at:target,
+   rows:[{asset:'BTC',horizon:5,venue:'okx',quote:'USDT',issued_at:issued,
+    target_opened_at:opened,target_close_at:target,settled_at:null,
     probability_up:0.62,baseline_up:0.52,direction:'UP',status:'open',outcome_up:null,
     lead_seconds:300,model_version:'prospective-logistic-persistent-v3',
     raw_contract:'PRIVATE',weights_sha256:'PRIVATE',discord_user_id:'PRIVATE'},
-    {asset:'SOL',horizon:5,venue:'okx',quote:'USDT',issued_at:olderIssue,target_close_at:oldTarget,
+    {asset:'SOL',horizon:5,venue:'okx',quote:'USDT',issued_at:olderIssue,
+     target_opened_at:oldOpened,target_close_at:oldTarget,settled_at:null,
      probability_up:0.51,baseline_up:0.49,direction:'UP',status:'ungraded',outcome_up:null,
      lead_seconds:180,contract:'PRIVATE',weights_sha256:'PRIVATE'},
     {asset:'ETH',horizon:5,venue:'bad/PRIVATE',quote:'USD',issued_at:issued,target_close_at:target,
@@ -72,7 +91,16 @@ async function main(){
   performance:{status:'observed',captured_at:now,sampling_policy:'per-asset-horizon-close-v3',
    scopes:[{asset:'BTC',horizon:5,model_version:'prospective-logistic-persistent-v3',
     paired_outcomes:100,model_brier:.2,baseline_brier:.3,unique_target_windows:20,venue_count:5,
-    within_target_candle_pairs:100,minimum_lead_seconds:180,outcome_clock:'target_5m_candle_close'}]}};
+    within_target_candle_pairs:100,minimum_lead_seconds:180,outcome_clock:'target_5m_candle_close'}]},
+  intelligence_metrics:{status:'observed',probe:'llm_console_v1_status',captured_at:now,
+   model:'LiquidAI/LFM3-1.7B-GGUF:Q4_K_M',ready:true,inference_verified:false,
+   source_sha:'a'.repeat(40),repair_state:'healthy',repair_count:2,
+   runtime_context_tokens:8192,
+   memory:{current_mb:1190,limit_mb:4088,peak_mb:1300,oom_kills:0,
+    gateway_rss_mb:60,backend_rss_mb:1100},
+   status_latency_ms:42.5,status_http:200,
+   tokens_per_second:12.5,latency_ms_p95:800,
+   token:'PRIVATE',prompt:'PRIVATE',endpoint:'PRIVATE'}};
  const records=new Map();
  const env={EVIDENCE_KV:{get:async key=>records.has(key)?JSON.parse(records.get(key)):null,
   put:async(key,value)=>{records.set(key,value);}}};
@@ -143,8 +171,200 @@ async function main(){
  assert.equal(receipt.performance.scopes[0].minimum_lead_seconds,180);
  assert.equal(receipt.performance.scopes[0].within_target_candle_pairs,100);
  assert.equal(receipt.performance.after_cost_qualified,false);
+ // D3: authenticated LFM3 metrics are allowlisted, never healthy by default.
+ assert.equal(receipt.intelligence_metrics.status,'observed');
+ assert.equal(receipt.intelligence_metrics.model,'LiquidAI/LFM3-1.7B-GGUF:Q4_K_M');
+ assert.equal(receipt.intelligence_metrics.ready,true);
+ assert.equal(receipt.intelligence_metrics.inference_verified,false,
+  'A status-endpoint read must never be reported as verified generation');
+ assert.equal(receipt.intelligence_metrics.memory_pressure_pct,29.1);
+ assert.equal(receipt.intelligence_metrics.memory.oom_kills,0);
+ assert.equal(receipt.intelligence_metrics.repair_state,'healthy');
+ assert.equal(receipt.intelligence_metrics.tokens_per_second,12.5);
+ assert.ok(!JSON.stringify(receipt.intelligence_metrics).includes('PRIVATE'),
+  'Prompts, tokens and private endpoints must never leave the signed receiver');
+ // D3: history points are versioned and carry bounded Drive/LLM trend inputs.
+ const series=JSON.parse(records.get('metrics-series'));
+ assert.equal(series.length,1);
+ assert.equal(series[0].schema_version,1,'Trend comparisons must gate on receipt schema version');
+ assert.equal(series[0].run_id,claims.run_id);
+ assert.equal(series[0].drive.status,'unknown');
+ assert.equal(series[0].drive.blocked,1);
+ assert.equal(series[0].drive.fitted,1);
+ assert.equal(series[0].llm.status,'observed');
+ assert.equal(series[0].llm.inference_verified,false);
+ assert.equal(series[0].llm.memory_pressure_pct,29.1);
+ assert.equal(series[0].llm.oom_kills,0);
+ const noMetrics=cx.build({schema_version:1,captured_at:now},{runId:'123456789'});
+ assert.equal(noMetrics.intelligence_metrics.status,'unavailable');
+ assert.equal(noMetrics.intelligence_metrics.inference_verified,false);
+ assert.equal(noMetrics.intelligence_metrics.memory_pressure_pct,null);
  assert.ok(!records.get('latest').includes('PRIVATE'));
  assert.equal(records.get('run:'+claims.run_id),records.get('latest'));
+ assert.equal(receipt.collection.event,'schedule');
+ assert.equal(receipt.collection.run_id,'123456789');
+ assert.equal(receipt.collection.run_attempt,1);
+ assert.equal(receipt.collection.coalesced,false);
+ assert.ok(!Object.hasOwn(receipt.collection,'run_url'));
+ assert.equal(receipt.sources.discloud_forecast.status,'stale');
+ assert.equal(receipt.sources.discloud_forecast.reason,'stale_or_clock_invalid');
+ assert.equal(receipt.sources.discloud_forecast.freshness_seconds,900);
+ assert.equal(receipt.sources.drive.status,'failed_read');
+ assert.equal(receipt.sources.performance.status,'measured_zero');
+ assert.ok(!Object.hasOwn(receipt.sources,'attacker_source'));
+ assert.ok(!Object.hasOwn(receipt.sources,'bad_reason'));
+ assert.ok(!records.get('latest').includes('PRIVATE'));
+ const health=JSON.parse(records.get('source-health'));
+ assert.equal(health.discloud_forecast.status,'stale');
+ assert.equal(health.discloud_forecast.last_error_at,now);
+ assert.equal(health.discloud_forecast.last_success_at,null);
+ assert.equal(health.discloud_forecast.consecutive_failures,1);
+ assert.equal(health.discloud_learning.status,'ok');
+ assert.equal(health.discloud_learning.last_success_at,now);
+ assert.equal(health.discloud_learning.consecutive_failures,0);
+ assert.equal(health.drive.consecutive_failures,1);
+ const lastPublication=JSON.parse(records.get('last-publication'));
+ assert.equal(lastPublication.run_id,'123456789');
+ assert.equal(lastPublication.event,'schedule');
+ assert.equal(JSON.parse(records.get('last-schedule-attempt')).outcome,'accepted');
+ const attemptsBefore=JSON.parse(records.get('attempt-history'));
+ assert.equal(attemptsBefore.length,1);
+ assert.equal(attemptsBefore[0].outcome,'accepted');
+ // A failed run reports itself through the same OIDC gate. The attempt is
+ // recorded and visible, but the last good snapshot is never overwritten.
+ const makeAttempt=(token,body)=>new Request(claims.aud+'/ingest-attempt',
+  {method:'POST',headers:token?{Authorization:'Bearer '+token}:{},
+   body:JSON.stringify(body)});
+ assert.equal((await cx.worker.fetch(makeAttempt(null,{kind:'collection-attempt'}),env)).status,401);
+ const failedAttempt={kind:'collection-attempt',event:'schedule',
+  run_id:'123456792',run_attempt:1,attempted_at:new Date().toISOString(),
+  outcome:'failed',reason:'receiver_http_403_authorization_required'};
+ assert.equal((await cx.worker.fetch(makeAttempt(await sign({...claims,event_name:'schedule',run_id:'123456792'}),failedAttempt),env)).status,202);
+ assert.equal(JSON.parse(records.get('latest')).provenance.run_id,'123456789',
+  'A failed attempt must never overwrite the last good snapshot');
+ const lastAttempt=JSON.parse(records.get('last-attempt'));
+ assert.equal(lastAttempt.outcome,'failed');
+ assert.equal(lastAttempt.reason,'receiver_http_403_authorization_required');
+ assert.equal(lastAttempt.run_id,'123456792');
+ const attemptsAfter=JSON.parse(records.get('attempt-history'));
+ assert.equal(attemptsAfter.length,2);
+ assert.equal(attemptsAfter[1].outcome,'failed');
+ const badReason={...failedAttempt,reason:'DROP TABLE; evil'};
+ assert.equal((await cx.worker.fetch(makeAttempt(await sign({...claims,event_name:'schedule',run_id:'123456793'}),badReason),env)).status,400);
+ const diagResponse=await cx.worker.fetch(new Request(claims.aud+'/diagnostics'),env);
+ assert.equal(diagResponse.status,200);
+ const diag=await diagResponse.json();
+ assert.equal(diag.collection.last_publication.run_id,'123456789');
+ assert.equal(diag.collection.last_attempt.outcome,'failed');
+ assert.equal(diag.counters.failed_attempts,1);
+ assert.equal(diag.counters.accepted_attempts,1);
+ assert.equal(diag.counters.sources_failing,3);
+ assert.equal(diag.sources.drive.consecutive_failures,1);
+ assert.equal(diag.attempts.length,2);
+ // A second good receipt clears the per-source failure streak while
+ // keeping the last error timestamp for the incident record.
+ const recovered={...payload,sources:{...payload.sources,
+  drive:{status:'ok',reason:null,checked_at:now,freshness_seconds:86400}},
+  captured_at:new Date(Date.now()+60000).toISOString()};
+ assert.equal((await cx.worker.fetch(make(valid, recovered),env)).status,202);
+ const healthAfter=JSON.parse(records.get('source-health'));
+ assert.equal(healthAfter.drive.status,'ok');
+ assert.equal(healthAfter.drive.consecutive_failures,0);
+ assert.equal(healthAfter.drive.last_success_at,now);
+ assert.ok(healthAfter.drive.last_error_at,
+  'Recovery must not erase when the source last failed');
+ assert.equal(receipt.host.recent_forward_calls.rows[0].target_opened_at,opened);
+ assert.equal(receipt.host.recent_forward_calls.rows_per_scope,3);
+ // D2: artifact identity, paper gates, lab queue, quotes and watchdog.
+ const extended=cx.build({schema_version:1,captured_at:now,host:{
+  forecast_status:'fresh',
+  model_artifacts:{status:'recorded',incumbent:{
+   family:'prospective-logistic',model_version:'prospective-logistic-persistent-v3',
+   serving_status:'serving',lineage_status:'weight_updates_observed',
+   weights_sha256_prefix:'abcdef012345',seed_sha256_prefix:'0123456789ab',
+   online_training_updates:84,sampled_forecasts:12,sampled_streams:3,
+   verified_weight_updates:2,
+   lab:{status:'recorded',sampled_streams:4,streams_with_training_updates:2,
+    latest_checkpoint_at:now},proves_improvement:false},
+   xmarket:[{asset:'BTC',horizon:15,artifact_sha256_prefix:'deadbeef1234',
+    trained_through:now,latest_imported_at:now,stored_artifacts:2}]},
+  research_loop:{status:'recorded',enabled:true,drive_folder_ids_present:true,
+   recent_by_status:{screened:3,discarded:1},recent_submitted_to_drive:1},
+  paper_proof:{status:'recorded',evaluated_scopes:71,fresh_scopes:12,
+   qualified_paper_scopes:0,
+   best_exact_source:{asset:'XRP',venue:'binance',quote:'USDT',horizon_minutes:15,
+    fresh:true,targets:165,days:22,eligible_quotes:160,closed_quotes:144,
+    quote_coverage:.9,qualified_paper:false,
+    checks:{future_outcomes:true,beats_baselines:true,quote_coverage:true,
+     after_cost_paper:false,valid_records:true},
+    trades:60,gain:-0.002,severe_lower_bps:-3.5,promotion_status:'held'},
+   xmarket_v1:{status:'recorded',evaluated_scopes:71,fresh_scopes:12,
+    qualified_paper_scopes:0,
+    scopes:[{asset:'BTC',venue:'hyperliquid',quote:'USDC',horizon_minutes:15,
+     fresh:true,status:'recorded',qualified_paper:false,targets:40,days:1,
+     eligible_quotes:27,closed_quotes:0,quote_coverage:0,
+     missing_quote_windows:27,
+     checks:{future_outcomes:false,beats_baselines:false,quote_coverage:false,
+      after_cost_paper:false,valid_records:true}}],
+    scope_handoff:{status:'recorded',fitted_scopes:5,issuing_scopes:5,
+     issuing_scopes_with_fresh_source_evaluation:3,
+     issuing_scopes_missing_supported_source_evaluation:2,
+     scopes:[{asset:'BTC',horizon_minutes:15,issued_24h:77,
+      status:'source_evaluation_recorded',source_evaluations:7,
+      fresh_valid_source_evaluations:7,quote_gate_passing_sources:0,
+      qualified_paper_sources:0}]}}},
+  xmarket_quotes:{status:'recorded',window_start:now,captured_at:now,
+   scopes:[{asset:'BTC',horizon_minutes:15,venue:'okx',quote:'USDT',
+    forecast_rows:10,decisive_forecast_rows:4,entry_rows:3,closed_exit_rows:2,
+    missed_exit_rows:1,elapsed_unmatched_decisive_rows:0,
+    latest_entry_at:now,latest_exit_at:now}]},
+  xmarket_watchdog:{status:'fresh',operational_status:'degraded',
+   census_status:'recorded',scope_checked_at:now,fitted_scopes:5,
+   issuing_scopes:4,silent_scopes:1,open_silence_incidents:1,
+   resolved_silence_incidents:2,
+   scopes:[{asset:'BTC',horizon_minutes:15,status:'issuing',
+    incumbent_rows:10,shadow_rows:7}]}},
+  drive:{reports:[{asset:'BTC',horizon:5,status:'blocked',family:'xmarket_v1',
+   model_version:null,artifact_sha256_prefix:'abcdef012345',
+   gate_failures:['split too small: train=0 val=0 test=12']}]}},
+  {runId:'123456789'});
+ assert.equal(extended.host.model_artifacts.status,'recorded');
+ assert.equal(extended.host.model_artifacts.incumbent.model_version,
+  'prospective-logistic-persistent-v3');
+ assert.equal(extended.host.model_artifacts.incumbent.weights_sha256_prefix,
+  'abcdef012345');
+ assert.equal(extended.host.model_artifacts.xmarket[0].artifact_sha256_prefix,
+  'deadbeef1234');
+ assert.equal(extended.host.research_loop.recent_by_status.screened,3);
+ assert.equal(extended.host.paper_proof.qualified_paper_scopes,0);
+ assert.equal(extended.host.paper_proof.best_exact_source.promotion_status,'held');
+ assert.equal(extended.host.paper_proof.best_exact_source.severe_lower_bps,-3.5);
+ assert.equal(extended.host.paper_proof.xmarket_v1.scopes[0].sources_evaluated,1);
+ assert.equal(extended.host.paper_proof.xmarket_v1.scopes[0].failing_checks.quote_coverage,1);
+ assert.equal(extended.host.paper_proof.xmarket_v1.scope_handoff.issuing_scopes,5);
+ assert.equal(extended.host.xmarket_quotes.scopes[0].entry_rows,3);
+ assert.equal(extended.host.xmarket_watchdog.operational_status,'degraded');
+ assert.equal(extended.drive.reports[0].artifact_sha256_prefix,'abcdef012345');
+ assert.deepEqual(extended.drive.reports[0].gate_failures,
+  ['split too small: train=0 val=0 test=12']);
+ assert.ok(!JSON.stringify(extended).includes('PRIVATE'));
+ // D4: paper trade counts are bounded like every other count (10M), and
+ // full 12-scope XMarket coverage survives the receiver -- the old cap of
+ // 8 nulled a legitimate 12 fresh / 12 expected.
+ const bounded=cx.build({schema_version:1,captured_at:now,host:{
+  xmarket_fresh_inputs:12,xmarket_expected_inputs:12,
+  paper_proof:{status:'recorded',evaluated_scopes:71,fresh_scopes:12,
+   qualified_paper_scopes:0,
+   best_exact_source:{asset:'BTC',venue:'polymarket',quote:'USDT',
+    horizon_minutes:5,fresh:true,targets:165,days:22,eligible_quotes:160,
+    closed_quotes:144,quote_coverage:0.9,qualified_paper:false,
+    checks:{future_outcomes:true,beats_baselines:true,quote_coverage:true,
+     after_cost_paper:false,valid_records:true},
+    trades:10000001,gain:0.001,severe_lower_bps:1,
+    promotion_status:'held'}}}},{runId:'123456789'});
+ assert.equal(bounded.host.xmarket_fresh_inputs,12);
+ assert.equal(bounded.host.xmarket_expected_inputs,12);
+ assert.ok(!Object.hasOwn(bounded.host.paper_proof.best_exact_source,'trades'));
  const unavailable=cx.build({schema_version:1,captured_at:now},{runId:'123456789'});
  assert.equal(unavailable.host.xmarket_exports,null);
  assert.equal(unavailable.host.recent_forward_calls.status,'read_unavailable');

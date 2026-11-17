@@ -13,7 +13,8 @@ ASSETS = ("BTC", "ETH", "SOL", "XRP")
 HORIZONS = (5, 15, 60)
 MODEL_VERSION = "prospective-logistic-persistent-v3"
 WINDOW_HOURS = 6
-MAX_ITEMS = len(ASSETS) * len(HORIZONS)
+PER_SCOPE = 3
+MAX_ITEMS = len(ASSETS) * len(HORIZONS) * PER_SCOPE
 
 
 def _utc(value: object) -> datetime | None:
@@ -71,7 +72,10 @@ def _row(item: dict, *, asset: str, horizon: int, now: datetime) -> dict | None:
         status = "awaiting_settlement" if now >= close else "open"
     return {
         "asset": asset, "horizon": horizon, "venue": venue, "quote": quote,
-        "issued_at": issued.isoformat(), "target_close_at": close.isoformat(),
+        "issued_at": issued.isoformat(),
+        "target_opened_at": opened.isoformat(),
+        "target_close_at": close.isoformat(),
+        "settled_at": settled.isoformat() if settled is not None else None,
         "probability_up": prob, "baseline_up": baseline,
         "direction": "UP" if prob > 0.5 else "DOWN" if prob < 0.5 else "NEUTRAL",
         "lead_seconds": round((close - issued).total_seconds(), 2),
@@ -81,9 +85,16 @@ def _row(item: dict, *, asset: str, horizon: int, now: datetime) -> dict | None:
 
 
 def read_forward_calls(store, now: datetime) -> dict:
-    """Get at most the newest issued incumbent forecast per 12 indexed scopes.
+    """Get at most the newest PER_SCOPE issued incumbent forecasts per scope.
 
-    A missing table, invalid source, or database failure remains unavailable,
+    Twelve scopes times three recent rows is the bounded, paginable history
+    the signed receipt can carry: enough to show issuance, settlement and
+    next-target readiness per scope without pretending to be the full
+    ledger. The receipt as a whole stays under the collector's 80KB cap
+    only with the Delivery 4 section budget (20 RivaL PRs, 12 runs,
+    8 Intelligence PRs/runs, 80-char gate failures); a longer history
+    needs a separate history endpoint, not a bigger receipt. A missing
+    table, invalid source, or database failure remains unavailable,
     never an observed zero. Connection is read-only at the application layer:
     SELECT only, no DDL or learner construction.
     """
@@ -103,11 +114,12 @@ def read_forward_calls(store, now: datetime) -> dict:
                            FROM perp_forward_audit
                            WHERE asset=? AND horizon_minutes=? AND model_version=?
                              AND issued_at>=? AND issued_at<=?
-                           ORDER BY issued_at DESC LIMIT 1""",
-                        (asset, horizon, MODEL_VERSION, since, now.isoformat()),
-                    ).fetchone()
-                    if selected is not None:
-                        clean = _row(dict(selected), asset=asset, horizon=horizon, now=now)
+                           ORDER BY issued_at DESC LIMIT ?""",
+                        (asset, horizon, MODEL_VERSION, since, now.isoformat(),
+                         PER_SCOPE),
+                    ).fetchall()
+                    for item in selected:
+                        clean = _row(dict(item), asset=asset, horizon=horizon, now=now)
                         if clean is not None:
                             rows.append(clean)
     except Exception:  # noqa: BLE001 - optional diagnostics cannot break core health
@@ -117,6 +129,7 @@ def read_forward_calls(store, now: datetime) -> dict:
     return {
         "status": "observed" if rows else "no_recent_forecasts",
         "captured_at": now.isoformat(), "window_hours": WINDOW_HOURS,
+        "rows_per_scope": PER_SCOPE,
         "rows": rows[:MAX_ITEMS],
         "not_trading_calls": True,
     }

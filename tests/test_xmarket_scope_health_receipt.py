@@ -109,6 +109,16 @@ def test_one_issued_model_does_not_hide_other_eleven_silent_scopes(learning_stor
     assert scopes[("BTC", 5)]["stored_gate_passing_artifacts"] == 1
     assert scopes[("BTC", 5)]["shadow_rows_24h"] == 1
     assert scopes[("BTC", 5)]["latest_shadow_at"] is not None
+    # The imported artifact is identified by a truncated digest prefix
+    # plus its training window end; the full digest and Drive file ID stay
+    # on the host.
+    import re as _re
+    assert _re.fullmatch(
+        r"[0-9a-f]{12}",
+        scopes[("BTC", 5)]["latest_artifact_sha256_prefix"] or "")
+    assert scopes[("BTC", 5)]["latest_trained_through"] is not None
+    assert scopes[("ETH", 5)]["latest_artifact_sha256_prefix"] is None
+    assert scopes[("ETH", 5)]["latest_trained_through"] is None
     assert scopes[("BTC", 15)]["status"] == "waiting_for_fit"
     assert scopes[("BTC", 60)]["status"] == "waiting_for_fit"
     assert scopes[("ETH", 15)]["status"] == "imported_no_shadow_rows"

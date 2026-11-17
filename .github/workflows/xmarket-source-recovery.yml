@@ -15,6 +15,14 @@ on:
         type: choice
         options: ["24", "48", "96"]
         default: "96"
+      evaluate_models:
+        description: "Run guarded inner-fold research after original source recovery"
+        type: boolean
+        default: true
+      publish_qualified_offline_candidates:
+        description: "Permit only offline-gate-passing models into private Drive"
+        type: boolean
+        default: false
   push:
     branches: [main]
     # Verify each substantive native-source collector change against original
@@ -46,6 +54,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  anchor:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      as_of: ${{ steps.utc.outputs.as_of }}
+      trained_through: ${{ steps.utc.outputs.trained_through }}
+    steps:
+      - name: Freeze UTC source and model clock before collection
+        id: utc
+        shell: bash
+        run: |
+          set -euo pipefail
+          today="$(date -u +%F)"
+          previous="$(date -u -d yesterday +%Y-%m-%d)"
+          echo "as_of=$today" >> "$GITHUB_OUTPUT"
+          echo "trained_through=${previous}T23:55:00+00:00" >> "$GITHUB_OUTPUT"
   contract:
     # Source and workflow syntax are tested before main. PRs never get Drive
     # credentials and never perform historical provider downloads.
@@ -61,9 +85,11 @@ jobs:
         run: |
           python -m pip install -e ".[archive]"
           python -m parlay_bot.research.xmarket_history --help
+          python tools/xmarket_unattended_lifecycle.py --help
 
   source:
-    if: github.event_name != 'pull_request'
+    needs: anchor
+    if: github.event_name != 'pull_request' && needs.anchor.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 100
     strategy:
@@ -113,7 +139,7 @@ jobs:
           ASSET: ${{ matrix.asset }}
         run: |
           set -euo pipefail
-          through="$(date -u -d yesterday +%Y-%m-%dT23:55:00+00:00)"
+          through="${{ needs.anchor.outputs.trained_through }}"
           python -m parlay_bot.research.xmarket_history \
             --asset "$ASSET" --through "$through" \
             --max-windows "$WINDOW_BUDGET" --publish \
@@ -208,3 +234,74 @@ jobs:
           path: data/native-reports/recorded-partial-proof-${{ matrix.asset }}.json
           if-no-files-found: error
           retention-days: 7
+
+  research_after_source:
+    # The real source matrix must finish before any sealed model evaluation.
+    # Other recovery slots remain source-only. Push runs never publish.
+    needs: [anchor, source]
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.source.result == 'success' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'schedule' && github.event.schedule == '43 20 * * *') ||
+       (github.event_name == 'workflow_dispatch' && inputs.evaluate_models == true))
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install original-source offline research dependencies
+        run: python -m pip install -e ".[ml-research]" "pandas>=2.2" "numpy>=1.26"
+      - name: Restore original provider-SHA-verified market manifests
+        env:
+          ASSET: ${{ matrix.asset }}
+          AS_OF: ${{ needs.anchor.outputs.as_of }}
+        run: |
+          set -euo pipefail
+          python tools/restore_archive_months.py --asset "$ASSET" \
+            --root data/archive-v1-restore \
+            --okx-source-integrity okx-v5-public-history-5m-v1 \
+            --as-of "$AS_OF"
+      - name: Verify purged inner fold and publish only offline-pass candidates
+        env:
+          ASSET: ${{ matrix.asset }}
+          AS_OF: ${{ needs.anchor.outputs.as_of }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          INPUT_PUBLISH: ${{ inputs.publish_qualified_offline_candidates }}
+        run: |
+          set -euo pipefail
+          arguments=(--asset "$ASSET" --manifests-dir data/archive-v1-restore
+            --as-of "$AS_OF" --out "data/native-reports/model-lifecycle-$ASSET.json")
+          if [[ "$EVENT_NAME" == "schedule" && "$EVENT_SCHEDULE" == "43 20 * * *" ]] ||
+             [[ "$EVENT_NAME" == "workflow_dispatch" && "$INPUT_PUBLISH" == "true" ]]; then
+            arguments+=(--publish-passing)
+          fi
+          python tools/xmarket_unattended_lifecycle.py "${arguments[@]}"
+      - name: Upload only sanitized source and offline gate verdicts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xmarket-native-to-model-${{ matrix.asset }}-${{ github.run_id }}
+          path: data/native-reports/model-lifecycle-${{ matrix.asset }}.json
+          if-no-files-found: warn
+          retention-days: 14

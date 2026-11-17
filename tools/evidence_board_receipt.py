@@ -1110,13 +1110,18 @@ def summarize_llm_metrics(raw: object) -> dict:
     A status-endpoint read proves authenticated backend readiness only.
     ``inference_verified`` stays False unless the host also proves an
     authenticated generation probe (``generation_probe`` marker); the
-    current /v1/status probe never sets it. Prompts, tokens, conversations,
+    current /v1/status probe never sets it. The marker itself is carried
+    through in the output (validated to the exact string, else null):
+    the board's collector re-checks it before trusting the verified
+    flag, so stripping it here leaves the board Unverified even when
+    the generation proved. Prompts, tokens, conversations,
     private endpoints and secrets are never accepted fields.
     """
     unavailable = {
         "status": "unavailable", "probe": "host_probe_not_emitted",
         "captured_at": None, "model": None, "ready": None,
-        "inference_verified": False, "source_sha": None,
+        "inference_verified": False, "generation_probe": None,
+        "source_sha": None,
         "repair_state": None, "repair_count": None,
         "runtime_context_tokens": None, "memory": None,
         "memory_pressure_pct": None, "status_latency_ms": None,
@@ -1141,6 +1146,11 @@ def summarize_llm_metrics(raw: object) -> dict:
     out["inference_verified"] = bool(
         raw.get("inference_verified") is True
         and raw.get("generation_probe") == "authenticated_generation"
+    )
+    out["generation_probe"] = (
+        "authenticated_generation"
+        if raw.get("generation_probe") == "authenticated_generation"
+        else None
     )
     sha = raw.get("source_sha")
     out["source_sha"] = sha if isinstance(sha, str) and LLM_SHA_RE.fullmatch(sha) else None

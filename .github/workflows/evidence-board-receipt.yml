@@ -15,11 +15,16 @@ on:
       - "src/**"
       - ".github/workflows/discloud-deploy.yml"
       - ".github/workflows/live-learning-cycle-receipt.yml"
-  # A successful production release or independent hourly Discloud uptime check
-  # offers another read when best-effort cron skips. Only the evidence workflow
-  # mints a signed OIDC publication; it never reuses upstream artifacts.
+  # The independent hourly Discloud uptime check offers another read when
+  # best-effort cron skips. Only the evidence workflow mints a signed OIDC
+  # publication; it never reuses upstream artifacts.
+  # "RivaL Production Release" was removed 2026-11-17 (Delivery 1): it fires
+  # on every completed CI run, so every push storm spawned an evidence run
+  # (230 workflow_run runs vs 15 schedule runs in 99h, peaks of 21/hour).
+  # The flood masks schedule gaps and re-hits Discloud/Drive/the receiver;
+  # redundant triggers now coalesce in the publisher instead.
   workflow_run:
-    workflows: ["RivaL Production Release", "RivaL independent Discloud uptime"]
+    workflows: ["RivaL independent Discloud uptime"]
     types: [completed]
   # A 10-minute read-only evidence cadence bounds dashboard lag without
   # turning a website refresh into a host console/Drive API request.
@@ -34,8 +39,12 @@ permissions:
   pull-requests: read
   id-token: write
 
+# One shared group let the workflow_run flood queue schedule runs behind
+# it. Per-event lanes keep the schedule lane independent; a schedule run
+# never waits on a push-storm backlog. Publication is idempotent, so a
+# queued run being superseded by a newer one loses nothing.
 concurrency:
-  group: rival-evidence-board-source-receipt
+  group: rival-evidence-board-${{ github.event_name }}
   cancel-in-progress: false
 
 jobs:

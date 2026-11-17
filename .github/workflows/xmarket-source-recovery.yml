@@ -85,6 +85,7 @@ jobs:
         run: |
           python -m pip install -e ".[archive]"
           python -m parlay_bot.research.xmarket_history --help
+          python tools/xmarket_unattended_lifecycle.py --help
 
   source:
     needs: anchor

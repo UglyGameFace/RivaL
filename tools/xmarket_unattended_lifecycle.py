@@ -14,7 +14,10 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from parlay_bot.config import Settings
 from parlay_bot.research.archive_training import _git_sha, load_frames_manifests
+from parlay_bot.research.publish import _drive
+from parlay_bot.research.xmarket_history import read_verified_inputs_only
 from parlay_bot.research.xmarket_training import (
     HORIZONS,
     _publish,
@@ -22,12 +25,20 @@ from parlay_bot.research.xmarket_training import (
     train_run,
     validate,
 )
-from tools.run_xmarket_train_only_research import _read_originals
 
 OKX_SOURCE = "okx-v5-public-history-5m-v1"
 INNER_MIN_DAYS = 7
 INNER_MIN_TARGETS = 100
 INNER_MIN_FIT_ROWS = 300
+
+
+async def _read_originals(asset: str) -> dict:
+    """Use the established authenticated Drive reader, with no tool-path imports."""
+    drive = _drive(Settings())
+    try:
+        return await read_verified_inputs_only(drive, asset=asset)
+    finally:
+        await drive.aclose()
 
 
 def source_clock(as_of: date) -> tuple[datetime, datetime, datetime]:

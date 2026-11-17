@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from parlay_bot.research.archive_training import load_frames_manifests
+from parlay_bot.research.archive_training import _git_sha, load_frames_manifests
 from parlay_bot.research.xmarket_training import (
     HORIZONS,
     _publish,
@@ -93,7 +93,7 @@ def evaluate(*, asset: str, manifests: Path, as_of: date,
             frames=frames, asset=asset, horizon=horizon,
             train_end=train_end, test_start=test_start,
             trained_through=through, provenance=provenance,
-            code_version="native-source-triggered-offline-v1", market_data=native,
+            code_version=_git_sha(), market_data=native,
         )
         inner = train_run(**kwargs, research_only=True)
         if inner.get("publish_kind") != "report" or inner.get("artifact") is not None:

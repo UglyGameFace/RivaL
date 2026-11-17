@@ -490,7 +490,8 @@ class ProspectivePathLedger:
         ``horizons`` restricts which horizons may be selected. Settlement
         itself is horizon-generic (one complete 5-minute candle per 5
         minutes of horizon); callers give 5-minute paths a guaranteed
-        reserve of MAX_SETTLE//5 paths per settle call, with either
+        reserve of 34% of MAX_SETTLE paths per settle call (34 at the
+        100-path bound), with either
         horizon group able to use the other's unused slots, so a
         faster-due horizon can never displace a longer-horizon path
         while the longer queue still has ready work.
@@ -582,19 +583,22 @@ class ProspectivePathLedger:
                 conn, stamp=stamp, current=True, horizons=(5,), limit=MAX_SETTLE)
             backlog5 = self._ready_paths(
                 conn, stamp=stamp, current=False, horizons=(5,), limit=MAX_SETTLE)
-            # Five-minute paths hold a guaranteed reserve of MAX_SETTLE//5
-            # paths per settle call (20 at the 100-path bound), taken
-            # before the 15/60-minute queues fill the rest. A full cycle
-            # issues 40 five-minute paths (80 sides), so a 20-path reserve
-            # settles half the 5m flow (~40 sides/cycle, ~11.5k sides/day)
-            # — far above the ~7 settled/scope/day a scope needs for the
-            # 150-paired bar at 80% coverage — while 15/60 keep 80% of
-            # capacity against their ~107k due queue. Either horizon group
+            # Five-minute paths hold a guaranteed reserve of 34% of
+            # MAX_SETTLE paths per settle call (34 at the 100-path bound),
+            # taken before the 15/60-minute queues fill the rest. The
+            # share is sized to measured flow, not to the old guess: a
+            # full cycle issues ~34 five-minute paths (68 sides), and
+            # receipts #1431->#1433 proved the old 20-path reserve
+            # filled 20/20 every cycle while the 5m queue still grew
+            # ~13.6 paths/cycle — 20 was the binding constraint. A
+            # 34-path reserve (~68 sides/cycle) matches 5m flow so the
+            # queue stops growing, while 15/60 keep the remaining 66
+            # slots against their ~107k due queue. Either horizon group
             # may use the other's unused slots (see the slack step below),
             # so a drained queue never strands capacity. The 5m readiness
             # scans are new work per cycle, but the 5m pending queue is
             # small next to the 15/60 queue, so they stay cheap.
-            five_min_reserve = MAX_SETTLE // 5
+            five_min_reserve = MAX_SETTLE * 34 // 100
             selected5, used_current5, used_backlog5 = _take_split(
                 current5, backlog5, five_min_reserve)
             selected, _, _ = _take_split(
@@ -604,7 +608,7 @@ class ProspectivePathLedger:
                 # 15/60 had nothing more ready; let 5m continue in its
                 # canonical current/backlog order instead of stranding
                 # slots. This keeps the old leftover behaviour for small
-                # caps (a MAX_SETTLE of 4 has a zero reserve yet still
+                # caps (a MAX_SETTLE of 2 has a zero reserve yet still
                 # drains 5m once 15/60 are done).
                 rest5 = current5[used_current5:] + backlog5[used_backlog5:]
                 selected5 += rest5[:slack]

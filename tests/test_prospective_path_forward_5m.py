@@ -2,8 +2,8 @@
 
 A 5-minute path needs exactly one complete exact-source candle. The
 settlement worker gives 5-minute paths a guaranteed reserve of
-MAX_SETTLE//5 paths per settle call (20 at the 100-path bound), with
-15/60-minute paths keeping the remaining 80 and either horizon group
+34% of MAX_SETTLE paths per settle call (34 at the 100-path bound),
+with 15/60-minute paths keeping the remaining 66 and either horizon group
 able to use the other's unused slots; the total stays bounded at
 MAX_SETTLE per cycle. Issuance admits 5-minute horizons through
 ``HORIZONS`` in ``ProspectivePathLedger.issue`` / ``empirical_paths``
@@ -247,14 +247,15 @@ def test_five_minute_path_stays_pending_without_one_complete_candle(
 
 
 def test_five_minute_paths_never_starve_longer_horizons(learning_store, monkeypatch):
-    """5m never displaces 15/60m, even when newer.
+    """5m never displaces 15/60m beyond its reserve, even when newer.
 
     The 5m paths below target 5 minutes LATER than the 15m paths, so a
     naive ``IN (5, 15, 60)`` selection ordered by newest target would
     settle the 5m paths first and starve the 15m batch. At the patched
-    MAX_SETTLE of 4 the 5m reserve (4//5) is zero, so cycle 1 must
-    settle all four 15m paths and no 5m path; cycle 2 drains the 5m
-    batch from the slots 15/60m left unused.
+    MAX_SETTLE of 4 the 5m reserve (4*34//100) is 1 path, so cycle 1
+    settles three 15m paths and exactly one 5m path — 5m takes no more
+    than its reserve even though its targets are newer — and cycle 2
+    drains the rest from the slots 15/60m left unused.
     """
     from parlay_bot.perpetuals import path_forward
 
@@ -297,11 +298,13 @@ def test_five_minute_paths_never_starve_longer_horizons(learning_store, monkeypa
                     "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     _row(replace(bar, contract=asset)),
                 )
-    # Cycle 1: every 15m side settles; no 5m side may consume a slot.
+    # Cycle 1: three 15m paths settle plus exactly the one 5m path the
+    # reserve allows; no 5m path may take a second slot.
     assert ledger.settle(now=now) == {"settled": 8, "ambiguous": 0}
     with learning_store.connect() as conn:
-        assert _settled_sides(conn, 15) == 8
-        assert _pending_sides(conn, 5) == 8
+        assert _settled_sides(conn, 15) == 6
+        assert _settled_sides(conn, 5) == 2
+        assert _pending_sides(conn, 5) == 6
     # Cycle 2: with 15/60m drained, the leftover bound settles the 5m batch.
     assert ledger.settle(now=now) == {"settled": 8, "ambiguous": 0}
     with learning_store.connect() as conn:
@@ -352,23 +355,25 @@ def _build_starved_fixture(ledger, store):
 
 
 def test_five_minute_paths_get_reserved_capacity_when_longer_horizons_exceed_cap(learning_store):
-    """The 20-path 5m reserve settles 5m even when 15/60m due exceeds the cap.
+    """The 34-path 5m reserve settles 5m even when 15/60m due exceeds the cap.
 
     Fixture: 120 new paths (40 streams x 3 horizons) + 101 legacy 15m
     paths, all with complete future candles. Under leftover-only
     priority the first settle took 0 five-minute sides; with the
-    reserve it takes exactly the 20-path reserve (40 sides) while
-    15/60m keep their 80 (160 sides), and the 5m queue drains fully
-    in the following settles.
+    reserve it takes exactly the 34-path reserve (68 sides) while
+    15/60m keep their 66 (132 sides), and the 5m queue drains fully
+    in the following settle.
     """
     ledger = ProspectivePathLedger(learning_store)
     now = _build_starved_fixture(ledger, learning_store)
     assert ledger.settle(now=now) == {"settled": 200, "ambiguous": 0}
     with learning_store.connect() as conn:
-        assert _settled_sides(conn, 5) == 40
-        assert _settled_sides(conn, 15) + _settled_sides(conn, 60) == 160
-        assert _pending_sides(conn, 5) == 40
+        assert _settled_sides(conn, 5) == 68
+        assert _settled_sides(conn, 15) + _settled_sides(conn, 60) == 132
+        assert _pending_sides(conn, 5) == 12
     assert ledger.settle(now=now) == {"settled": 200, "ambiguous": 0}
+    with learning_store.connect() as conn:
+        assert _pending_sides(conn, 5) == 0
     assert ledger.settle(now=now) == {"settled": 42, "ambiguous": 0}
     with learning_store.connect() as conn:
         assert _pending_sides(conn, 5) == 0

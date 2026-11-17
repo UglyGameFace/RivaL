@@ -11,9 +11,11 @@ import json
 import logging
 import random
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 import websockets
 
 from parlay_bot.perpetuals.live_quotes import (
@@ -28,6 +30,7 @@ from parlay_bot.perpetuals.live_quotes import (
     VenueBookQuote,
     parse_bitget_ticker,
     parse_hyperliquid_reference,
+    parse_kucoin_ticker,
     parse_okx_ticker,
 )
 
@@ -57,6 +60,53 @@ LIGHTER_PUBLIC_WS = "wss://mainnet.zklighter.elliot.ai/stream?readonly=true"
 COINBASE_WS = "wss://ws-feed.exchange.coinbase.com"
 BINANCE_DEPTH_WS = "wss://fstream.binance.com/public/stream?streams="
 BINANCE_TRADES_WS = "wss://fstream.binance.com/market/stream?streams="
+# KuCoin Futures public websocket. The bullet-public token is fetched fresh
+# on every connection attempt (24h expiry); the endpoint below is the
+# documented default and is replaced by the bullet response when it differs.
+KUCOIN_FUTURES_WS = "wss://ws-api-futures.kucoin.com/endpoint"
+KUCOIN_BULLET_PUBLIC_URL = "https://api-futures.kucoin.com/api/v1/bullet-public"
+
+
+async def fetch_kucoin_bullet_token(
+    *, transport: httpx.AsyncTransport | None = None,
+) -> tuple[str, str]:
+    """Public KuCoin Futures bullet token + websocket endpoint; no auth.
+
+    Returns (token, endpoint). A failed fetch raises and the hub's backoff
+    applies; the caller fetches again on every reconnect attempt, so a
+    reconnect never reuses an expired token.
+    """
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(5.0), transport=transport,
+    ) as client:
+        resp = await client.post(KUCOIN_BULLET_PUBLIC_URL, json={})
+        resp.raise_for_status()
+        payload = resp.json()
+    if not isinstance(payload, dict) or payload.get("code") != "200000":
+        raise ValueError("KuCoin bullet-public request rejected.")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise TypeError("KuCoin bullet-public response malformed.")
+    token = data.get("token")
+    if not isinstance(token, str) or not token:
+        raise ValueError("KuCoin bullet-public token missing.")
+    endpoint = KUCOIN_FUTURES_WS
+    servers = data.get("instanceServers")
+    if isinstance(servers, list) and servers and isinstance(servers[0], dict):
+        candidate = servers[0].get("endpoint")
+        if isinstance(candidate, str) and candidate.startswith("wss://"):
+            endpoint = candidate
+    return token, endpoint
+
+
+def _kucoin_is_ping(message: str | bytes) -> bool:
+    if isinstance(message, bytes):
+        return False
+    try:
+        frame = json.loads(message)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(frame, dict) and frame.get("type") == "ping"
 
 
 def parse_stream_message(
@@ -159,6 +209,27 @@ def parse_stream_message(
                                        asset=asset, received_at=received_at)
         except (ValueError, TypeError, KeyError, IndexError, OverflowError) as exc:
             raise QuoteUnavailable("Invalid source-matched venue book.") from exc
+    if venue == "kucoin":
+        # Control frames carry no book; tickerV2 is the only book channel.
+        # The data row has the same shape as the REST ticker, so the same
+        # parser (nanosecond clock, contract-count sizes) applies.
+        if wrapper.get("type") in ("welcome", "ack", "ping", "pong"):
+            return None
+        if wrapper.get("type") != "message":
+            return None
+        topic = wrapper.get("topic")
+        if not isinstance(topic, str) or not topic.startswith("/contractMarket/tickerV2:"):
+            return None
+        symbol = topic.removeprefix("/contractMarket/tickerV2:")
+        asset = next((a for a, s in VENUE_BOOK_SYMBOLS["kucoin"].items()
+                      if s == symbol), None)
+        if asset is None:
+            return None
+        data = wrapper.get("data")
+        if not isinstance(data, dict):
+            raise QuoteUnavailable("Malformed KuCoin ticker push.")
+        return parse_kucoin_ticker({"code": "200000", "data": data},
+                                   asset=asset, received_at=received_at)
     if venue == "hyperliquid":
         if wrapper.get("channel") != "l2Book":
             return None
@@ -301,14 +372,24 @@ class StreamingBookHub:
             url = DERIBIT_PUBLIC_WS
         elif venue == "lighter":
             url = LIGHTER_PUBLIC_WS
+        elif venue == "kucoin":
+            url = KUCOIN_FUTURES_WS
         else:
             raise ValueError("Unsupported quote stream venue")
         attempts = 0
         while True:
             backoff_override = 0.0
             try:
+                connect_url = url
+                if venue == "kucoin":
+                    # Bullet token is valid 24h; fetch a fresh one on every
+                    # connection attempt so a reconnect never reuses an
+                    # expired token. A failed fetch raises into the hub's
+                    # backoff below instead of opening an unauthenticated socket.
+                    token, endpoint = await fetch_kucoin_bullet_token()
+                    connect_url = f"{endpoint}?token={token}&connectId={uuid.uuid4().hex}"
                 async with websockets.connect(
-                    url, open_timeout=10, close_timeout=5,
+                    connect_url, open_timeout=10, close_timeout=5,
                     ping_interval=20, ping_timeout=20,
                     max_size=1_048_576, max_queue=32,
                 ) as socket:
@@ -357,11 +438,25 @@ class StreamingBookHub:
                         for asset in self.assets:
                             await socket.send(json.dumps({"type": "subscribe",
                                 "channel": f"ticker/{LIGHTER_PERP_MARKET_IDS[asset]}"}))
+                    elif venue == "kucoin":
+                        # One tickerV2 topic per asset on the single socket.
+                        # tickerV2 pushes on any top-of-book change, so a
+                        # quiet market may trip the 120s silence restart
+                        # below; reconnects are cheap and the token is
+                        # refreshed, so no new silence rule is invented.
+                        for asset in self.assets:
+                            await socket.send(json.dumps({
+                                "type": "subscribe",
+                                "topic": f"/contractMarket/tickerV2:{VENUE_BOOK_SYMBOLS[venue][asset]}",
+                                "privateChannel": False, "response": True,
+                            }))
                     while True:
                         try:
                             message = await asyncio.wait_for(socket.recv(),
                                                              timeout=RECEIVE_CHECK_SECONDS)
-                            if self.accept(venue, message):
+                            if venue == "kucoin" and _kucoin_is_ping(message):
+                                await socket.send(json.dumps({"type": "pong"}))
+                            elif self.accept(venue, message):
                                 last_book = datetime.now(UTC)
                         except TimeoutError:
                             pass

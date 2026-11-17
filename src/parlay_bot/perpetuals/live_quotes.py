@@ -157,10 +157,14 @@ VENUE_BOOK_SYMBOLS: dict[str, dict[str, str]] = {
     "gate": {asset: f"{asset}_USDT" for asset in ASSETS},
     "deribit": {asset: f"{asset}_USDC-PERPETUAL" for asset in ASSETS},
     "lighter": {asset: asset for asset in ASSETS},
+    # KuCoin Futures USDTM linear perpetuals, the same contract strings the
+    # candle collector uses (KucoinMarketClient): BTC trades as XBT.
+    "kucoin": {"BTC": "XBTUSDTM", "ETH": "ETHUSDTM", "SOL": "SOLUSDTM", "XRP": "XRPUSDTM"},
 }
 VENUE_BOOK_BASE_URLS: dict[str, str] = {
     "okx": "https://www.okx.com",
     "bitget": "https://api.bitget.com",
+    "kucoin": "https://api-futures.kucoin.com",
 }
 # Official USDT-SWAP face values, shared with the existing liquidity decoder.
 # Rechecked against GET /api/v5/public/instruments on 2026-11-15. Book/ticker
@@ -169,11 +173,16 @@ OKX_CONTRACT_SIZE = {"BTC": 0.01, "ETH": 0.1, "SOL": 1.0, "XRP": 100.0}
 # Public direct-USDT contract metadata, rechecked 2026-11-16. Gate B/A
 # sizes are native contract counts; downstream notional checks use coins.
 GATE_CONTRACT_SIZE = {"BTC": 0.0001, "ETH": 0.01, "SOL": 1.0, "XRP": 10.0}
+# KuCoin Futures USDTM linear perpetual face values, rechecked against
+# GET /api/v1/contracts/active on 2026-11-17 (XBT 0.001, ETH 0.01,
+# SOL 0.1, XRP 10.0). Ticker sizes are contract counts; all proof ledgers
+# consume base-coin quantities.
+KUCOIN_CONTRACT_SIZE = {"BTC": 0.001, "ETH": 0.01, "SOL": 0.1, "XRP": 10.0}
 # Only active perpetual IDs verified in /api/v1/orderBooks, never spot IDs.
 LIGHTER_PERP_MARKET_IDS = {"BTC": 1, "ETH": 0, "SOL": 2, "XRP": 7}
 SOURCE_QUOTE_CURRENCIES = {
     "hyperliquid": "USDC", "binance": "USDT", "okx": "USDT", "bitget": "USDT",
-    "gate": "USDT", "deribit": "USDC", "lighter": "USD",
+    "gate": "USDT", "deribit": "USDC", "lighter": "USD", "kucoin": "USDT",
 }
 SUPPORTED_QUOTE_SOURCES = frozenset(SOURCE_QUOTE_CURRENCIES.items())
 
@@ -295,6 +304,42 @@ def parse_bitget_ticker(
 ) -> VenueBookQuote:
     """Bitget /api/v2/mix/market/ticker row for a USDT-FUTURES contract."""
     return _parse_venue_ticker(payload, asset=asset, venue="bitget", received_at=received_at)
+
+
+def parse_kucoin_ticker(
+    payload: Any, *, asset: str, received_at: datetime,
+) -> VenueBookQuote:
+    """KuCoin Futures /api/v1/ticker row for a USDTM linear perpetual.
+
+    Same response shape as the tickerV2 stream data: best bid/ask prices
+    with contract-count sizes and a nanosecond exchange clock.
+    """
+    if asset not in ASSETS or not isinstance(payload, dict):
+        raise QuoteUnavailable("Unsupported asset or malformed exchange response.")
+    if payload.get("code") != "200000":
+        raise QuoteUnavailable("KuCoin ticker request rejected.")
+    row = payload.get("data")
+    if not isinstance(row, dict):
+        raise QuoteUnavailable("Empty ticker response.")
+    try:
+        nanoseconds = row["ts"]
+        if isinstance(nanoseconds, str):
+            nanoseconds = int(nanoseconds)
+        if type(nanoseconds) is not int or nanoseconds <= 0:
+            raise ValueError("invalid timestamp")
+        quote = VenueBookQuote(
+            asset=asset, venue="kucoin", symbol=str(row["symbol"]),
+            bid=float(row["bestBidPrice"]),
+            bid_quantity=float(row["bestBidSize"]) * KUCOIN_CONTRACT_SIZE[asset],
+            ask=float(row["bestAskPrice"]),
+            ask_quantity=float(row["bestAskSize"]) * KUCOIN_CONTRACT_SIZE[asset],
+            exchange_at=datetime.fromtimestamp(nanoseconds / 1_000_000_000, tz=UTC),
+            received_at=received_at,
+        )
+        quote.validate(now=received_at)
+    except (ValueError, TypeError, KeyError, OverflowError) as exc:
+        raise QuoteUnavailable("Invalid top-of-book response.") from exc
+    return quote
 
 
 class PublicBestQuoteClient:
@@ -479,6 +524,9 @@ class PublicBestQuoteClient:
                 if venue == "okx":
                     path, params = "/api/v5/market/ticker", {"instId": symbol}
                     parser = parse_okx_ticker
+                elif venue == "kucoin":
+                    path, params = "/api/v1/ticker", {"symbol": symbol}
+                    parser = parse_kucoin_ticker
                 else:
                     path = "/api/v2/mix/market/ticker"
                     params = {"symbol": symbol, "productType": "USDT-FUTURES"}

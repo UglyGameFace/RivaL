@@ -160,11 +160,16 @@ VENUE_BOOK_SYMBOLS: dict[str, dict[str, str]] = {
     # KuCoin Futures USDTM linear perpetuals, the same contract strings the
     # candle collector uses (KucoinMarketClient): BTC trades as XBT.
     "kucoin": {"BTC": "XBTUSDTM", "ETH": "ETHUSDTM", "SOL": "SOLUSDTM", "XRP": "XRPUSDTM"},
+    # Phemex V2 linear USDT perpetuals, the same contract strings the
+    # candle collector uses (PhemexMarketClient): sizes are already base
+    # coins, never contract counts, so no multiplier is applied anywhere.
+    "phemex": {asset: f"{asset}USDT" for asset in ASSETS},
 }
 VENUE_BOOK_BASE_URLS: dict[str, str] = {
     "okx": "https://www.okx.com",
     "bitget": "https://api.bitget.com",
     "kucoin": "https://api-futures.kucoin.com",
+    "phemex": "https://api.phemex.com",
 }
 # Official USDT-SWAP face values, shared with the existing liquidity decoder.
 # Rechecked against GET /api/v5/public/instruments on 2026-11-15. Book/ticker
@@ -183,6 +188,11 @@ LIGHTER_PERP_MARKET_IDS = {"BTC": 1, "ETH": 0, "SOL": 2, "XRP": 7}
 SOURCE_QUOTE_CURRENCIES = {
     "hyperliquid": "USDC", "binance": "USDT", "okx": "USDT", "bitget": "USDT",
     "gate": "USDT", "deribit": "USDC", "lighter": "USD", "kucoin": "USDT",
+    # Appended last: a new venue only earns quote coverage for targets
+    # where it is the reference venue, and the reference is the first
+    # venue in this order among the contributors — so Phemex helps only
+    # targets no earlier venue references. Never reorder to game coverage.
+    "phemex": "USDT",
 }
 SUPPORTED_QUOTE_SOURCES = frozenset(SOURCE_QUOTE_CURRENCIES.items())
 
@@ -340,6 +350,74 @@ def parse_kucoin_ticker(
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
         raise QuoteUnavailable("Invalid top-of-book response.") from exc
     return quote
+
+
+def parse_phemex_book(
+    payload: Any, *, asset: str, received_at: datetime,
+) -> VenueBookQuote:
+    """Phemex GET /md/v2/orderbook snapshot (30 levels) for a USDT perpetual.
+
+    Verified live 2026-11-17: ``{"error": null, "id": 0, "result":
+    {"depth": 30, "dts": <ns>, "orderbook_p": {"asks": [[px, qty], ...],
+    "bids": [[px, qty], ...]}, "sequence": <int>, "symbol": "BTCUSDT",
+    "timestamp": <ns>, "type": "snapshot"}}``. The book's own clock is
+    ``timestamp`` in nanoseconds; sizes are already base coins (the
+    collector confirms unscaled base-volume klines), so no multiplier.
+    Best bid/ask are taken by price, never by trusting list order.
+    """
+    if asset not in ASSETS or not isinstance(payload, dict):
+        raise QuoteUnavailable("Unsupported asset or malformed exchange response.")
+    if payload.get("error") is not None:
+        raise QuoteUnavailable("Phemex orderbook request rejected.")
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise QuoteUnavailable("Empty orderbook response.")
+    if result.get("symbol") != VENUE_BOOK_SYMBOLS["phemex"][asset]:
+        raise QuoteUnavailable("Exchange returned another contract.")
+    book = result.get("orderbook_p")
+    if not isinstance(book, dict):
+        raise QuoteUnavailable("Empty orderbook response.")
+    try:
+        nanoseconds = result["timestamp"]
+        if isinstance(nanoseconds, str):
+            nanoseconds = int(nanoseconds)
+        if type(nanoseconds) is not int or nanoseconds <= 0:
+            raise ValueError("invalid timestamp")
+        sequence = result["sequence"]
+        if type(sequence) is not int or sequence <= 0:
+            raise ValueError("invalid sequence")
+        bids = _phemex_levels(book.get("bids"))
+        asks = _phemex_levels(book.get("asks"))
+        if not bids or not asks:
+            raise ValueError("empty order book")
+        bid_price, bid_quantity = max(bids)
+        ask_price, ask_quantity = min(asks)
+        quote = VenueBookQuote(
+            asset=asset, venue="phemex", symbol=str(result["symbol"]),
+            bid=bid_price, bid_quantity=bid_quantity,
+            ask=ask_price, ask_quantity=ask_quantity,
+            exchange_at=datetime.fromtimestamp(nanoseconds / 1_000_000_000, tz=UTC),
+            received_at=received_at,
+        )
+        quote.validate(now=received_at)
+    except (ValueError, TypeError, KeyError, OverflowError) as exc:
+        raise QuoteUnavailable("Invalid top-of-book response.") from exc
+    return quote
+
+
+def _phemex_levels(raw: Any) -> list[tuple[float, float]]:
+    """One side of a Phemex book: [[price, size], ...] as base-coin floats."""
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("empty order book side")
+    levels = []
+    for row in raw:
+        if not isinstance(row, list) or len(row) != 2:
+            raise ValueError("malformed order book level")
+        price, quantity = float(row[0]), float(row[1])
+        if quantity <= 0:
+            raise ValueError("non-positive order book size")
+        levels.append((price, quantity))
+    return levels
 
 
 class PublicBestQuoteClient:
@@ -527,6 +605,9 @@ class PublicBestQuoteClient:
                 elif venue == "kucoin":
                     path, params = "/api/v1/ticker", {"symbol": symbol}
                     parser = parse_kucoin_ticker
+                elif venue == "phemex":
+                    path, params = "/md/v2/orderbook", {"symbol": symbol}
+                    parser = parse_phemex_book
                 else:
                     path = "/api/v2/mix/market/ticker"
                     params = {"symbol": symbol, "productType": "USDT-FUTURES"}

@@ -30,7 +30,11 @@ COST_SCENARIOS = (
 # (public contract metadata). Deribit's 7 and Lighter's published public fees
 # do not reduce the existing 8-bps floor. KuCoin's standard public futures
 # taker fee is 6 bps (VIP0, checked 2026-11-17), also below the floor, so
-# no premium entry. Preserve all slippage/funding stress.
+# no premium entry. Phemex's standard public USDT-perpetual taker fee is
+# also 6 bps (0.01% maker / 0.06% taker, standard tier, checked
+# 2026-11-17 against Phemex's own published fee guide and independent
+# comparisons of the official schedule), below the floor, so no premium
+# entry either. Preserve all slippage/funding stress.
 VENUE_FEE_PREMIUM_BPS = {"okx": 2.0, "bitget": 4.0, "gate": 7.0}
 
 

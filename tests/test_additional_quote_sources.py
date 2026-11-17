@@ -20,6 +20,8 @@ from parlay_bot.perpetuals.live_quotes import (
     OKX_CONTRACT_SIZE,
     SOURCE_QUOTE_CURRENCIES,
     PublicBestQuoteClient,
+    QuoteUnavailable,
+    parse_phemex_book,
     quote_identity,
     source_contract,
 )
@@ -30,6 +32,9 @@ from parlay_bot.perpetuals.profit_proof import cost_scenarios
 from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor
 from parlay_bot.perpetuals.stream_quotes import (
     KUCOIN_FUTURES_WS,
+    PHEMEX_PUBLIC_WS,
+    PhemexBook,
+    PhemexBookResync,
     StreamingBookHub,
     fetch_kucoin_bullet_token,
     parse_stream_message,
@@ -46,10 +51,21 @@ def wire(venue, at, *, asset="BTC", bid=100., ask=100.1, quantity=None):
     sizes, best bid/ask fields). The default quantity is one base coin of
     top-of-book depth (KuCoin BTC contracts are 0.001 coins, so 1000 of
     them), which clears the fixed $25 paper notional at the test price.
+    Phemex frames match the live orderbook_p snapshot shape, verified
+    against wss://ws.phemex.com on 2026-11-17 (30-level snapshot, then
+    incremental deltas; nanosecond clock; sizes already base coins, so
+    the default 100 clears the $25 notional with no multiplier).
     """
     if quantity is None:
         quantity = 1000. if venue == "kucoin" else 100.
     symbol = source_contract(venue, asset)
+    if venue == "phemex":
+        ns = int(at.timestamp()*1_000_000_000)
+        return {"depth": 30, "dts": ns, "mts": ns, "orderbook_p": {
+                    "bids": [[str(bid), str(quantity)]],
+                    "asks": [[str(ask), str(quantity)]]},
+                "sequence": 1, "symbol": symbol, "timestamp": ns,
+                "type": "snapshot"}
     if venue == "kucoin":
         return {"id": "1", "type": "message",
                 "topic": f"/contractMarket/tickerV2:{symbol}",
@@ -78,7 +94,7 @@ def book(venue, at, **kwargs):
     return parse_stream_message(venue, json.dumps(wire(venue, at, **kwargs)), received_at=at)
 
 
-@pytest.mark.parametrize("venue", ["okx", "bitget", "kucoin"])
+@pytest.mark.parametrize("venue", ["okx", "bitget", "kucoin", "phemex"])
 @pytest.mark.parametrize("asset", tuple(ASSETS))
 def test_real_wire_identity_and_base_quantity(venue, asset):
     now = datetime.now(UTC)
@@ -89,6 +105,7 @@ def test_real_wire_identity_and_base_quantity(venue, asset):
     elif venue == "kucoin":
         expected = 10*KUCOIN_CONTRACT_SIZE[asset]
     else:
+        # Bitget sizes and Phemex sizes are already base coins.
         expected = 10
     assert quote.bid_quantity == quote.ask_quantity == pytest.approx(expected)
     assert quote.exchange_at <= quote.received_at
@@ -98,11 +115,17 @@ def test_real_wire_identity_and_base_quantity(venue, asset):
                                     received_at=now) is None
         assert parse_stream_message(venue, json.dumps({"type": "welcome"}),
                                     received_at=now) is None
+    elif venue == "phemex":
+        # The subscribe acknowledgement carries no book.
+        assert parse_stream_message(
+            venue, json.dumps({"error": None, "id": 1,
+                               "result": {"status": "success"}}),
+            received_at=now) is None
     else:
         assert parse_stream_message(venue, "pong", received_at=now) is None
 
 
-@pytest.mark.parametrize("venue", ["okx", "bitget", "kucoin"])
+@pytest.mark.parametrize("venue", ["okx", "bitget", "kucoin", "phemex"])
 def test_stale_future_crossed_wrong_instrument_and_empty_wire_never_enter_hub(venue):
     now = datetime.now(UTC)
     hub = StreamingBookHub(assets=("BTC",))
@@ -113,11 +136,17 @@ def test_stale_future_crossed_wrong_instrument_and_empty_wire_never_enter_hub(ve
     if venue == "kucoin":
         # Topic still XBTUSDTM but the row claims ETHUSDTM: mismatch.
         wrong["data"]["symbol"] = "ETHUSDTM"
+    elif venue == "phemex":
+        # Snapshot still BTCUSDT-shaped but the frame claims ETHUSDT.
+        wrong["symbol"] = "ETHUSDT"
     else:
         wrong["data"][0]["instId"] = "ETHUSDT"
     assert not hub.accept(venue, json.dumps(wrong), received_at=now)
     empty = wire(venue, now)
-    empty["data"] = []
+    if venue == "phemex":
+        empty["orderbook_p"] = {"bids": [], "asks": []}
+    else:
+        empty["data"] = []
     assert not hub.accept(venue, json.dumps(empty), received_at=now)
     if venue == "bitget":
         spot = wire(venue, now)
@@ -150,7 +179,7 @@ def seed(store, venue, issued):
              issued.isoformat(),issued.isoformat(),"a"*64))
 
 
-@pytest.mark.parametrize("venue", ["okx", "bitget", "kucoin"])
+@pytest.mark.parametrize("venue", ["okx", "bitget", "kucoin", "phemex"])
 def test_stream_and_xmarket_quote_lifecycle_is_source_exact_and_restart_safe(learning_store, venue):
     ForwardAccuracyMonitor(PerpetualMarketStore(learning_store)).initialize()
     ShadowModelCompetition(learning_store).initialize()
@@ -201,12 +230,12 @@ def test_okx_contract_count_cannot_be_mistaken_for_coin_liquidity(learning_store
 async def test_venue_signal_reuses_stream_without_rest():
     now = datetime.now(UTC)
     hub = StreamingBookHub(assets=("BTC",))
-    for venue in ("okx", "bitget", "kucoin"):
+    for venue in ("okx", "bitget", "kucoin", "phemex"):
         assert hub.accept(venue, json.dumps(wire(venue, now)), received_at=now)
     def forbidden(_request):
         raise AssertionError("fresh source book must not trigger REST")
     clients = {v:httpx.AsyncClient(transport=httpx.MockTransport(forbidden))
-               for v in ("okx","bitget","kucoin")}
+               for v in ("okx","bitget","kucoin","phemex")}
     quotes = PublicBestQuoteClient(venue_clients=clients)
     quotes.stream_hub = hub
     try:
@@ -221,14 +250,14 @@ async def test_venue_signal_reuses_stream_without_rest():
 def test_running_stream_health_is_persisted_and_read_without_collecting_or_inference(learning_store):
     now = datetime.now(UTC)
     hub = StreamingBookHub(assets=("BTC",))
-    for venue in ("okx","bitget","kucoin"):
+    for venue in ("okx","bitget","kucoin","phemex"):
         assert hub.accept(venue, json.dumps(wire(venue, now)), received_at=now)
     monitor = RuntimeHealthMonitor(learning_store)
     monitor.publish({}, now=now, quote_streams=hub.health(now=now))
     receipt = _runtime_diagnostics(learning_store, now)
     evidence = receipt["components"]["quote_streams"]["evidence"]
     assert evidence["does_not_prove_prediction_edge"]
-    for venue in ("okx","bitget","kucoin"):
+    for venue in ("okx","bitget","kucoin","phemex"):
         assert evidence["sources"][venue]["updates"] == 1
         assert evidence["sources"][venue]["fresh_assets"] == ["BTC"]
     assert evidence["sources"]["binance"]["updates"] == 0
@@ -250,13 +279,14 @@ async def test_one_okx_socket_supplies_quotes_and_existing_liquidity(monkeypatch
         assert names.count("okx") == 1
         assert names.count("bitget") == 1
         assert names.count("kucoin") == 1
+        assert names.count("phemex") == 1
         assert "okx-orderflow" not in names
-        assert len(names) == 11  # eight native books plus three existing flow feeds
+        assert len(names) == 12  # nine native books plus three existing flow feeds
     finally:
         await asyncio.wait_for(hub.aclose(), timeout=1)
 
 
-@pytest.mark.parametrize("venue", ["okx", "bitget", "kucoin"])
+@pytest.mark.parametrize("venue", ["okx", "bitget", "kucoin", "phemex"])
 @pytest.mark.parametrize("incumbent", [.6, .5], ids=["position", "cash"])
 def test_fusion_quote_uses_only_its_chosen_reference_source(learning_store, venue, incumbent):
     ForwardAccuracyMonitor(PerpetualMarketStore(learning_store)).initialize()
@@ -299,9 +329,11 @@ def test_source_fees_add_to_existing_stress_without_relaxing_other_venues():
     assert dict(cost_scenarios("bitget")) == {"conservative":18.,"severe":84.}
     # KuCoin's 6 bps taker is below the 8 bps floor: no premium.
     assert dict(cost_scenarios("kucoin")) == {"conservative":14.,"severe":80.}
+    # Phemex's 6 bps taker is below the 8 bps floor: no premium.
+    assert dict(cost_scenarios("phemex")) == {"conservative":14.,"severe":80.}
 
 
-@pytest.mark.parametrize("venue", ["okx", "bitget", "kucoin"])
+@pytest.mark.parametrize("venue", ["okx", "bitget", "kucoin", "phemex"])
 def test_family_qualification_applies_same_venue_fee_floor(learning_store, venue):
     ForwardAccuracyMonitor(PerpetualMarketStore(learning_store)).initialize()
     ShadowModelCompetition(learning_store).initialize()
@@ -442,6 +474,232 @@ async def test_kucoin_push_only_silence_triggers_existing_reconnect(monkeypatch)
         assert hub._reconnects["kucoin"] >= 1
         assert pings >= 1  # control frames arrived but no book was accepted
         assert hub._accepted["kucoin"] == 0
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+def _phemex_frame(at, *, asset="BTC", kind="snapshot", sequence=1,
+                  bids=((100., 100.),), asks=((100.1, 100.),)):
+    """One orderbook_p frame in the live shape (verified 2026-11-17)."""
+    ns = int(at.timestamp()*1_000_000_000)
+    return {"depth": 30, "dts": ns, "mts": ns, "orderbook_p": {
+                "bids": [[str(p), str(q)] for p, q in bids],
+                "asks": [[str(p), str(q)] for p, q in asks]},
+            "sequence": sequence, "symbol": source_contract("phemex", asset),
+            "timestamp": ns, "type": kind}
+
+
+def test_phemex_rest_snapshot_parses_live_shape():
+    now = datetime.now(UTC)
+    ns = int(now.timestamp()*1_000_000_000)
+    payload = {"error": None, "id": 0, "result": {
+        "depth": 30, "dts": ns, "mts": 0,
+        "orderbook_p": {"asks": [["100.1", "0.5"], ["100.2", "1.0"]],
+                        "bids": [["100.0", "0.75"], ["99.9", "2.0"]]},
+        "sequence": 71801460191, "symbol": "BTCUSDT",
+        "timestamp": ns, "type": "snapshot"}}
+    quote = parse_phemex_book(payload, asset="BTC", received_at=now)
+    assert (quote.venue, quote.symbol) == ("phemex", "BTCUSDT")
+    assert (quote.bid, quote.ask) == (100.0, 100.1)
+    # Sizes are base coins already: no contract multiplier is applied.
+    assert (quote.bid_quantity, quote.ask_quantity) == (0.75, 0.5)
+    assert quote.exchange_at == datetime.fromtimestamp(ns/1_000_000_000, tz=UTC)
+    rejected = dict(payload, error={"code": 6001, "message": "invalid argument"})
+    with pytest.raises(QuoteUnavailable):
+        parse_phemex_book(rejected, asset="BTC", received_at=now)
+    wrong = {"error": None, "id": 0, "result": dict(payload["result"], symbol="ETHUSDT")}
+    with pytest.raises(QuoteUnavailable):
+        parse_phemex_book(wrong, asset="BTC", received_at=now)
+    empty = {"error": None, "id": 0, "result": dict(
+        payload["result"], orderbook_p={"bids": [], "asks": []})}
+    with pytest.raises(QuoteUnavailable):
+        parse_phemex_book(empty, asset="BTC", received_at=now)
+
+
+def test_phemex_book_snapshot_then_delta_merge():
+    now = datetime.now(UTC)
+    book = PhemexBook()
+    quote = book.apply(_phemex_frame(
+        now, sequence=1,
+        bids=((100., 10.), (99.9, 5.), (99.8, 2.)),
+        asks=((100.1, 10.), (100.2, 5.), (100.3, 2.))),
+        asset="BTC", received_at=now)
+    assert (quote.bid, quote.ask) == (100., 100.1)
+    assert (quote.bid_quantity, quote.ask_quantity) == (10., 10.)
+    # Delta: delete the best bid, insert a new bid inside the old spread,
+    # and insert a new ask inside the spread. Best bid/ask must move.
+    quote = book.apply(_phemex_frame(
+        now, kind="incremental", sequence=2,
+        bids=((100., 0.), (99.95, 7.)), asks=((100.05, 3.),)),
+        asset="BTC", received_at=now)
+    assert (quote.bid, quote.ask) == (99.95, 100.05)
+    assert (quote.bid_quantity, quote.ask_quantity) == (7., 3.)
+    # Delta: replace a level's size without moving the top of book.
+    quote = book.apply(_phemex_frame(
+        now, kind="incremental", sequence=3,
+        bids=((99.9, 8.),), asks=()),
+        asset="BTC", received_at=now)
+    assert quote.bid == 99.95 and book.bids[99.9] == 8.
+    # The book keeps every level it was given, not just the top.
+    assert book.bids[99.8] == 2. and book.asks[100.3] == 2.
+
+
+def test_phemex_book_stale_sequence_is_discarded():
+    now = datetime.now(UTC)
+    book = PhemexBook()
+    book.apply(_phemex_frame(now, sequence=10), asset="BTC", received_at=now)
+    # Same sequence again and an older one: both are stale replays.
+    assert book.apply(_phemex_frame(now, kind="incremental", sequence=10,
+                                    bids=((101., 5.),), asks=()),
+                      asset="BTC", received_at=now) is None
+    assert book.apply(_phemex_frame(now, kind="incremental", sequence=9,
+                                    bids=((101., 5.),), asks=()),
+                      asset="BTC", received_at=now) is None
+    assert 101. not in book.bids
+    # A newer delta still applies after the discards.
+    quote = book.apply(_phemex_frame(now, kind="incremental", sequence=11,
+                                     bids=((100.05, 5.),), asks=()),
+                       asset="BTC", received_at=now)
+    assert quote.bid == 100.05
+
+
+def test_phemex_book_delta_before_snapshot_needs_resync():
+    now = datetime.now(UTC)
+    book = PhemexBook()
+    with pytest.raises(PhemexBookResync):
+        book.apply(_phemex_frame(now, kind="incremental", sequence=5),
+                   asset="BTC", received_at=now)
+    # The same gap surfaces through the plain parser (transient book).
+    with pytest.raises(PhemexBookResync):
+        parse_stream_message(
+            "phemex", json.dumps(_phemex_frame(now, kind="incremental", sequence=5)),
+            received_at=now)
+    # Nothing was stored: the hub must not serve a half-known book.
+    hub = StreamingBookHub(assets=("BTC",))
+    assert not hub.accept(
+        "phemex", json.dumps(_phemex_frame(now, kind="incremental", sequence=5)),
+        received_at=now)
+    assert hub.snapshot("phemex", "BTC", now=now) is None
+    assert "BTC" in hub._phemex_resync
+
+
+def test_phemex_book_snapshot_self_heals_after_delta_damage():
+    now = datetime.now(UTC)
+    book = PhemexBook()
+    book.apply(_phemex_frame(now, sequence=1,
+                             bids=((100., 10.), (99.9, 5.)),
+                             asks=((100.1, 10.), (100.2, 5.))),
+               asset="BTC", received_at=now)
+    damaged = book.apply(_phemex_frame(
+        now, kind="incremental", sequence=2,
+        bids=((100., 0.),), asks=((100.1, 0.),)),
+        asset="BTC", received_at=now)
+    assert (damaged.bid, damaged.ask) == (99.9, 100.2)
+    # A newer snapshot (the venue republishes one every 60s) restores
+    # the full book exactly, whatever the deltas did to it.
+    quote = book.apply(_phemex_frame(now, sequence=3), asset="BTC", received_at=now)
+    assert (quote.bid, quote.ask) == (100., 100.1)
+    assert (quote.bid_quantity, quote.ask_quantity) == (100., 100.)
+
+
+@pytest.mark.asyncio
+async def test_phemex_sequence_gap_resubscribes_for_fresh_snapshot(monkeypatch):
+    # A delta with no snapshot is a state gap: the hub must ask for a
+    # fresh snapshot for that asset instead of scoring a half-known book.
+    hub = StreamingBookHub(assets=("BTC", "ETH"))
+    monkeypatch.setattr(stream_quotes, "BOOK_SILENCE_SECONDS", 60)
+    monkeypatch.setattr(stream_quotes, "RECEIVE_CHECK_SECONDS", 1)
+    now = datetime.now(UTC)
+    frames = [
+        json.dumps({"error": None, "id": 1, "result": {"status": "success"}}),
+        json.dumps(_phemex_frame(now, asset="ETH", kind="incremental", sequence=5)),
+        json.dumps(_phemex_frame(now, asset="ETH", sequence=6)),
+    ]
+    sent = []
+    calls = {"n": 0}
+    seen_urls = []
+
+    class Socket:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def send(self, message):
+            sent.append(json.loads(message))
+
+        async def recv(self):
+            if calls["n"] < len(frames):
+                frame = frames[calls["n"]]
+                calls["n"] += 1
+                return frame
+            await asyncio.sleep(3600)
+    monkeypatch.setattr(stream_quotes.websockets, "connect",
+                        lambda url, **kwargs: seen_urls.append(url) or Socket())
+    task = asyncio.create_task(hub._run("phemex"))
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            subscribes = [m for m in sent
+                          if m.get("method") == "orderbook_p.subscribe"]
+            eth_subscribes = [m for m in subscribes if m["params"] == ["ETHUSDT"]]
+            # The hub stamps receipt with real time, so freshness is
+            # checked against now, not the test's earlier timestamp.
+            if (len(eth_subscribes) >= 2
+                    and hub.snapshot("phemex", "ETH",
+                                     now=datetime.now(UTC)) is not None):
+                break
+            await asyncio.sleep(0.1)
+        assert any(m.get("method") == "orderbook_p.subscribe"
+                   and m["params"] == ["BTCUSDT"] for m in sent)
+        assert seen_urls == [PHEMEX_PUBLIC_WS]
+        assert len([m for m in sent if m.get("method") == "orderbook_p.subscribe"
+                    and m["params"] == ["ETHUSDT"]]) >= 2
+        assert hub.snapshot("phemex", "ETH", now=datetime.now(UTC)) is not None
+        assert hub._accepted["phemex"] == 1
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_phemex_push_only_silence_triggers_existing_reconnect(monkeypatch):
+    # orderbook_p pushes only on a book change: a quiet market delivers
+    # subscription acks and no books, so the existing 120s silence
+    # restart must fire with no new silence rule invented.
+    hub = StreamingBookHub(assets=("BTC",))
+    monkeypatch.setattr(stream_quotes, "BOOK_SILENCE_SECONDS", 1)
+    monkeypatch.setattr(stream_quotes, "RECEIVE_CHECK_SECONDS", 1)
+    acks = 0
+
+    class AckSocket:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def send(self, message):
+            pass
+
+        async def recv(self):
+            nonlocal acks
+            acks += 1
+            return json.dumps({"error": None, "id": 1,
+                               "result": {"status": "success"}})
+    monkeypatch.setattr(stream_quotes.websockets, "connect",
+                        lambda url, **kwargs: AckSocket())
+    task = asyncio.create_task(hub._run("phemex"))
+    try:
+        deadline = time.monotonic() + 15
+        while hub._silence_restarts["phemex"] == 0 and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        assert hub._silence_restarts["phemex"] >= 1
+        assert hub._reconnects["phemex"] >= 1
+        assert acks >= 1  # acks arrived but no book was accepted
+        assert hub._accepted["phemex"] == 0
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

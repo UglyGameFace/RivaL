@@ -175,6 +175,17 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
         "xmarket_expected_inputs": None, "xmarket_shadow_rows": None,
         "xmarket_imported_scopes": None,
         "xmarket_stage": "read_unavailable", "xmarket_exports": None,
+        "kucoin_gap_recovery": {
+            "status": "unavailable", "assets_observed": None,
+            "queued_exact_gaps_14d": None, "due_exact_gaps_14d": None,
+            "attempted_exact_gaps_14d": None,
+            "bulk_upstream_empty_assets": None,
+        },
+        "live_call_delivery": {
+            "status": "unavailable", "active_channels": None,
+            "recent_accepted_delivery_rows": None,
+            "advance_model": None,
+        },
         "recent_forward_calls": _recent_forecast_summary(None),
     }
     db = {
@@ -211,6 +222,60 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
         host["xmarket_shadow_rows"] = _nonnegative(xmarket.get("shadow_rows_24h"))
         if isinstance(xmarket.get("imported_scopes"), list):
             host["xmarket_imported_scopes"] = len(xmarket["imported_scopes"])
+
+    # Only safe, bounded aggregate recovery counts leave the private host.
+    # A gap queued or attempted is not proof that KuCoin returned the candle.
+    paths = report.get("path_targets")
+    recovery = paths.get("kucoin_gap_recovery") if isinstance(paths, dict) else None
+    if isinstance(recovery, dict) and recovery.get("status") == "recorded":
+        assets = recovery.get("assets")
+        if isinstance(assets, list) and len(assets) <= 4:
+            seen = set()
+            valid = True
+            for row in assets:
+                if (not isinstance(row, dict)
+                        or row.get("asset") not in ASSETS
+                        or row["asset"] in seen
+                        or not all(_nonnegative(row.get(key)) is not None
+                                   for key in ("queued_exact_gaps_14d",
+                                               "due_exact_gaps_14d",
+                                               "attempted_exact_gaps_14d"))):
+                    valid = False
+                    break
+                seen.add(row["asset"])
+            if valid:
+                host["kucoin_gap_recovery"] = {
+                    "status": "recorded",
+                    "assets_observed": len(assets),
+                    "queued_exact_gaps_14d": sum(
+                        row["queued_exact_gaps_14d"] for row in assets),
+                    "due_exact_gaps_14d": sum(
+                        row["due_exact_gaps_14d"] for row in assets),
+                    "attempted_exact_gaps_14d": sum(
+                        row["attempted_exact_gaps_14d"] for row in assets),
+                    "bulk_upstream_empty_assets": sum(
+                        row.get("bulk_status") == "upstream_empty"
+                        for row in assets),
+                }
+
+    # The channel opt-in and API-accepted message receipts are observable,
+    # unlike whether a Discord user actually saw the call. Never publish IDs.
+    advance = report.get("advance_forecasts")
+    if isinstance(advance, dict):
+        cards = advance.get("channel_cards")
+        delivered = advance.get("recent_deliveries")
+        if (isinstance(cards, dict) and cards.get("status") == "recorded"
+                and _nonnegative(cards.get("active")) is not None
+                and isinstance(delivered, list) and len(delivered) <= 100):
+            model = advance.get("model")
+            host["live_call_delivery"] = {
+                "status": "recorded",
+                "active_channels": cards["active"],
+                "recent_accepted_delivery_rows": len(delivered),
+                "advance_model": (model if isinstance(model, str)
+                                  and re.fullmatch(r"[a-z][a-z0-9-]{1,79}", model)
+                                  else None),
+            }
 
     host["recent_forward_calls"] = _recent_forecast_summary(
         report.get("recent_forward_calls")
@@ -362,8 +427,18 @@ def summarize_xmarket_report(doc: dict, modified_at: str | None) -> dict | None:
     if status not in ("blocked", "fitted", "accepted", "rejected"):
         status = "unverified"
     window = doc.get("effective_window")
+    # A validated source report may identify an actual fitted artifact. A
+    # blocked report has a model family but NO model version to claim as fit.
+    family = "xmarket_v1" if doc.get("family") == "xmarket_v1" else None
+    claimed_version = doc.get("model_version")
+    version = (claimed_version if family and status in (
+        "fitted", "accepted", "rejected"
+    ) and isinstance(claimed_version, str)
+        and re.fullmatch(r"xmarket-[a-z0-9-]{1,79}", claimed_version)
+        else None)
     return {
         "asset": asset, "horizon": horizon, "status": status,
+        "family": family, "model_version": version,
         "pm_status": pm.get("status") if pm.get("status") in (
             "verified", "unverified", "blocked"
         ) else "unknown",

@@ -48,15 +48,37 @@ cx.state.source='snapshot';
 cx.state.evidence={
  captured_at:at,
  provenance:{method:'github-actions-oidc',verified:true,source_url:'https://github.com/UglyGameFace/RivaL/actions/runs/43350851273'},
- host:{status:'verified',xmarket_fresh_inputs:8,xmarket_expected_inputs:8,xmarket_imported_scopes:0,xmarket_shadow_rows:0},
+ host:{status:'verified',xmarket_fresh_inputs:8,xmarket_expected_inputs:8,xmarket_imported_scopes:0,xmarket_shadow_rows:0,
+  kucoin_gap_recovery:{status:'recorded',assets_observed:1,queued_exact_gaps_14d:2,due_exact_gaps_14d:1},
+  live_call_delivery:{status:'recorded',active_channels:0,
+   recent_accepted_delivery_rows:0,advance_model:'advance-candle-logistic-lead5-v1'}},
  database:{status:'verified_read',weight_updates_observed:102,qualified_paper_scopes:0,evaluated_paper_scopes:12},
  drive:{status:'verified_reports',latest_report_at:at,reports:[{asset:'BTC',horizon:5,status:'blocked',
   pm_status:'unverified',kalshi_status:'unverified',pm_pairs:0,kalshi_pairs:0,eligible_rows:0,
-  reason:'no_prospective_export',report_modified_at:at}]},
+  reason:'no_prospective_export',report_modified_at:at,
+  family:'xmarket_v1',model_version:null}]},
  performance:{scopes:[{asset:'BTC',horizon:15,paired_outcomes:285,model_brier:0.227,
   baseline_brier:0.235,after_cost_qualified:false}]},
  intelligence:{status:'verified',prs:[],runs:[]}
 };
+assert.match(cx.sourcePanel(),/KuCoin exact source gaps/);
+assert.match(cx.opsXMarket(),/No fitted model/);
+cx.v2scope('BTC',5);
+assert.match(document.drawer,/Report model identity/);
+assert.match(document.drawer,/No fitted model in chosen report/);
+cx.state.evidence.drive.reports[0].status='fitted';
+cx.state.evidence.drive.reports[0].model_version='xmarket-offline-v1';
+assert.equal(cx.v2rows()[0].model_version,'xmarket-offline-v1');
+assert.match(cx.opsXMarket(),/xmarket_v1 \/ xmarket-offline-v1/);
+cx.v2scope('BTC',5);
+assert.match(document.drawer,/xmarket_v1 \/ xmarket-offline-v1/);
+cx.state.evidence.drive.reports[0].status='blocked';
+cx.state.evidence.drive.reports[0].model_version=null;
+assert.match(cx.sourcePanel(),/2 queued/);
+assert.match(cx.sourcePanel(),/1 due/);
+assert.match(cx.sourcePanel(),/Discord Live Calls/);
+assert.match(cx.sourcePanel(),/0 subscribed channels/);
+assert.match(cx.sourcePanel(),/advance-candle-logistic-lead5-v1/);
 assert.equal(cx.prs().length,2);
 // PR-triggered CI uses the head SHA, not the merge commit SHA.
 cx.state.prs[1].head_sha='def987';

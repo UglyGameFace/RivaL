@@ -301,9 +301,15 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
             raise ValueError("unconfigured KuCoin recovery asset")
         clock = _utc(now or datetime.now(UTC))
         position = await asyncio.to_thread(self._position, asset, clock)
-        if position["retry_after"] and _utc(datetime.fromisoformat(
-            str(position["retry_after"])
-        )) > clock:
+        bulk_retry = (
+            _utc(datetime.fromisoformat(str(position["retry_after"])))
+            if position["retry_after"] else None
+        )
+        bulk_paused = bulk_retry is not None and bulk_retry > clock
+        # A missing bulk-history page is independent of an EXACT, already
+        # witnessed path gap. Let a due gap use its own durable retry clock,
+        # but never bypass provider-wide error/rate-limit cooldowns.
+        if bulk_paused and position["status"] != "upstream_empty":
             return 0
         cursor = _utc(datetime.fromisoformat(str(position["next_opened_at"])))
         end = clock.replace(
@@ -322,6 +328,10 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
         repairing = gap is not None
         if repairing:
             cursor = gap
+        elif bulk_paused:
+            # The bulk page is still cooling down, and there is no eligible
+            # independently backed-off source gap to fetch this cycle.
+            return 0
         elif cursor >= end:
             pending = await asyncio.to_thread(self._pending_gaps, asset, now=clock)
             await asyncio.to_thread(
@@ -397,7 +407,8 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
                 # after the per-gap backoff, without rewinding forward data.
                 await asyncio.to_thread(
                     self._advance, asset, now=clock, next_open=None,
-                    status="gaps_pending",
+                    status="upstream_empty" if bulk_paused else "gaps_pending",
+                    retry_after=bulk_retry if bulk_paused else None,
                 )
                 return 0
             if not candles:
@@ -427,7 +438,9 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
                     await asyncio.to_thread(self._complete_gap, asset, cursor)
                 await asyncio.to_thread(
                     self._advance, asset, now=clock, next_open=None,
-                    inserted=added, status="gaps_pending",
+                    inserted=added,
+                    status="upstream_empty" if bulk_paused else "gaps_pending",
+                    retry_after=bulk_retry if bulk_paused else None,
                 )
             else:
                 next_open = contiguous_forward_next(
@@ -452,9 +465,12 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
             )
             reason = "blocked" if blocked else "retry"
             pause = timedelta(hours=6) if blocked else timedelta(minutes=20)
+            retry_until = clock + pause
+            if bulk_paused and bulk_retry is not None:
+                retry_until = max(retry_until, bulk_retry)
             await asyncio.to_thread(
                 self._advance, asset, now=clock,
-                next_open=None, status=reason, retry_after=clock + pause,
+                next_open=None, status=reason, retry_after=retry_until,
             )
             _LOG.warning(
                 "RivaL KuCoin history asset=%s unavailable status=%s",

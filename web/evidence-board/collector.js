@@ -202,6 +202,10 @@ function build(payload,identity){
     return {
       asset:r.asset,horizon:r.horizon,
       status:oneOf(r.status,s),
+      family:oneOf(r.family,['xmarket_v1']),
+      model_version:r.family==='xmarket_v1' && ['fitted','accepted','rejected'].includes(r.status) &&
+        typeof r.model_version==='string' && /^xmarket-[a-z0-9-]{1,79}$/.test(r.model_version)
+        ?r.model_version:null,
       pm_status:oneOf(r.pm_status,['verified','unverified','blocked','unknown']),
       kalshi_status:oneOf(r.kalshi_status,['verified','unverified','blocked','unknown']),
       pm_pairs:numberOrNull(r.pm_pairs,1000000),kalshi_pairs:numberOrNull(r.kalshi_pairs,1000000),
@@ -232,6 +236,24 @@ function build(payload,identity){
       xmarket_stage:oneOf(h.xmarket_stage,['not_initialized','waiting_for_inputs',
         'waiting_for_completed_day_export','waiting_for_fit','imported_no_shadow_rows',
         'shadow_issuing','read_unavailable']),
+      live_call_delivery:{
+        status:oneOf(h.live_call_delivery?.status,['recorded','unavailable']),
+        active_channels:numberOrNull(h.live_call_delivery?.active_channels,100000),
+        recent_accepted_delivery_rows:numberOrNull(h.live_call_delivery?.recent_accepted_delivery_rows,100),
+        advance_model:typeof h.live_call_delivery?.advance_model==='string' &&
+          /^[a-z][a-z0-9-]{1,79}$/.test(h.live_call_delivery.advance_model)
+          ?h.live_call_delivery.advance_model:null,
+        delivery_is_discord_api_acceptance_only:true
+      },
+      kucoin_gap_recovery:{
+        status:oneOf(h.kucoin_gap_recovery?.status,['recorded','unavailable']),
+        assets_observed:numberOrNull(h.kucoin_gap_recovery?.assets_observed,4),
+        queued_exact_gaps_14d:numberOrNull(h.kucoin_gap_recovery?.queued_exact_gaps_14d,100000),
+        due_exact_gaps_14d:numberOrNull(h.kucoin_gap_recovery?.due_exact_gaps_14d,100000),
+        attempted_exact_gaps_14d:numberOrNull(h.kucoin_gap_recovery?.attempted_exact_gaps_14d,100000),
+        bulk_upstream_empty_assets:numberOrNull(h.kucoin_gap_recovery?.bulk_upstream_empty_assets,4),
+        does_not_prove_source_recovery:true
+      },
       xmarket_exports:cleanXmarketExports(h.xmarket_exports),
       recent_forward_calls:cleanForwardCalls(h.recent_forward_calls)
     },

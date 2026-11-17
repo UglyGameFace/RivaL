@@ -49,6 +49,50 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(_recent_forecast_summary(bad)["status"], "read_unavailable")
         self.assertEqual(_recent_forecast_summary(bad)["rows"], [])
 
+    def test_kucoin_gap_status_is_public_safe_and_never_claims_recovered(self) -> None:
+        private = {"status": "recorded", "assets": [
+            {"asset": "ETH", "queued_exact_gaps_14d": 2,
+             "due_exact_gaps_14d": 1, "attempted_exact_gaps_14d": 1,
+             "bulk_status": "upstream_empty", "contract": "PRIVATE"}
+        ]}
+        host, _ = summarize_host({"path_targets": {
+            "kucoin_gap_recovery": private,
+        }})
+        status = host["kucoin_gap_recovery"]
+        self.assertEqual(status, {
+            "status": "recorded", "assets_observed": 1,
+            "queued_exact_gaps_14d": 2, "due_exact_gaps_14d": 1,
+            "attempted_exact_gaps_14d": 1, "bulk_upstream_empty_assets": 1,
+        })
+        self.assertNotIn("PRIVATE", str(status))
+        bad, _ = summarize_host({"path_targets": {
+            "kucoin_gap_recovery": {"status": "recorded", "assets": [
+                {**private["assets"][0], "due_exact_gaps_14d": -1},
+            ]},
+        }})
+        self.assertEqual(bad["kucoin_gap_recovery"]["status"], "unavailable")
+        unknown, _ = summarize_host(None)
+        self.assertIsNone(unknown["kucoin_gap_recovery"]["queued_exact_gaps_14d"])
+
+    def test_live_call_delivery_shows_exact_opt_in_and_model_without_ids(self) -> None:
+        host, _ = summarize_host({"advance_forecasts": {
+            "channel_cards": {"status": "recorded", "active": 0,
+                              "guild_id": "PRIVATE"},
+            "recent_deliveries": [],
+            "model": "advance-candle-logistic-lead5-v1",
+        }})
+        self.assertEqual(host["live_call_delivery"], {
+            "status": "recorded", "active_channels": 0,
+            "recent_accepted_delivery_rows": 0,
+            "advance_model": "advance-candle-logistic-lead5-v1",
+        })
+        self.assertNotIn("PRIVATE", str(host["live_call_delivery"]))
+        bad, _ = summarize_host({"advance_forecasts": {
+            "channel_cards": {"status": "recorded", "active": -1},
+            "recent_deliveries": [], "model": "unsafe",
+        }})
+        self.assertEqual(bad["live_call_delivery"]["status"], "unavailable")
+
     def test_missing_host_is_unknown_not_zero(self) -> None:
         host, db = summarize_host(None)
         self.assertEqual(host["status"], "unavailable")
@@ -94,6 +138,23 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(result["status"], "accepted")
         self.assertEqual(result["reason"], "offline_gates_passed")
         self.assertNotIn("after_cost_qualified", result)
+
+    def test_real_fitted_model_identity_never_fabricated_for_blocked_report(self) -> None:
+        doc = {"schema": "rival-xmarket-model-v1",
+               "family": "xmarket_v1", "asset": "ETH",
+               "horizon_minutes": 15, "training_status": "blocked",
+               "model_version": "xmarket-offline-v1"}
+        blocked = summarize_xmarket_report(doc, None)
+        self.assertEqual(blocked["family"], "xmarket_v1")
+        self.assertIsNone(blocked["model_version"])
+        doc["training_status"] = "fitted"
+        fitted = summarize_xmarket_report(doc, None)
+        self.assertEqual(fitted["model_version"], "xmarket-offline-v1")
+        doc["model_version"] = "PRIVATE<script>"
+        self.assertIsNone(summarize_xmarket_report(doc, None)["model_version"])
+        doc["model_version"] = "xmarket-offline-v1"
+        doc["family"] = "unknown"
+        self.assertIsNone(summarize_xmarket_report(doc, None)["model_version"])
 
     def test_recent_online_weight_change_is_not_prediction_edge(self) -> None:
         host, db = summarize_host({

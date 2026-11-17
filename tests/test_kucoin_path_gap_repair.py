@@ -184,3 +184,121 @@ def test_path_gap_probe_skips_uninitialized_forecast_table(learning_store):
     assert worker._queue_due_path_gaps(
         "ETH", now=CLOCK, end=CLOCK - timedelta(hours=4),
     ) == 0
+
+
+@pytest.mark.asyncio
+async def test_due_source_gap_can_recover_during_unrelated_bulk_empty_page_cooldown(
+    learning_store,
+):
+    worker, hole = _seed(learning_store)
+    original = worker._position("ETH", CLOCK)
+    bulk_retry = CLOCK + timedelta(hours=6)
+    with learning_store.connect() as conn:
+        conn.execute(
+            """UPDATE perp_history_recovery SET status='upstream_empty',
+                      retry_after=? WHERE venue='kucoin' AND asset='ETH'""",
+            (bulk_retry.isoformat(),),
+        )
+    calls = []
+
+    async def multiplier(*_args):
+        return 1.0
+
+    async def public(_url, params):
+        calls.append(params)
+        return {"code": "200000", "data": {
+            "symbol": "ETHUSDTM", "tradeType": "FUTURES",
+            "list": [[int(hole.timestamp()), "100", "105", "95",
+                      "101", "1", "101"]],
+        }}
+
+    worker._multiplier = multiplier
+    worker._public = public
+    try:
+        assert await worker.fetch_asset("ETH", now=CLOCK) == 1
+        assert len(calls) == 1
+        assert calls[0]["startAt"] == calls[0]["endAt"] == int(hole.timestamp())
+        position = worker.progress()[0]
+        assert position["next_opened_at"] == original["next_opened_at"]
+        # An independent repair must not erase the bulk page's own cooldown.
+        assert position["status"] == "upstream_empty"
+        assert position["retry_after"] == bulk_retry.isoformat()
+        assert worker._pending_gaps("ETH", now=CLOCK) == 0
+        assert await worker.fetch_asset(
+            "ETH", now=CLOCK + timedelta(minutes=1)
+        ) == 0
+        assert len(calls) == 1
+    finally:
+        await worker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gap_recovery_never_bypasses_provider_wide_block(learning_store):
+    worker, hole = _seed(learning_store)
+    worker._position("ETH", CLOCK)
+    with learning_store.connect() as conn:
+        conn.execute(
+            """UPDATE perp_history_recovery SET status='blocked',
+                      retry_after=? WHERE venue='kucoin' AND asset='ETH'""",
+            ((CLOCK + timedelta(hours=6)).isoformat(),),
+        )
+
+    async def fail(*_args, **_kwargs):
+        pytest.fail("provider-wide cooldown must prevent an HTTP request")
+
+    worker._multiplier = fail
+    worker._public = fail
+    try:
+        assert await worker.fetch_asset("ETH", now=CLOCK) == 0
+        assert worker._pending_gaps("ETH", now=CLOCK) == 0
+        with learning_store.connect() as conn:
+            missing = conn.execute(
+                """SELECT 1 FROM perp_market_candles
+                   WHERE venue='kucoin' AND opened_at=?""",
+                (hole.isoformat(),),
+            ).fetchone()
+        assert missing is None
+    finally:
+        await worker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_empty_gap_does_not_clear_independent_bulk_retry(learning_store):
+    worker, hole = _seed(learning_store)
+    worker._position("ETH", CLOCK)
+    bulk_retry = CLOCK + timedelta(hours=6)
+    with learning_store.connect() as conn:
+        conn.execute(
+            """UPDATE perp_history_recovery SET status='upstream_empty',
+                      retry_after=? WHERE venue='kucoin' AND asset='ETH'""",
+            (bulk_retry.isoformat(),),
+        )
+    requests = []
+
+    async def multiplier(*_args):
+        return 1.0
+
+    async def empty(_url, params):
+        requests.append(params)
+        return {"code": "200000", "data": {
+            "symbol": "ETHUSDTM", "tradeType": "FUTURES", "list": [],
+        }}
+
+    worker._multiplier = multiplier
+    worker._public = empty
+    try:
+        assert await worker.fetch_asset("ETH", now=CLOCK) == 0
+        assert len(requests) == 1
+        assert requests[0]["startAt"] == requests[0]["endAt"] == int(hole.timestamp())
+        assert worker.progress()[0]["retry_after"] == bulk_retry.isoformat()
+        with learning_store.connect() as conn:
+            pending = conn.execute(
+                """SELECT retry_after FROM perp_history_gap_repair
+                   WHERE venue='kucoin' AND asset='ETH' AND opened_at=?""",
+                (hole.isoformat(),),
+            ).fetchone()
+        assert pending["retry_after"] == bulk_retry.isoformat()
+        assert await worker.fetch_asset("ETH", now=CLOCK + timedelta(minutes=1)) == 0
+        assert len(requests) == 1
+    finally:
+        await worker.aclose()

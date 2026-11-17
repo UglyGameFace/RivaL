@@ -62,10 +62,16 @@ cx.state.evidence={
  intelligence:{status:'verified',prs:[],runs:[]}
 };
 assert.match(cx.sourcePanel(),/KuCoin exact source gaps/);
-assert.match(cx.evidencePage(),/No fitted model/);
+assert.match(cx.opsXMarket(),/No fitted model/);
+cx.v2scope('BTC',5);
+assert.match(document.drawer,/Report model identity/);
+assert.match(document.drawer,/No fitted model in chosen report/);
 cx.state.evidence.drive.reports[0].status='fitted';
 cx.state.evidence.drive.reports[0].model_version='xmarket-offline-v1';
-assert.match(cx.evidencePage(),/xmarket_v1 \/ xmarket-offline-v1/);
+assert.equal(cx.v2rows()[0].model_version,'xmarket-offline-v1');
+assert.match(cx.opsXMarket(),/xmarket_v1 \/ xmarket-offline-v1/);
+cx.v2scope('BTC',5);
+assert.match(document.drawer,/xmarket_v1 \/ xmarket-offline-v1/);
 cx.state.evidence.drive.reports[0].status='blocked';
 cx.state.evidence.drive.reports[0].model_version=null;
 assert.match(cx.sourcePanel(),/2 queued/);

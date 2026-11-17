@@ -20,18 +20,21 @@ from parlay_bot.perpetuals.governance import score_paired_forward
 
 VERSION = "prospective-empirical-path-v1"
 TARGET_VERSION = "prospective-empirical-close-targets-v1"
-HORIZONS = (15, 60)
+HORIZONS = (5, 15, 60)
 SIDES = ("long", "short")
 LOOKBACK = 24
 MIN_TRAIN = 25
 MAX_TRAIN = 280
 # Source paths, each with at most the two declared sides. A normal cycle
-# selects at most 40 streams x 2 horizons: 80 paths / 160 side records.
+# selects at most 40 streams x 3 horizons: 120 paths / 240 side records.
 # Batching 100 side records cannot keep up even without missing evidence.
 MAX_SETTLE = 100
-# Give current outcomes at least the normal 80-path issuance capacity while
-# retaining 20 slots for older evidence. Unused capacity is shared. This is
-# scheduling only: all paths retain the same 14-day and causal source gates.
+# Give current outcomes 80 of the 100-path bound while retaining 20 slots
+# for older evidence. Unused capacity is shared. This is scheduling only:
+# all paths retain the same 14-day and causal source gates. A full
+# 3-horizon cycle can issue 120 paths, so current outcomes may need a
+# second settle to drain; the backlog stays bounded (see the full-cycle
+# test in tests/test_prospective_path_forward.py).
 CURRENT_SETTLEMENT_WINDOW = timedelta(hours=2)
 
 

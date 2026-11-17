@@ -175,9 +175,17 @@ def test_ready_path_batch_remains_bounded_and_drains_across_worker_restarts(lear
 
 
 @pytest.mark.parametrize("legacy_paths", [0, MAX_SETTLE+1], ids=["empty-backlog", "older-backlog"])
-def test_one_full_issuance_cycle_settles_without_accumulating_a_capacity_backlog(learning_store,
+def test_one_full_issuance_cycle_drains_across_settles_without_unbounded_backlog(learning_store,
                                                                              legacy_paths):
-    """40 streams x 2 horizons x 2 sides exceed the former 100-row ceiling."""
+    """40 streams x 3 horizons x 2 sides = 240 sides per full cycle.
+
+    Settlement is bounded at MAX_SETTLE=100 paths (200 sides) per call, so
+    one full cycle's issuance no longer fits in a single settle: the first
+    settle caps at 200 sides and the remainder drains on the next settle(s).
+    The backlog is bounded and drains when no new issuance lands; it does
+    not grow without bound. (Admitting 5m is what pushed a full cycle past
+    the per-settle bound; MAX_SETTLE is deliberately unchanged.)
+    """
     from parlay_bot.perpetuals.forward_audit import MAX_STREAMS_PER_CYCLE
 
     PerpetualMarketStore(learning_store).initialize()
@@ -216,15 +224,24 @@ def test_one_full_issuance_cycle_settles_without_accumulating_a_capacity_backlog
                     conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                  _row(bar))
     assert streams==MAX_STREAMS_PER_CYCLE
-    assert ledger.settle(now=now)=={"settled":200 if legacy_paths else 160,"ambiguous":0}
+    # First settle caps at the 100-path bound (200 sides). Empty backlog:
+    # 240 issued sides - 200 settled = 40 pending (the newest 5m paths are
+    # last in the current queue, so they are what remains). Older backlog:
+    # 101 legacy paths (202 sides, targets deleted above) + 240 new sides
+    # - 200 settled = 242 pending.
+    assert ledger.settle(now=now)=={"settled":200,"ambiguous":0}
     progress=_path_target_progress(learning_store,now)
-    assert progress["settled_close_targets_24h"]==160
+    assert progress["settled_close_targets_24h"]==(200 if not legacy_paths else 160)
     assert progress["pending_paths_14d"]==progress["due_pending_paths_14d"]==(
-        2*(legacy_paths-20) if legacy_paths else 0)
-    # With current work drained, the older queue borrows the full bound.
+        242 if legacy_paths else 40)
+    # The remainder drains on the next settle(s); nothing is left behind.
+    # Empty backlog: 40 sides. Older backlog: 200 more sides, then 42.
     assert ProspectivePathLedger(learning_store).settle(now=now)=={
-        "settled":2*(legacy_paths-20) if legacy_paths else 0,"ambiguous":0}
-    assert ledger.settle(now=now)=={"settled":0,"ambiguous":0}
+        "settled":200 if legacy_paths else 40,"ambiguous":0}
+    assert ledger.settle(now=now)=={
+        "settled":42 if legacy_paths else 0,"ambiguous":0}
+    if legacy_paths:
+        assert ledger.settle(now=now)=={"settled":0,"ambiguous":0}
     progress=_path_target_progress(learning_store,now)
     assert progress["pending_paths_14d"]==progress["due_pending_paths_14d"]==0
 

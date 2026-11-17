@@ -1,12 +1,13 @@
-"""Five-minute prospective paths: admission, completeness, capacity.
+"""Five-minute prospective paths: issuance, admission, completeness, capacity.
 
 A 5-minute path needs exactly one complete exact-source candle. The
-settlement worker historically selected only 15/60-minute horizons, so a
-due 5-minute path stayed pending forever. These tests seed 5-minute rows
-directly: production issuance still gates on ``HORIZONS`` in
-``ProspectivePathLedger.issue`` and on ``horizon in (15, 60)`` in
-``forward_audit`` — settlement admission alone cannot create 5-minute
-rows, it can only stop discarding them once they exist.
+settlement worker admits 5-minute paths only from capacity the 15/60-minute
+queues did not use (leftover priority, MAX_SETTLE total per cycle), and
+issuance admits 5-minute horizons through ``HORIZONS`` in
+``ProspectivePathLedger.issue`` / ``empirical_paths`` and through
+``horizon in (5, 15, 60)`` in ``forward_audit``. The settlement tests
+below seed 5-minute rows directly; the issuance tests issue them through
+``ProspectivePathLedger.issue`` instead.
 """
 from __future__ import annotations
 
@@ -120,6 +121,59 @@ def _settled_sides(conn, horizon):
         " WHERE state='settled' AND horizon_minutes=?",
         (horizon,),
     ).fetchone()["n"]
+
+
+def test_five_minute_paths_are_issued(learning_store):
+    """Issuance admits 5m; 15/60m issuance behaviour is unchanged."""
+    PerpetualMarketStore(learning_store).initialize()
+    ledger = ProspectivePathLedger(learning_store)
+    ledger.initialize()
+    candles = _candles()
+    last = candles[-1]
+    issued = last.observed_at + timedelta(seconds=1)
+    options = empirical_paths(candles, horizon=5, now=issued)
+    assert set(options) == {"long", "short"}
+    with learning_store.connect() as conn:
+        assert ledger.issue(conn, candles=candles, asset="BTC", horizon=5,
+                            now=issued, issued_at=issued) == 2
+        assert _pending_sides(conn, 5) == 2
+        # Issuing again is a no-op (ON CONFLICT DO NOTHING), not a duplicate.
+        assert ledger.issue(conn, candles=candles, asset="BTC", horizon=5,
+                            now=issued, issued_at=issued) == 0
+        assert _pending_sides(conn, 5) == 2
+        # 15-minute issuance is unchanged by admitting 5.
+        assert ledger.issue(conn, candles=candles, asset="BTC", horizon=15,
+                            now=issued, issued_at=issued) == 2
+        assert _pending_sides(conn, 15) == 2
+
+
+def test_issued_five_minute_path_settles_end_to_end(learning_store):
+    """A path issued through ledger.issue() settles on one complete candle."""
+    PerpetualMarketStore(learning_store).initialize()
+    ledger = ProspectivePathLedger(learning_store)
+    ledger.initialize()
+    candles = _candles()
+    last = candles[-1]
+    issued = last.observed_at + timedelta(seconds=1)
+    future = _future_path(last, steps=1)
+    now = future[-1].observed_at + timedelta(minutes=1)
+    with learning_store.connect() as conn:
+        assert ledger.issue(conn, candles=candles, asset="BTC", horizon=5,
+                            now=issued, issued_at=issued) == 2
+        for bar in future:
+            conn.execute(
+                "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                _row(bar),
+            )
+    assert ledger.settle(now=now) == {"settled": 2, "ambiguous": 0}
+    with learning_store.connect() as conn:
+        assert _pending_sides(conn, 5) == 0
+        assert _settled_sides(conn, 5) == 2
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM rival_forward_path_targets"
+            " WHERE state='settled' AND horizon_minutes=5"
+        ).fetchone()["n"] == 2
+    assert len(ledger.target_report(asset="BTC", horizon=5, now=now)) == 2
 
 
 def test_five_minute_path_settles_on_one_complete_candle(learning_store):

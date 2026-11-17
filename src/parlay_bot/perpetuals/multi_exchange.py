@@ -67,6 +67,14 @@ def _asset_contract(asset: str, contract: str) -> bool:
 
 
 def _can_reference(venue: str, asset: str, contract: str, quote: str) -> bool:
+    """True only when ``venue`` can supply an executable reference quote.
+
+    Strict quote identity is required only for shadow execution. Other
+    venues can contribute *directional probabilities*, not executable prices.
+    dYdX is directional-only: its books are live but it publishes no
+    exchange clock, so no dYdX quote can ever carry a verified ``exchange_at``
+    and it can never be a reference venue.
+    """
     # Strict quote identity is required only for shadow execution. Other
     # venues can contribute *directional probabilities*, not executable prices.
     return (venue in SOURCE_QUOTE_CURRENCIES and asset in ASSETS

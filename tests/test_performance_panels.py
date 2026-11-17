@@ -1,6 +1,7 @@
 """Default mobile overview, scoped tabs and a visible XMarket lifecycle."""
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -156,7 +157,11 @@ async def test_xmarket_is_rechecked_after_a_minute_and_missing_reads_are_not_cac
     bot, home = _make_home(tmp_path)
     _patch_live_reads(monkeypatch)
     calls = []
-    clock = [1000.0]
+    # Anchor the fake clock at the real monotonic time, not an arbitrary
+    # small value: _cached_page_read evicts the oldest entry when the
+    # shared 256-entry cache is full, so entries stamped 1000.0 look
+    # older than every real-clock entry and get evicted between reads.
+    clock = [time.monotonic()]
     monkeypatch.setattr(home_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
 
     def read(*_):

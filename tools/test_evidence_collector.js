@@ -45,6 +45,17 @@ async function main(){
     {asset:'ETH',horizon:5,venue:'bad/PRIVATE',quote:'USD',issued_at:issued,target_close_at:target,
      probability_up:0.6,baseline_up:0.5,direction:'UP',status:'open',outcome_up:null,lead_seconds:300}]},
   xmarket_stage:'waiting_for_completed_day_export',
+  xmarket_scope_progress:[
+   {asset:'BTC',horizon:15,status:'shadow_issuing',stored_artifacts:2,
+    shadow_rows_24h:99,latest_shadow_at:now,latest_imported_at:now,
+    fresh_native_sources:2,missing_native_sources:[],stale_native_sources:[],
+    model_weights:'PRIVATE',guild_id:'PRIVATE'},
+   {asset:'ETH',horizon:60,status:'waiting_for_fit',stored_artifacts:0,
+    shadow_rows_24h:0,latest_shadow_at:null,latest_imported_at:null,
+    fresh_native_sources:1,missing_native_sources:['kalshi','PRIVATE'],
+    stale_native_sources:['polymarket'],private_funding_key:'PRIVATE'},
+   {asset:'DOGE',horizon:5,status:'shadow_issuing',model_weights:'PRIVATE'}
+  ],
   live_call_delivery:{status:'recorded',active_channels:0,
    recent_accepted_delivery_rows:0,advance_model:'advance-candle-logistic-lead5-v1',
    guild_id:'PRIVATE'},
@@ -97,6 +108,16 @@ async function main(){
 
  assert.equal(receipt.host.xmarket_exports.recent_completed_days_pending,4);
  assert.equal(receipt.host.xmarket_stage,'waiting_for_completed_day_export');
+ assert.equal(receipt.host.xmarket_scope_progress.length,2);
+ assert.equal(receipt.host.xmarket_scope_progress[0].asset,'BTC');
+ assert.equal(receipt.host.xmarket_scope_progress[0].horizon,15);
+ assert.equal(receipt.host.xmarket_scope_progress[0].shadow_rows_24h,99);
+ assert.equal(receipt.host.xmarket_scope_progress[0].proves_live_edge,false);
+ assert.equal(receipt.host.xmarket_scope_progress[1].asset,'ETH');
+ assert.equal(receipt.host.xmarket_scope_progress[1].stored_artifacts,0);
+ assert.deepEqual(Array.from(receipt.host.xmarket_scope_progress[1].missing_native_sources),['kalshi']);
+ assert.ok(!JSON.stringify(receipt.host.xmarket_scope_progress).includes('PRIVATE'),
+  'Host-only model details and private IDs must never leave the signed receiver');
  assert.equal(receipt.host.live_call_delivery.active_channels,0);
  assert.equal(receipt.host.live_call_delivery.recent_accepted_delivery_rows,0);
  assert.equal(receipt.host.live_call_delivery.advance_model,'advance-candle-logistic-lead5-v1');

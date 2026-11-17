@@ -90,6 +90,43 @@ def _export_summary(value: object) -> dict | None:
 
 
 
+def _xmarket_scope_progress(value: object) -> list[dict] | None:
+    """Publish only bounded per-scope host counts/statuses, never model documents."""
+    if not isinstance(value, list):
+        return None
+    output, seen = [], set()
+    for row in value[:12]:
+        if not isinstance(row, dict):
+            continue
+        asset, horizon = row.get("asset"), row.get("horizon_minutes")
+        if asset not in ASSETS or type(horizon) is not int or horizon not in HORIZONS:
+            continue
+        if (asset, horizon) in seen or row.get("status") not in XMARKET_STAGES:
+            continue
+        seen.add((asset, horizon))
+        output.append({
+            "asset": asset,
+            "horizon": horizon,
+            "status": row["status"],
+            "stored_artifacts": _nonnegative(row.get("stored_gate_passing_artifacts")),
+            "shadow_rows_24h": _nonnegative(row.get("shadow_rows_24h")),
+            "latest_imported_at": _iso_timestamp(row.get("latest_imported_at")),
+            "latest_shadow_at": _iso_timestamp(row.get("latest_shadow_at")),
+            "fresh_native_sources": _nonnegative(row.get("fresh_native_sources")),
+            "expected_native_sources": 2,
+            "missing_native_sources": sorted(set(row.get("missing_native_sources", []))
+                & {"polymarket", "kalshi"}) if isinstance(
+                row.get("missing_native_sources"), list) and all(
+                isinstance(x, str) for x in row["missing_native_sources"]) else [],
+            "stale_native_sources": sorted(set(row.get("stale_native_sources", []))
+                & {"polymarket", "kalshi"}) if isinstance(
+                row.get("stale_native_sources"), list) and all(
+                isinstance(x, str) for x in row["stale_native_sources"]) else [],
+            "proves_live_edge": False,
+        })
+    return sorted(output, key=lambda r: (r["asset"], r["horizon"]))
+
+
 def _recent_forecast_summary(source: object) -> dict:
     """Second allowlist before the signed Cloudflare receiver checks fields.
 
@@ -175,6 +212,7 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
         "xmarket_expected_inputs": None, "xmarket_shadow_rows": None,
         "xmarket_imported_scopes": None,
         "xmarket_stage": "read_unavailable", "xmarket_exports": None,
+        "xmarket_scope_progress": None,
         "kucoin_gap_recovery": {
             "status": "unavailable", "assets_observed": None,
             "queued_exact_gaps_14d": None, "due_exact_gaps_14d": None,
@@ -214,6 +252,8 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
     if isinstance(xmarket, dict) and xmarket.get("status") in XMARKET_STAGES:
         host["xmarket_stage"] = xmarket["status"]
         host["xmarket_exports"] = _export_summary(xmarket.get("export_coverage"))
+        host["xmarket_scope_progress"] = _xmarket_scope_progress(
+            xmarket.get("scope_progress"))
     if isinstance(xmarket, dict) and xmarket.get("status") != "read_unavailable":
         cov = xmarket.get("source_coverage")
         if isinstance(cov, dict):

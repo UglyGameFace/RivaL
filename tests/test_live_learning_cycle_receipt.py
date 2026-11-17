@@ -636,6 +636,105 @@ def test_path_target_progress_counts_unique_due_targets_not_sides(
     assert result["read_only"] is True
 
 
+def _insert_cycle_row(conn, *, slot, checked, selected, expired=0,
+                      duplicate=0, training=0, stale=0, short=0,
+                      issued=0, discovered=0):
+    conn.execute(
+        """INSERT INTO perp_forward_cycle_diagnostics
+           (slot_utc,checked_at,discovered_streams,selected_streams,
+            short_history,stale_last_candle,invalid_data,
+            insufficient_causal_labels,insufficient_training,
+            target_expired,duplicate_forecasts,issued_forecasts,
+            settled_forecasts)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (slot, checked, discovered, selected, short, stale, 0, 0,
+         training, expired, duplicate, issued, 0),
+    )
+
+
+def test_cycle_diagnostics_progress_reports_24h_means_and_latest_row(
+    learning_store,
+):
+    """The 33.6-vs-40 question is answerable from the receipt: 24h means
+    plus the latest cycle row, windowed to the last day."""
+    from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+
+    stamp = datetime(2026, 11, 16, 17, tzinfo=UTC)
+    ForwardAccuracyMonitor(PerpetualMarketStore(learning_store)).initialize()
+    with learning_store.connect() as conn:
+        # Two cycles inside 24h: selected 34 and 32 -> mean 33.0.
+        _insert_cycle_row(
+            conn, slot="2026-11-16T16:55:00+00:00",
+            checked="2026-11-16T16:55:00+00:00", selected=34,
+            expired=1, duplicate=2, training=0, stale=1, short=0, issued=96)
+        _insert_cycle_row(
+            conn, slot="2026-11-16T17:00:00+00:00",
+            checked="2026-11-16T17:00:00+00:00", selected=32,
+            expired=0, duplicate=0, training=3, stale=0, short=2, issued=96)
+        # One cycle older than 24h: must not move the means.
+        _insert_cycle_row(
+            conn, slot="2026-11-15T16:00:00+00:00",
+            checked="2026-11-15T16:00:00+00:00", selected=0,
+            expired=99, duplicate=99, training=99, stale=99, short=99,
+            issued=0)
+    result = host._cycle_diagnostics_progress(learning_store, stamp)
+    assert result["status"] == "recorded"
+    assert result["cycles_24h"] == 2
+    assert result["mean_selected_streams_24h"] == 33.0
+    assert result["mean_target_expired_24h"] == 0.5
+    assert result["mean_duplicate_forecasts_24h"] == 1.0
+    assert result["mean_insufficient_training_24h"] == 1.5
+    assert result["mean_stale_last_candle_24h"] == 0.5
+    assert result["mean_short_history_24h"] == 1.0
+    assert result["latest_selected_streams"] == 32
+    assert result["latest_target_expired"] == 0
+    assert result["latest_duplicate_forecasts"] == 0
+    assert result["latest_insufficient_training"] == 3
+    assert result["latest_stale_last_candle"] == 0
+    assert result["latest_short_history"] == 2
+    assert result["latest_issued_forecasts"] == 96
+    assert result["read_only"] is True
+
+
+def test_cycle_diagnostics_progress_is_unavailable_without_rows(
+    learning_store,
+):
+    """A missing or empty diagnostics table is not_initialized, never zero.
+
+    Zero selected streams is a real (bad) reading; absence of the table
+    must not be published as one."""
+    from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+
+    stamp = datetime(2026, 11, 16, 17, tzinfo=UTC)
+    assert host._cycle_diagnostics_progress(
+        learning_store, stamp)["status"] == "not_initialized"
+    ForwardAccuracyMonitor(PerpetualMarketStore(learning_store)).initialize()
+    assert host._cycle_diagnostics_progress(
+        learning_store, stamp)["status"] == "not_initialized"
+
+
+def test_path_target_progress_nests_cycle_diagnostics(learning_store):
+    """The receipt carries the cycle section under path_targets."""
+    from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+    from parlay_bot.perpetuals.path_forward import ProspectivePathLedger
+
+    stamp = datetime(2026, 11, 16, 17, tzinfo=UTC)
+    PerpetualMarketStore(learning_store).initialize()
+    ProspectivePathLedger(learning_store).initialize()
+    ForwardAccuracyMonitor(PerpetualMarketStore(learning_store)).initialize()
+    with learning_store.connect() as conn:
+        _insert_cycle_row(
+            conn, slot="2026-11-16T17:00:00+00:00",
+            checked="2026-11-16T17:00:00+00:00", selected=34, issued=96)
+    result = host._path_target_progress(learning_store, stamp)
+    assert result["cycle_diagnostics"]["status"] == "recorded"
+    assert result["cycle_diagnostics"]["mean_selected_streams_24h"] == 34.0
+    assert result["cycle_diagnostics"]["latest_selected_streams"] == 34
+
+
 def test_host_forward_proof_publishes_reference_venue_coverage_split(
         tmp_path, monkeypatch):
     """The host receipt carries the per-reference-venue split for the best

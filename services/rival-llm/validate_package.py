@@ -23,14 +23,16 @@ APP_FILES = {
     "build.sh",
     "runtime/bin/llama-server",
 }
+# SONAME version follows the pinned llama.cpp: b12480 ships .so.1
+# (b12024 shipped .so.0). Bump this list with the pin in build.sh.
 NATIVE_FILES = {
     "runtime/bin/libllama-server-impl.so",
-    "runtime/bin/libllama-common.so.0",
-    "runtime/bin/libllama.so.0",
-    "runtime/bin/libggml.so.0",
-    "runtime/bin/libggml-base.so.0",
-    "runtime/bin/libggml-cpu.so.0",
-    "runtime/bin/libmtmd.so.0",
+    "runtime/bin/libllama-common.so.1",
+    "runtime/bin/libllama.so.1",
+    "runtime/bin/libggml.so.1",
+    "runtime/bin/libggml-base.so.1",
+    "runtime/bin/libggml-cpu.so.1",
+    "runtime/bin/libmtmd.so.1",
 }
 CONFIG_KEYS = {
     "NAME", "TYPE", "MAIN", "RAM", "VERSION", "BUILD", "START",

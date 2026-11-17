@@ -169,6 +169,28 @@ async def test_binance_2026_public_bookticker_route_accepts_only_usdm(monkeypatc
     assert not hub.health()["binance"]["connected"]
 
 
+def test_health_reports_updates_per_minute_and_uptime():
+    # The raw "updates" count restarts at 0 on every boot, so minutes after
+    # a restart it reads small for a slow-pushing venue and huge for a fast
+    # one; the per-minute rate is the comparable number.
+    start = datetime(2026, 11, 17, 12, 0, tzinfo=UTC)
+    hub = StreamingBookHub(assets=("BTC",))
+    hub._started_at = start
+    hub._accepted["hyperliquid"] = 120
+    health = hub.health(now=start + timedelta(minutes=10))
+    assert health["hyperliquid"]["updates"] == 120
+    assert health["hyperliquid"]["updates_per_minute"] == pytest.approx(12.0)
+    assert health["hyperliquid"]["uptime_s"] == pytest.approx(600.0)
+    # Zero updates at the same uptime reports a zero rate, not a division error.
+    hub._accepted["hyperliquid"] = 0
+    assert hub.health(
+        now=start + timedelta(minutes=10),
+    )["hyperliquid"]["updates_per_minute"] == 0.0
+    # Zero uptime reports a zero rate.
+    hub._accepted["hyperliquid"] = 120
+    assert hub.health(now=start)["hyperliquid"]["updates_per_minute"] == 0.0
+
+
 def test_ram_cache_does_not_resurrect_old_tick_or_replayed_book():
     now = datetime.now(UTC).replace(microsecond=0)
     hub = StreamingBookHub(assets=("BTC",))

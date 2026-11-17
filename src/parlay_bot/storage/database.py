@@ -360,6 +360,14 @@ class PostgresDatabase(RelationalDatabase):
         self._lock = threading.Lock()
         self._total = 0
         self._closed = False
+        # Cumulative pool-checkout wait since boot, for the host receipt:
+        # the #640 de-chatter fix (fetch -> release -> compute -> short
+        # write) cut long pool borrows, but no receipt metric proved it in
+        # production. These counters are the proof. Updated under the lock
+        # in connect(); read by diagnostics.collect(). Counts only, no SQL.
+        self._checkout_wait_seconds = 0.0
+        self._checkout_count = 0
+        self._max_checkout_wait_seconds = 0.0
         # Diagnostic only: track checkout ages, never SQL/credentials.
         self._borrowers: dict[int, tuple[float, str, _Connection]] = {}
         from parlay_bot.storage.diagnostics import QueryDiagnostics
@@ -393,6 +401,21 @@ class PostgresDatabase(RelationalDatabase):
             frame = frame.f_back
         return "unattributed"
 
+    def pool_wait_stats(self) -> dict:
+        """Cumulative pool-checkout wait since boot.
+
+        Total seconds spent waiting to acquire a connection, how many
+        checkouts that covers, and the single longest wait. Published in
+        the host receipt via diagnostics.collect() as the production proof
+        for the #640 de-chatter fix. Counts only, never SQL or values.
+        """
+        with self._lock:
+            return {
+                "checkout_wait_seconds": round(self._checkout_wait_seconds, 3),
+                "checkouts": self._checkout_count,
+                "max_checkout_wait_seconds": round(self._max_checkout_wait_seconds, 3),
+            }
+
     def connect(self) -> _Connection:
         started = time.monotonic()
         raw = self._checkout()
@@ -419,6 +442,11 @@ class PostgresDatabase(RelationalDatabase):
             )
             checked_out = len(self._borrowers)
         waited = held_since - started
+        with self._lock:
+            self._checkout_wait_seconds += waited
+            self._checkout_count += 1
+            self._max_checkout_wait_seconds = max(
+                self._max_checkout_wait_seconds, waited)
         clock = _active_clock()
         if clock is not None:
             clock.wait_seconds += waited

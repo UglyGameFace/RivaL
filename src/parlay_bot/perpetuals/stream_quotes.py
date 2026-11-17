@@ -437,6 +437,11 @@ class StreamingBookHub:
         self._connected: dict[str, bool] = dict.fromkeys(VENUES, False)
         self._reconnects: dict[str, int] = dict.fromkeys(VENUES, 0)
         self._accepted: dict[str, int] = dict.fromkeys(VENUES, 0)
+        # Boot clock for the per-minute update rate in health(). The raw
+        # "updates" count restarts at 0 on every boot, so minutes after a
+        # restart it reads small for a slow-pushing venue and huge for a
+        # fast one; the rate normalises by boot age.
+        self._started_at = datetime.now(UTC)
         # When each venue last delivered an accepted book. "Fresh" per coin
         # uses a 10 s quote age, but Hyperliquid pushes each coin only about
         # every 5 s, so a coin can be briefly stale while the stream is fine.
@@ -470,10 +475,21 @@ class StreamingBookHub:
 
     def health(self, *, now: datetime | None = None) -> dict:
         clock = now or datetime.now(UTC)
+        # The raw "updates" count restarts at 0 on every boot, so minutes
+        # after a restart it reads small for a slow-pushing venue
+        # (Hyperliquid ~0.5-1/s) and huge for a fast one (Binance
+        # ~1,090/s). The per-minute rate normalises by boot age so venues
+        # are comparable at a glance; "updates" itself is unchanged.
+        uptime_s = max(0.0, (clock - self._started_at).total_seconds())
         return {
             venue: {
                 "connected": self._connected[venue],
                 "updates": self._accepted[venue],
+                "updates_per_minute": (
+                    0.0 if uptime_s <= 0
+                    else round(self._accepted[venue] * 60.0 / uptime_s, 3)
+                ),
+                "uptime_s": round(uptime_s, 3),
                 "reconnects": self._reconnects[venue],
                 "blocked": bool(self._blocked_until[venue]
                                 and clock < self._blocked_until[venue]),

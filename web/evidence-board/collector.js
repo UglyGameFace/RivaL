@@ -37,6 +37,9 @@ async function verifyGithubOIDC(token) {
 function numberOrNull(v,max=10000000){
   return Number.isSafeInteger(v)&&v>=0&&v<=max?v:null;
 }
+function finiteOrNull(v,max=10000000){
+  return typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=max?+v.toFixed(2):null;
+}
 function oneOf(v,values){return values.includes(v)?v:'unknown'}
 function isoOrNull(v){
   if(typeof v!=='string'||v.length>40||!/^\d{4}-\d\d-\d\dT/.test(v))return null;
@@ -632,6 +635,23 @@ function build(payload,identity){
         pending_paths_14d:numberOrNull(h.pending_backlog?.pending_paths_14d,10000000),
         due_pending_paths_14d:numberOrNull(h.pending_backlog?.due_pending_paths_14d,10000000),
         unique_due_targets_14d:numberOrNull(h.pending_backlog?.unique_due_targets_14d,10000000),
+      },
+      cycle_diagnostics:{
+        status:oneOf(h.cycle_diagnostics?.status,['recorded','unavailable']),
+        cycles_24h:numberOrNull(h.cycle_diagnostics?.cycles_24h,100000),
+        mean_selected_streams_24h:finiteOrNull(h.cycle_diagnostics?.mean_selected_streams_24h,100000),
+        latest_selected_streams:numberOrNull(h.cycle_diagnostics?.latest_selected_streams,100000),
+        mean_target_expired_24h:finiteOrNull(h.cycle_diagnostics?.mean_target_expired_24h,100000),
+        latest_target_expired:numberOrNull(h.cycle_diagnostics?.latest_target_expired,100000),
+        mean_duplicate_forecasts_24h:finiteOrNull(h.cycle_diagnostics?.mean_duplicate_forecasts_24h,100000),
+        latest_duplicate_forecasts:numberOrNull(h.cycle_diagnostics?.latest_duplicate_forecasts,100000),
+        mean_insufficient_training_24h:finiteOrNull(h.cycle_diagnostics?.mean_insufficient_training_24h,100000),
+        latest_insufficient_training:numberOrNull(h.cycle_diagnostics?.latest_insufficient_training,100000),
+        mean_stale_last_candle_24h:finiteOrNull(h.cycle_diagnostics?.mean_stale_last_candle_24h,100000),
+        latest_stale_last_candle:numberOrNull(h.cycle_diagnostics?.latest_stale_last_candle,100000),
+        mean_short_history_24h:finiteOrNull(h.cycle_diagnostics?.mean_short_history_24h,100000),
+        latest_short_history:numberOrNull(h.cycle_diagnostics?.latest_short_history,100000),
+        latest_issued_forecasts:numberOrNull(h.cycle_diagnostics?.latest_issued_forecasts,100000),
       },
       xmarket_exports:cleanXmarketExports(h.xmarket_exports),
       xmarket_scope_progress:scopeProgress,

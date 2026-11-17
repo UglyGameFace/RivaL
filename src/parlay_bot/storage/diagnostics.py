@@ -113,7 +113,19 @@ class QueryDiagnostics:
             pids = [getattr(getattr(b._raw, 'info', None), 'backend_pid', None)
                     for _, _, b in borrowers]
             pids = [p for p in pids if p is not None]
-            snapshot['pool'] = {'checked_out': len(borrowers), 'maximum': database._max_size}
+            # Cumulative checkout wait since boot, alongside the live
+            # checked_out count: the production proof for the #640
+            # de-chatter fix. Published verbatim into the host receipt
+            # via rival_runtime_diagnostics (component 'database').
+            # Read the counters directly: this block already holds
+            # database._lock, and pool_wait_stats() would re-acquire it.
+            snapshot['pool'] = {
+                'checked_out': len(borrowers), 'maximum': database._max_size,
+                'checkout_wait_seconds': round(database._checkout_wait_seconds, 3),
+                'checkouts': database._checkout_count,
+                'max_checkout_wait_seconds': round(
+                    database._max_checkout_wait_seconds, 3),
+            }
         if not snapshot['groups']:
             return snapshot
         with self.lock:

@@ -121,6 +121,41 @@ class ReceiptTests(unittest.TestCase):
         self.assertNotIn("PRIVATE", str(host))
         self.assertTrue(exports["does_not_prove_independent_drive_restore"])
 
+    def test_host_scope_progress_is_bounded_and_never_exports_model_documents(self) -> None:
+        samples = [
+            {"asset": "BTC", "horizon_minutes": 15, "status": "shadow_issuing",
+             "stored_gate_passing_artifacts": 2, "shadow_rows_24h": 97,
+             "latest_shadow_at": "2026-11-16T12:00:00+00:00",
+             "latest_imported_at": "2026-11-15T12:00:00+00:00",
+             "fresh_native_sources": 2, "expected_native_sources": 2,
+             "missing_native_sources": [], "stale_native_sources": [],
+             "model_document": {"private": "NEVER_PUBLISH"},
+             "drive_file_id": "NEVER_PUBLISH"},
+            {"asset": "ETH", "horizon_minutes": 5, "status": "waiting_for_fit",
+             "stored_gate_passing_artifacts": 0, "shadow_rows_24h": 0,
+             "fresh_native_sources": 1,
+             "missing_native_sources": ["kalshi", "PRIVATE"],
+             "stale_native_sources": ["polymarket"]},
+            {"asset": "DOGE", "horizon_minutes": 5, "status": "shadow_issuing",
+             "discord_user_id": "NEVER_PUBLISH"}
+        ]
+        host, _ = summarize_host({"xmarket": {
+            "status": "shadow_issuing", "scope_progress": samples}})
+        rows = host["xmarket_scope_progress"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["asset"], "BTC")
+        self.assertEqual(rows[0]["horizon"], 15)
+        self.assertEqual(rows[0]["shadow_rows_24h"], 97)
+        self.assertEqual(rows[1]["asset"], "ETH")
+        self.assertEqual(rows[1]["stored_artifacts"], 0)
+        self.assertEqual(rows[1]["missing_native_sources"], ["kalshi"])
+        self.assertFalse(rows[0]["proves_live_edge"])
+        self.assertNotIn("NEVER_PUBLISH", str(rows))
+        self.assertNotIn("PRIVATE", str(rows))
+        self.assertIsNone(summarize_host(None)[0]["xmarket_scope_progress"])
+        self.assertIsNone(summarize_host({"xmarket": {
+            "status": "waiting_for_fit"}})[0]["xmarket_scope_progress"])
+
     def test_source_and_fit_failures_remain_actionable(self) -> None:
         doc = {"schema": "rival-xmarket-model-v1", "asset": "BTC",
                "horizon_minutes": 5, "training_status": "blocked", "data_checks": {

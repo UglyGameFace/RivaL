@@ -7,12 +7,15 @@ untouched. psycopg.connect is faked so no server is needed.
 from __future__ import annotations
 
 import threading
+import time
+from types import SimpleNamespace
 from typing import Self
 
 import pytest
 from psycopg.pq import TransactionStatus
 
 from parlay_bot.storage.database import PostgresDatabase
+from parlay_bot.storage.diagnostics import QueryDiagnostics
 
 
 class _FakeInfo:
@@ -63,6 +66,60 @@ def fake_connect(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     monkeypatch.setattr("psycopg.connect", _connect)
     return {"created": created}
+
+
+def _waited_checkout(db: PostgresDatabase, hold_seconds: float = 0.5) -> None:
+    """Hold the pool's only connection so a worker checkout must wait."""
+    started = threading.Event()
+    done = threading.Event()
+
+    def _worker() -> None:
+        started.set()
+        with db.connect():
+            pass
+        done.set()
+
+    with db.connect():
+        worker = threading.Thread(target=_worker)
+        worker.start()
+        assert started.wait(timeout=5)
+        time.sleep(hold_seconds)
+    assert done.wait(timeout=5)
+    worker.join(timeout=5)
+
+
+def test_pool_wait_stats_start_at_zero_and_count_a_waited_checkout(
+    fake_connect: dict,
+) -> None:
+    db = PostgresDatabase(
+        "postgresql://user:pass@host/db", max_size=1, checkout_timeout=5,
+    )
+    assert db.pool_wait_stats() == {
+        "checkout_wait_seconds": 0.0, "checkouts": 0,
+        "max_checkout_wait_seconds": 0.0,
+    }
+    _waited_checkout(db)
+    stats = db.pool_wait_stats()
+    assert stats["checkouts"] == 2  # main's instant checkout + worker's waited one
+    assert stats["checkout_wait_seconds"] >= 0.25
+    assert stats["max_checkout_wait_seconds"] >= 0.25
+    assert stats["max_checkout_wait_seconds"] <= stats["checkout_wait_seconds"]
+
+
+def test_pool_wait_stats_appear_in_diagnostics_snapshot(
+    fake_connect: dict,
+) -> None:
+    db = PostgresDatabase(
+        "postgresql://user:pass@host/db", max_size=1, checkout_timeout=5,
+    )
+    _waited_checkout(db)
+    snapshot = QueryDiagnostics().collect(SimpleNamespace(database=db))
+    pool = snapshot["pool"]
+    assert pool["checked_out"] == 0
+    assert pool["maximum"] == 1
+    assert pool["checkouts"] == 2
+    assert pool["checkout_wait_seconds"] >= 0.25
+    assert pool["max_checkout_wait_seconds"] >= 0.25
 
 
 def test_sequential_checkouts_reuse_one_connection(

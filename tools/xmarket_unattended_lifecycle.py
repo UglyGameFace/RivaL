@@ -100,12 +100,12 @@ def evaluate(*, asset: str, manifests: Path, as_of: date,
         return result
 
     for horizon in HORIZONS:
-        kwargs = dict(
-            frames=frames, asset=asset, horizon=horizon,
-            train_end=train_end, test_start=test_start,
-            trained_through=through, provenance=provenance,
-            code_version=_git_sha(), market_data=native,
-        )
+        kwargs = {
+            "frames": frames, "asset": asset, "horizon": horizon,
+            "train_end": train_end, "test_start": test_start,
+            "trained_through": through, "provenance": provenance,
+            "code_version": _git_sha(), "market_data": native,
+        }
         inner = train_run(**kwargs, research_only=True)
         if inner.get("publish_kind") != "report" or inner.get("artifact") is not None:
             raise ValueError("inner research attempted to create a model")

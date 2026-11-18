@@ -222,7 +222,7 @@ and existing four venues remain intact. Check `/rival-data` after deploying
 the merged revision to determine whether actual Discloud API access,
 market identity checks and immutable PostgreSQL inserts succeeded.
 
-The target remains ten independent **verified** venues and outcome-evaluated
+The target remains nine independent **verified** live venues, plus Binance test-only, and outcome-evaluated
 forecasts. No model-accuracy claim follows merely from a newly coded adapter.
 
 ## Deribit and Binance Futures

@@ -668,3 +668,56 @@ def test_direction_and_early_move_are_prospective_separate_heads(learning_store)
                and v["direction"]["targets"]==1
                and v["qualified_for_live_use"] is False
                for v in result.values())
+
+
+def test_ready_paths_paging_preserves_canonical_selection(learning_store, monkeypatch):
+    """Paging the candidate-key scan must not change which paths settle.
+
+    The key scan reads one _READY_COUNT_CHUNK page at a time in the
+    canonical ORDER BY order and stops once ``limit`` ready keys are
+    found. With the chunk forced to 4, thirteen issued keys span four
+    pages; ready keys sit on the first, third and fourth pages, and
+    the selection must still be exactly the ready keys in canonical
+    order, truncated at the limit. (This pins the selection contract:
+    it passes on the unpaged form too, by design — the fix is the
+    bounded key traffic, not a selection change.)
+    """
+    import parlay_bot.perpetuals.path_forward as path_forward_module
+
+    monkeypatch.setattr(path_forward_module, "_READY_COUNT_CHUNK", 4)
+    PerpetualMarketStore(learning_store).initialize()
+    ledger = ProspectivePathLedger(learning_store)
+    ledger.initialize()
+    candles = _candles()
+    last = candles[-1]
+    issued = last.observed_at + timedelta(seconds=1)
+    options = empirical_paths(candles, horizon=15, now=issued)
+    ready_indexes = {1, 9, 12}
+    references = {}
+    with learning_store.connect() as conn:
+        for index in range(13):
+            shift = timedelta(hours=-24, minutes=20 * index)
+            prior = replace(last, opened_at=last.opened_at + shift,
+                            closed_at=last.closed_at + shift,
+                            observed_at=last.observed_at + shift)
+            assert ledger.issue(conn, candles=[prior], asset="BTC", horizon=15,
+                                now=issued + shift, issued_at=issued + shift,
+                                options=options) == 2
+            row = conn.execute(
+                "SELECT reference_opened_at FROM rival_forward_paths"
+                " WHERE issued_at=? ORDER BY side LIMIT 1",
+                ((issued + shift).isoformat(),)).fetchone()
+            references[index] = row["reference_opened_at"]
+            if index in ready_indexes:
+                for bar in _future_path(prior):
+                    conn.execute(
+                        "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        _row(bar))
+        stamp = last.opened_at + timedelta(hours=3)
+        groups = ledger._ready_paths(conn, stamp=stamp, current=False, limit=2)
+        assert [group[0]["reference_opened_at"] for group in groups] == [
+            references[1], references[9]]
+        groups = ledger._ready_paths(conn, stamp=stamp, current=False, limit=10)
+        assert [group[0]["reference_opened_at"] for group in groups] == [
+            references[1], references[9], references[12]]
+        assert all(len(group) == 2 for group in groups)

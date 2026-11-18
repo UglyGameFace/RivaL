@@ -20,6 +20,12 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS rival_runtime_diagnostics (
     component TEXT PRIMARY KEY, checked_at TEXT NOT NULL, payload_json TEXT NOT NULL)"""
 WINDOW = 600
 MAX_GROUPS = 32
+# Statements are recorded from 2s (diagnostic evidence), but a recurring
+# fault needs repeated genuinely slow work: several of the periodic
+# aggregates run 2-5s by design, so faulting at the recording bar turned
+# their normal runtime into a Sentry flood.
+FAULT_SECONDS = 5.0
+FAULT_MIN_EVENTS = 3
 
 
 def structural_plan(plan: dict) -> list[dict]:
@@ -92,6 +98,7 @@ class QueryDiagnostics:
                 if recent:
                     groups.append({'owner': owner, 'statement': label,
                                    'slow_count': sum(e[1] >= 2 for e in recent),
+                                   'very_slow_count': sum(e[1] >= FAULT_SECONDS for e in recent),
                                    'error_count': sum(e[2] is not None for e in recent),
                                    'error_classes': dict(Counter(e[2] for e in recent if e[2])),
                                    'sqlstates': dict(Counter(e[3]['sqlstate'] for e in recent
@@ -175,12 +182,25 @@ def collect_and_record(store) -> dict:
 def recurring_faults(report: dict, *, now: datetime, boot_at: datetime) -> dict[str, str]:
     if now - boot_at < timedelta(minutes=10):
         return {}
-    faults = {}
+    # One fault per (owner, table), not per SQL-text variant: trivially
+    # different statements (an IN-list length, a >= vs < comparison) hash
+    # differently but are the same underlying condition, and per-variant
+    # keys multiplied one slow period into dozens of Sentry issues. The
+    # per-statement detail stays in the snapshot groups.
+    aggregated: dict[tuple[str, str], dict] = {}
     for group in report.get('groups', []):
-        if group['slow_count'] >= 3 or group['error_count'] >= 3:
-            faults[f"database:{group['owner']}:{group['statement']}"] = (
-                f"{group['slow_count']} slow operations / {group['error_count']} failures "
-                f"in 10 min, max {group['max_seconds']}s; structural diagnostics recorded; "
+        table = group['statement'].split('#', 1)[0]
+        bucket = aggregated.setdefault((group['owner'], table),
+                                       {'very_slow': 0, 'errors': 0, 'max_seconds': 0.0})
+        bucket['very_slow'] += group.get('very_slow_count', 0)
+        bucket['errors'] += group['error_count']
+        bucket['max_seconds'] = max(bucket['max_seconds'], group['max_seconds'])
+    faults = {}
+    for (owner, table), bucket in aggregated.items():
+        if bucket['very_slow'] >= FAULT_MIN_EVENTS or bucket['errors'] >= FAULT_MIN_EVENTS:
+            faults[f"database:{owner}:{table}"] = (
+                f"{bucket['very_slow']} operations at 5s+ / {bucket['errors']} failures "
+                f"in 10 min, max {bucket['max_seconds']}s; structural diagnostics recorded; "
                 'recovery unverified')
     return faults
 

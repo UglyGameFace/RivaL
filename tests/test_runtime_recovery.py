@@ -314,7 +314,32 @@ def test_recurring_sql_records_are_bounded_and_do_not_expose_private_values():
     assert 'secret-not-for-logs' not in json.dumps(report)
     assert 'SELECT' not in json.dumps(report)
     assert recurring_faults(report, now=NOW, boot_at=NOW-timedelta(minutes=6)) == {}
-    assert recurring_faults(report, now=NOW, boot_at=NOW-timedelta(hours=1))
+    # 2-5s is several periodic aggregates' documented normal runtime:
+    # recorded as evidence, but not a fault.
+    assert recurring_faults(report, now=NOW, boot_at=NOW-timedelta(hours=1)) == {}
+    for _ in range(3):
+        diagnostics.observe(owner='forward_audit.summary:22', label='forecast#abcdef12',
+                            sql='SELECT ? AS private_value', params=('secret-not-for-logs',),
+                            seconds=7.5, error=None)
+    assert recurring_faults(diagnostics.snapshot(), now=NOW, boot_at=NOW-timedelta(hours=1))
+
+
+def test_recurring_faults_aggregate_sql_variants_per_owner_and_table():
+    diagnostics = QueryDiagnostics()
+    # Two SQL variants of the same owner+table, each below the fault count
+    # on its own: together they are one recurring fault under one key.
+    for label in ('forecast#aaaa0001', 'forecast#bbbb0002'):
+        for _ in range(2):
+            diagnostics.observe(owner='forward_audit.summary:22', label=label,
+                                sql='SELECT 1', params=(), seconds=7.5, error=None)
+    faults = recurring_faults(diagnostics.snapshot(), now=NOW, boot_at=NOW-timedelta(hours=1))
+    assert list(faults) == ['database:forward_audit.summary:forecast']
+    # A different table stays a separate key, and under the bar on its own.
+    for _ in range(2):
+        diagnostics.observe(owner='forward_audit.summary:22', label='audit#cccc0003',
+                            sql='SELECT 1', params=(), seconds=7.5, error=None)
+    faults = recurring_faults(diagnostics.snapshot(), now=NOW, boot_at=NOW-timedelta(hours=1))
+    assert list(faults) == ['database:forward_audit.summary:forecast']
 
 
 def test_deadlock_graph_keeps_sqlstate_and_owners_without_server_sql():

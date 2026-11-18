@@ -1,10 +1,35 @@
 """Evidence Board Worker source and DOM-free UI smoke tests."""
+import os
 import shutil
 import subprocess
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _require_node(test_case: unittest.TestCase) -> str:
+    """Node is required for the evidence-board JS checks.
+
+    Under CI (GitHub Actions always sets CI=true) a missing Node must fail
+    loudly: a silent skip would let these checks vanish from the suite
+    without anyone noticing (audit F16). Locally Node is optional, so a
+    missing install only skips — with a message naming what was skipped.
+    """
+    node = shutil.which("node")
+    if node:
+        return node
+    if os.environ.get("CI"):
+        test_case.fail(
+            "Node is required for the evidence-board JS checks but is not "
+            "installed (CI must provide Node; the checks cannot silently "
+            "skip)."
+        )
+    test_case.skipTest(
+        "Node is not installed; evidence-board JS checks skipped — "
+        "install Node to run them."
+    )
+    raise AssertionError("unreachable: fail/skipTest above always raise")
 
 
 class EvidenceBoardSourceTests(unittest.TestCase):
@@ -17,9 +42,7 @@ class EvidenceBoardSourceTests(unittest.TestCase):
         self.assertNotIn("return tracked.map(", script)
 
     def test_embedded_js_with_signed_fixture(self) -> None:
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("Node is not installed")
+        node = _require_node(self)
         result = subprocess.run(
             [node, str(ROOT / "tools/test_evidence_board_ui.js")],
             cwd=ROOT, capture_output=True, text=True, timeout=20, check=False,
@@ -27,9 +50,7 @@ class EvidenceBoardSourceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_source_health_requires_real_production_reads(self) -> None:
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("Node is not installed")
+        node = _require_node(self)
         result = subprocess.run(
             [node, str(ROOT / "tools/test_evidence_board_status.js")],
             cwd=ROOT, capture_output=True, text=True, timeout=20, check=False,
@@ -37,9 +58,7 @@ class EvidenceBoardSourceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_public_market_bridge_sanitization(self) -> None:
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("Node is not installed")
+        node = _require_node(self)
         result = subprocess.run(
             [node, str(ROOT / "tools/test_rival_operations_api.js")],
             cwd=ROOT, capture_output=True, text=True, timeout=20, check=False,
@@ -47,9 +66,7 @@ class EvidenceBoardSourceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_safe_cloudflare_builds_deployment_contract(self) -> None:
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("Node is not installed")
+        node = _require_node(self)
         result = subprocess.run(
             [node, str(ROOT / "tools/test_evidence_worker_deploy.js")],
             cwd=ROOT, capture_output=True, text=True, timeout=20, check=False,
@@ -57,9 +74,7 @@ class EvidenceBoardSourceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_actual_collector_signed_round_trip(self) -> None:
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("Node is not installed")
+        node = _require_node(self)
         result = subprocess.run(
             [node, str(ROOT / "tools/test_evidence_collector.js")],
             cwd=ROOT, capture_output=True, text=True, timeout=20, check=False,

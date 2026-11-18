@@ -206,6 +206,91 @@ async function main(){
  assert.equal(receipt.intelligence_metrics.tokens_per_second,12.5);
  assert.ok(!JSON.stringify(receipt.intelligence_metrics).includes('PRIVATE'),
   'Prompts, tokens and private endpoints must never leave the signed receiver');
+ // F4: the probe marker is carried into storage (null when absent), and
+ // F13: intelligence.inference_verified agrees with the metrics probe gate.
+ assert.equal(receipt.intelligence_metrics.generation_probe,null,
+  'No probe marker in the payload means no marker in storage');
+ assert.equal(receipt.intelligence.inference_verified,false,
+  'intelligence.inference_verified must agree with the metrics probe gate');
+ const verifiedMetrics={status:'observed',probe:'llm_console_v1_status',captured_at:now,
+  model:'LiquidAI/LFM3-1.7B-GGUF:Q4_K_M',ready:true,inference_verified:true,
+  generation_probe:'authenticated_generation',
+  source_sha:'a'.repeat(40),repair_state:'healthy',repair_count:2,
+  runtime_context_tokens:8192,
+  memory:{current_mb:1190,limit_mb:4088,peak_mb:1300,oom_kills:0,
+   gateway_rss_mb:60,backend_rss_mb:1100},
+  status_latency_ms:42.5,status_http:200,
+  tokens_per_second:12.5,latency_ms_p95:800};
+ const verified=cx.build({schema_version:1,captured_at:now,
+  intelligence_metrics:verifiedMetrics},{runId:'123456789'});
+ assert.equal(verified.intelligence_metrics.inference_verified,true);
+ assert.equal(verified.intelligence_metrics.generation_probe,'authenticated_generation',
+  'An authenticated probe marker must survive ingest into storage');
+ assert.equal(verified.intelligence.inference_verified,true,
+  'A verified probe must be reported as verified, not permanently false');
+ const tampered=cx.build({schema_version:1,captured_at:now,
+  intelligence_metrics:{...verifiedMetrics,generation_probe:'tampered'}},
+  {runId:'123456789'});
+ assert.equal(tampered.intelligence_metrics.inference_verified,false,
+  'A tampered probe marker must not verify generation');
+ assert.equal(tampered.intelligence_metrics.generation_probe,null);
+ assert.equal(tampered.intelligence.inference_verified,false);
+ // F8: Signals admission is exactly 6h, matching the window_hours===6
+ // contract and the UI label; the 2-minute future tolerance is unchanged.
+ const signalRow=(issued,asset)=>({asset,horizon:5,venue:'okx',quote:'USDT',
+  issued_at:issued,target_opened_at:issued,
+  target_close_at:new Date(Date.parse(issued)+300000).toISOString(),
+  settled_at:null,probability_up:0.6,baseline_up:0.5,direction:'UP',
+  status:'ungraded',outcome_up:null,lead_seconds:300});
+ const signals=cx.build({schema_version:1,captured_at:now,host:{
+  recent_forward_calls:{status:'observed',captured_at:now,window_hours:6,
+   rows:[signalRow(new Date(Date.now()-6.5*3600000).toISOString(),'SOL'),
+    signalRow(new Date(Date.now()-5.5*3600000).toISOString(),'BTC')]}}},
+  {runId:'123456789'});
+ assert.equal(signals.host.recent_forward_calls.rows.length,1,
+  'A row issued 6.5h ago is outside the 6h Signals window');
+ assert.equal(signals.host.recent_forward_calls.rows[0].asset,'BTC');
+ // F2: future-dated captures are rejected (5-minute clock-skew allowance);
+ // the 24h past bound is unchanged.
+ assert.throws(()=>cx.build({schema_version:1,
+  captured_at:new Date(Date.now()+3600000).toISOString()},{runId:'1'}),
+  /invalid_capture_timestamp/,'A receipt dated 1h in the future must be rejected');
+ assert.throws(()=>cx.build({schema_version:1,
+  captured_at:new Date(Date.now()-25*3600000).toISOString()},{runId:'1'}),
+  /invalid_capture_timestamp/,'A receipt older than 24h must be rejected');
+ assert.doesNotThrow(()=>cx.build({schema_version:1,
+  captured_at:new Date(Date.now()+120000).toISOString()},{runId:'1'}),
+  'A capture 2 minutes in the future is within clock-skew allowance');
+ // F12: a source with a malformed reason is a failed read with a sanitized
+ // reason, never a dropped source.
+ const malformed=cx.build({schema_version:1,captured_at:now,sources:{
+  drive:{status:'ok',reason:'!!!',checked_at:now},
+  postgres:{status:'ok',reason:42,checked_at:now},
+  github:{status:'ok',reason:'UPPER Case-Reason!',checked_at:now}}},{runId:'1'});
+ assert.equal(malformed.sources.drive.status,'failed_read');
+ assert.equal(malformed.sources.drive.reason,'malformed_reason');
+ assert.equal(malformed.sources.postgres.status,'failed_read');
+ assert.equal(malformed.sources.postgres.reason,'malformed_reason');
+ assert.equal(malformed.sources.github.status,'failed_read');
+ assert.equal(malformed.sources.github.reason,'upper_case_reason');
+ // Merge addendum: a probe that ran but could not read status stays
+ // distinguishable in storage from a probe that never ran — the collector
+ // carries the probe label, the validated failure label, and the read time
+ // through even on the unavailable path.
+ const statusFailed=cx.build({schema_version:1,captured_at:now,
+  intelligence_metrics:{status:'unavailable',probe:'llm_console_v1_status',
+   status_error:'status_http_503',captured_at:now}},{runId:'123456789'});
+ assert.equal(statusFailed.intelligence_metrics.status,'unavailable');
+ assert.equal(statusFailed.intelligence_metrics.probe,'llm_console_v1_status',
+  'A probe that emitted a marker must not be reported as never emitted');
+ assert.equal(statusFailed.intelligence_metrics.status_error,'status_http_503');
+ assert.equal(statusFailed.intelligence_metrics.captured_at,now);
+ assert.equal(statusFailed.intelligence_metrics.inference_verified,false);
+ const neverRan=cx.build({schema_version:1,captured_at:now,
+  intelligence_metrics:{status:'unavailable'}},{runId:'123456789'});
+ assert.equal(neverRan.intelligence_metrics.probe,'host_probe_not_emitted');
+ assert.equal(neverRan.intelligence_metrics.status_error,null);
+ assert.equal(neverRan.intelligence_metrics.captured_at,null);
  // D3: history points are versioned and carry bounded Drive/LLM trend inputs.
  const series=JSON.parse(records.get('metrics-series'));
  assert.equal(series.length,1);
@@ -235,6 +320,9 @@ async function main(){
  assert.equal(receipt.sources.drive.status,'failed_read');
  assert.equal(receipt.sources.performance.status,'measured_zero');
  assert.ok(!Object.hasOwn(receipt.sources,'attacker_source'));
+ // bad_reason is dropped by the source-name allowlist (unknown name), not
+ // by its reason: the malformed-reason fallback (F12) is covered below
+ // with allowlisted source names.
  assert.ok(!Object.hasOwn(receipt.sources,'bad_reason'));
  assert.ok(!records.get('latest').includes('PRIVATE'));
  const health=JSON.parse(records.get('source-health'));
@@ -371,6 +459,25 @@ async function main(){
  assert.deepEqual(extended.drive.reports[0].gate_failures,
   ['split too small: train=0 val=0 test=12']);
  assert.ok(!JSON.stringify(extended).includes('PRIVATE'));
+ // F2 at the receiver boundary: a future-dated receipt is a 400, and the
+ // stored snapshot is untouched.
+ const futurePayload={...payload,captured_at:new Date(Date.now()+3600000).toISOString()};
+ assert.equal((await cx.worker.fetch(make(valid,futurePayload),env)).status,400);
+ assert.equal(JSON.parse(records.get('latest')).provenance.run_id,'123456789',
+  'A rejected future-dated receipt must never overwrite the last good snapshot');
+ // F12 end to end: a known source with a malformed reason is ingested as a
+ // failed read and counted in diagnostics, not dropped to unknown.
+ const f12Payload={...payload,
+  captured_at:new Date(Date.now()+120000).toISOString(),
+  sources:{...payload.sources,
+   drive:{status:'ok',reason:'DROP TABLE',checked_at:now,freshness_seconds:86400}}};
+ assert.equal((await cx.worker.fetch(make(await sign({...claims,run_id:'123456795'}),
+  f12Payload),env)).status,202);
+ const diag2=await (await cx.worker.fetch(new Request(claims.aud+'/diagnostics'),env)).json();
+ assert.equal(diag2.sources.drive.status,'failed_read');
+ assert.equal(diag2.sources.drive.last_reason,'drop_table');
+ assert.equal(diag2.sources.drive.consecutive_failures,1);
+ assert.equal(diag2.counters.sources_failing,3);
  // D4: paper trade counts are bounded like every other count (10M), and
  // full 12-scope XMarket coverage survives the receiver -- the old cap of
  // 8 nulled a legitimate 12 fresh / 12 expected.

@@ -430,8 +430,8 @@ def test_unsettled_dedupes_across_sources_and_keeps_rotation(hot):
     assert slugs[-1] == plain[19]
     assert plain[3] not in slugs  # checked an hour ago: rotated behind unchecked
     with hot.connect() as conn:
-        attempts = dict(conn.execute(
-            "SELECT slug,checked_at FROM rival_polymarket_resolution_attempts").fetchall())
+        attempts = {row["slug"]: row["checked_at"] for row in conn.execute(
+            "SELECT slug,checked_at FROM rival_polymarket_resolution_attempts").fetchall()}
     assert attempts[dup] == now.isoformat()
     assert attempts[plain[0]] == now.isoformat()
     assert attempts[plain[3]] == (now - timedelta(hours=1)).isoformat()

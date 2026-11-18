@@ -382,20 +382,39 @@ class PolymarketResearch:
             rows = conn.execute(
                 "SELECT c.slug,c.condition_id,c.expires_at FROM ("
                 "SELECT slug,condition_id,expires_at FROM rival_polymarket_ai_calls "
-                "WHERE expires_at<? AND expires_at>=? UNION "
+                "WHERE expires_at<? AND expires_at>=? UNION ALL "
                 "SELECT slug,condition_id,expires_at FROM rival_polymarket_observations "
-                "WHERE expires_at<? AND expires_at>=? UNION "
+                "WHERE expires_at<? AND expires_at>=? UNION ALL "
                 "SELECT slug,condition_id,expires_at FROM rival_poly_contest_rounds "
                 "WHERE expires_at<? AND expires_at>=?) c "
                 "LEFT JOIN rival_polymarket_ai_outcomes o ON o.slug=c.slug "
                 "LEFT JOIN rival_polymarket_resolution_attempts a ON a.slug=c.slug "
                 "WHERE o.slug IS NULL "
-                "ORDER BY COALESCE(a.checked_at,''),c.expires_at LIMIT 20",
+                "ORDER BY COALESCE(a.checked_at,''),c.expires_at LIMIT 200",
                 # Contracts resolve within hours; one still unresolved after
                 # 30 days will not be. Unbounded, the UNION of every call and
                 # observation ever grew to 5 s (84 slow warnings a day, Nov 11).
+                # UNION ALL + the Python dedupe below replaces the SQL UNION:
+                # its dedupe node hashed the whole 30-day window of all three
+                # tables on every 60 s call. The same slug legitimately sits
+                # in several sources (and in ai_calls once per revision), so
+                # fetch a bounded 200 rows, drop duplicate
+                # (slug, condition_id, expires_at) triples keeping the first
+                # in ORDER BY order, and keep the first 20 — exactly the
+                # UNION result unless more than 180 duplicate triples sort
+                # ahead of the 20th distinct slug.
                 (now.isoformat(), (now - timedelta(days=30)).isoformat()) * 3,
             ).fetchall()
+            seen = set()
+            unique = []
+            for row in rows:
+                key = (row["slug"], row["condition_id"], row["expires_at"])
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(row)
+                    if len(unique) == 20:
+                        break
+            rows = unique
             for row in rows:
                 conn.execute(
                     "INSERT INTO rival_polymarket_resolution_attempts (slug,checked_at) VALUES (?,?) "

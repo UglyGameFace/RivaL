@@ -19,8 +19,8 @@ const context = {
 vm.createContext(context);
 new vm.Script(source, {filename: 'evidence-board-worker.js'}).runInContext(context, {timeout: 3500});
 
-function send(alerts) {
-  vm.runInContext(`maybeSendAlert(${JSON.stringify(alerts)})`, context);
+async function send(alerts) {
+  await vm.runInContext(`maybeSendAlert(${JSON.stringify(alerts)})`, context);
 }
 function lastBody() {
   assert.equal(calls.length > 0, true, 'expected the webhook to be called');
@@ -28,12 +28,19 @@ function lastBody() {
 }
 
 async function main() {
+  // The /api/status handler must hand the send to the fetch event's
+  // waitUntil; a send that outlives nothing is cancelled with the response.
+  assert.ok(source.includes('handle(e.request,e)'),
+    'fetch handler must pass the event so alerts can use waitUntil');
+  assert.ok(source.includes('event.waitUntil(alertSend)'),
+    '/api/status must register the alert send with waitUntil');
+
   // No alerts -> no POST at all.
-  send([]);
+  await send([]);
   assert.equal(calls.length, 0, 'empty alert list must not POST');
 
   // Critical alert -> one POST with both content and structured fields.
-  send([{level: 'critical', code: 'collection_stale'}]);
+  await send([{level: 'critical', code: 'collection_stale'}]);
   assert.equal(calls.length, 1, 'critical alert must POST once');
   assert.equal(calls[0].url, 'https://example.invalid/webhook-placeholder');
   assert.equal(calls[0].opts.method, 'POST');
@@ -50,11 +57,11 @@ async function main() {
   assert.ok(body.content.includes(body.at), 'content must carry the timestamp');
 
   // Same level within the hour -> throttled, no second POST.
-  send([{level: 'critical', code: 'collection_stale'}]);
+  await send([{level: 'critical', code: 'collection_stale'}]);
   assert.equal(calls.length, 1, 'same level within an hour must stay throttled');
 
   // Different level -> POSTs again, with the new level in the content.
-  send([{level: 'warning', code: 'test_delivery'}]);
+  await send([{level: 'warning', code: 'test_delivery'}]);
   assert.equal(calls.length, 2, 'a new level must POST again');
   body = lastBody();
   assert.equal(body.level, 'warning');
@@ -62,7 +69,25 @@ async function main() {
   assert.ok(body.content.includes('WARNING'));
   assert.ok(body.content.includes('test_delivery'));
 
-  console.log('alert webhook body OK (content + structured fields, throttle intact)');
+  // Delivery is awaited: the send must not settle before the webhook fetch
+  // completes. The 2026-11-17 outage alert was lost because the send was
+  // fire-and-forget and the worker finished before Discord was reached.
+  let releaseFetch;
+  const gate = new Promise((resolve) => { releaseFetch = resolve; });
+  const realFetch = context.fetch;
+  context.fetch = async (url, opts) => { calls.push({url, opts}); await gate; return {ok: true}; };
+  let settled = false;
+  const pending = vm.runInContext(
+    `maybeSendAlert(${JSON.stringify([{level: 'critical', code: 'delivery_gate'}])})`, context)
+    .then(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(settled, false, 'alert send must wait for the webhook fetch to complete');
+  releaseFetch();
+  await pending;
+  assert.equal(settled, true, 'alert send must settle once the webhook fetch completes');
+  context.fetch = realFetch;
+
+  console.log('alert webhook body OK (content + structured fields, throttle intact, delivery awaited)');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

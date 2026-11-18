@@ -22,6 +22,14 @@ const EXPECTED = Object.freeze({
         service: 'rival-evidence-collector', environment: 'production' },
       { type: 'service', name: 'RIVAL_MARKET_FEED',
         service: 'rival-public-site', environment: 'production' }
+    ],
+    // Optional: set once by the account owner as a Worker Secret in the
+    // Cloudflare dashboard. Deploys must preserve it once set, must not
+    // require it before it is set, and must accept no other extra binding.
+    // A plain-text variable of the same name is NOT accepted: the webhook
+    // URL is a credential and is stored as a secret or not at all.
+    optionalBindings: [
+      { type: 'secret_text', name: 'ALERT_WEBHOOK_URL' }
     ]
   },
   collector: {
@@ -39,12 +47,19 @@ function bindingKey(binding) {
   return [binding.type, binding.name, binding.service || '',
     binding.environment || '', binding.namespace_id || ''].join(':');
 }
-function checkBindings(actual, expected) {
+function checkBindings(actual, expected, optional = []) {
   assert.ok(Array.isArray(actual), 'Remote Worker bindings unavailable');
-  assert.deepEqual(actual.map(bindingKey).sort(), expected.map(bindingKey).sort(),
+  const allowed = [...expected, ...optional];
+  const actualKeys = actual.map(bindingKey);
+  const occurrences = (key) => actualKeys.filter(k => k === key).length;
+  const requiredOk = expected.every(spec => occurrences(bindingKey(spec)) === 1);
+  const noExtras = actualKeys.every(key =>
+    allowed.some(spec => bindingKey(spec) === key));
+  const noDupes = new Set(actualKeys).size === actualKeys.length;
+  assert.ok(requiredOk && noExtras && noDupes,
     'Deployed Worker bindings differ from the known production contract; refusing upload');
   for (const binding of actual) {
-    const spec = expected.find(candidate => bindingKey(candidate) === bindingKey(binding));
+    const spec = allowed.find(candidate => bindingKey(candidate) === bindingKey(binding));
     assert.deepEqual(Object.keys(binding).sort(), Object.keys(spec).sort(),
       'Unrecognized Worker binding configuration; refusing upload');
   }
@@ -99,7 +114,7 @@ async function deploy(targetKey, dryRun) {
   const settings = await api(base + '/settings', token, { method: 'GET' });
   assert.equal(settings.compatibility_date, EXPECTED_DATE,
     'Worker compatibility date changed; review before deploying');
-  checkBindings(settings.bindings, target.bindings);
+  checkBindings(settings.bindings, target.bindings, target.optionalBindings);
   assert.ok(Array.isArray(settings.compatibility_flags) &&
     settings.compatibility_flags.length === 0, 'Unreviewed compatibility flags');
   assert.ok(!settings.logpush && Object.keys(settings.placement || {}).length === 0,
@@ -126,7 +141,7 @@ async function deploy(targetKey, dryRun) {
   assert.ok(same, 'Post-deploy source verification failed');
   const after = await api(base + '/settings', token, { method: 'GET' });
   assert.equal(after.compatibility_date, EXPECTED_DATE);
-  checkBindings(after.bindings, target.bindings);
+  checkBindings(after.bindings, target.bindings, target.optionalBindings);
   console.log('Cloudflare source and production bindings verified: ' + target.worker);
 }
 

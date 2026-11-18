@@ -223,7 +223,11 @@ function computeAlerts(input){
  return alerts;
 }
 let alertMemory={level:null,at:0};
-function maybeSendAlert(alerts){
+/* The send is awaited and the /api/status handler registers the returned
+   promise with the fetch event's waitUntil: a fire-and-forget fetch is
+   cancelled when the response completes, which is how the 2026-11-17
+   outage alert was lost even with a working webhook. */
+async function maybeSendAlert(alerts){
  try{
   const level=alerts.some(a=>a.level==='critical')?'critical':alerts.length?'warning':null;
   if(!level)return;
@@ -234,9 +238,9 @@ function maybeSendAlert(alerts){
   alertMemory={level,at:now};
   const stamp=new Date(now).toISOString();
   const codes=alerts.map(a=>a.code);
-  fetch(url,{method:'POST',headers:{'content-type':'application/json'},
+  await fetch(url,{method:'POST',headers:{'content-type':'application/json'},
    body:JSON.stringify({service:'rival-evidence-board',level,alerts:codes,at:stamp,
-    content:'RivaL Evidence Board '+level.toUpperCase()+': '+codes.join(', ')+' at '+stamp})}).catch(()=>{});
+    content:'RivaL Evidence Board '+level.toUpperCase()+': '+codes.join(', ')+' at '+stamp})});
  }catch(_){}
 }
 /* /api/status must stay fast: the market-feed probe is the same public
@@ -308,8 +312,8 @@ async function buildReliability(snapshot,diag,probeMarket){
  return {collection,sources,alerts,bindings,counters,age,snapshotOk};
 }
 
-addEventListener('fetch',e=>{e.respondWith(handle(e.request))});
-async function handle(req){const url=new URL(req.url);if(req.method!=='GET'&&req.method!=='HEAD')return response({error:'read-only: method not allowed'},405,'no-store');
+addEventListener('fetch',e=>{e.respondWith(handle(e.request,e))});
+async function handle(req,event){const url=new URL(req.url);if(req.method!=='GET'&&req.method!=='HEAD')return response({error:'read-only: method not allowed'},405,'no-store');
 if(url.pathname==='/api/market/perps')return marketPerps();
 if(url.pathname==='/api/market/predictions')return marketPredictions((url.searchParams.get('asset')||'').toUpperCase());
 if(url.pathname==='/api/evidence-history'){try{const r=await RIVAL_EVIDENCE_RECEIPTS.fetch('https://rival-evidence-collector.staytrippynlw.workers.dev/history');if(!r.ok)return response({source:'unavailable',points:[]},503);const data=await r.json();return response(data,200,'public,max-age=60');}catch(_){return response({source:'unavailable',points:[]},503)}}
@@ -343,7 +347,8 @@ if(url.pathname==='/api/status'){try{
  // status to partial (503); it cannot hide behind a green host/DB.
  const checked=recent&&hostOk&&dbOk&&forecastOk&&learningOk&&driveOk;
  const rel=await buildReliability(d,diag,'status');
- maybeSendAlert(rel.alerts);
+ const alertSend=maybeSendAlert(rel.alerts);
+ if(event&&typeof event.waitUntil==='function')event.waitUntil(alertSend);else await alertSend;
  return response({site:'serving',source:verified?'signed-snapshot':'unverified',captured_at:d&&d.captured_at||null,
   age_seconds:age,evidence_recent:recent,data_health:!recent?'delayed_or_unverified':checked?'checked':'partial',
   host_read_verified:hostOk,database_read_verified:dbOk,forecast_fresh:forecastOk,

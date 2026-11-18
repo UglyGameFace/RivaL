@@ -37,9 +37,10 @@ from parlay_bot.perpetuals.research_loop import (
     pool_counts,
     recent_experiments,
 )
-from parlay_bot.research import archive_training, gbm_training, volcal_training
+from parlay_bot.research import archive_training, gbm_training, volcal_training, xmarket_training
 from parlay_bot.research.archive_features import GROUPS
 from parlay_bot.research.volcal_features import GROUPS as VOLCAL_GROUPS
+from parlay_bot.research.xmarket_features import GROUPS as XMARKET_GROUPS
 
 # The hypothesis the deterministic grid opens under. It is deliberately
 # NOT in the LLM's HYPOTHESES enum: validate_proposal() refuses it, so
@@ -240,6 +241,72 @@ SCHEDULED_VARIANTS: tuple[dict, ...] = (
         "shadow_mode": "artifact",
         "scope": _scope("BTC"),
     },
+    {
+        # XMarket full design: the 18-feature xmarket_v1 logistic (the
+        # incumbent 10 + Polymarket/Kalshi prices, their disagreement,
+        # and 4-venue dispersion), fitted offline by xmarket_training.
+        # Shadows as xmarket_v1 — an existing family, so shadow_mode
+        # is "artifact", not "new_family".
+        "variant_id": "xmarket-full",
+        "variant_kind": "feature_group_off",
+        "asset": "BTC",
+        "venues": list(TRAIN_VENUES),
+        "model_shape": "xmarket-offline-v1",
+        "feature_groups_off": [],
+        "train_window": "common-2021",
+        "gbm_params": None,
+        "calibration_method": CALIBRATION_METHOD,
+        "shadow_mode": "artifact",
+        "scope": _scope("BTC"),
+    },
+    {
+        # XMarket ablation: the full design without the Polymarket
+        # group (pm_up and its changes) AND the joint gap — the gap
+        # needs pm_up, so it goes with either side. Shadows as
+        # xmarket_v1.
+        "variant_id": "xmarket-no-pm",
+        "variant_kind": "feature_group_off",
+        "asset": "ETH",
+        "venues": list(TRAIN_VENUES),
+        "model_shape": "xmarket-offline-v1",
+        "feature_groups_off": ["pm", "gap"],
+        "train_window": "common-2021",
+        "gbm_params": None,
+        "calibration_method": CALIBRATION_METHOD,
+        "shadow_mode": "artifact",
+        "scope": _scope("ETH"),
+    },
+    {
+        # XMarket ablation: the full design without the Kalshi group
+        # (kalshi_up) AND the joint gap, for the same reason as
+        # xmarket-no-pm. Shadows as xmarket_v1.
+        "variant_id": "xmarket-no-kalshi",
+        "variant_kind": "feature_group_off",
+        "asset": "SOL",
+        "venues": list(TRAIN_VENUES),
+        "model_shape": "xmarket-offline-v1",
+        "feature_groups_off": ["kalshi", "gap"],
+        "train_window": "common-2021",
+        "gbm_params": None,
+        "calibration_method": CALIBRATION_METHOD,
+        "shadow_mode": "artifact",
+        "scope": _scope("SOL"),
+    },
+    {
+        # XMarket ablation: the full design without the 4-venue
+        # dispersion group. Shadows as xmarket_v1.
+        "variant_id": "xmarket-no-dispersion",
+        "variant_kind": "feature_group_off",
+        "asset": "XRP",
+        "venues": list(TRAIN_VENUES),
+        "model_shape": "xmarket-offline-v1",
+        "feature_groups_off": ["dispersion"],
+        "train_window": "common-2021",
+        "gbm_params": None,
+        "calibration_method": CALIBRATION_METHOD,
+        "shadow_mode": "artifact",
+        "scope": _scope("XRP"),
+    },
 )
 
 
@@ -286,7 +353,8 @@ def _validate_grid() -> None:
                 "feature_group_off", "gbm_hyperparams", "window"):
             raise ValueError(f"unknown variant_kind for {variant_id!r}")
         if design.get("model_shape") not in (
-                "archive-offline-v1", "gbm-offline-v1", "volcal-offline-v1"):
+                "archive-offline-v1", "gbm-offline-v1", "volcal-offline-v1",
+                "xmarket-offline-v1"):
             raise ValueError(f"unknown model_shape for {variant_id!r}")
         if design.get("shadow_mode") not in ("artifact", "new_family"):
             raise ValueError(f"unknown shadow_mode for {variant_id!r}")
@@ -307,6 +375,18 @@ def _validate_grid() -> None:
                     raise ValueError(
                         f"scheduled variant {variant_id!r} turns off unknown "
                         f"or non-ablatable volcal feature group {group!r}")
+        elif design.get("model_shape") == "xmarket-offline-v1":
+            # Same rule as volcal: only the common-2021 window, and
+            # only the ablatable xmarket groups ("candle" is shared).
+            if design.get("train_window") != "common-2021":
+                raise ValueError(
+                    f"scheduled variant {variant_id!r} is xmarket: only the "
+                    "common-2021 window is supported")
+            for group in design.get("feature_groups_off") or []:
+                if group not in XMARKET_GROUPS or group == "candle":
+                    raise ValueError(
+                        f"scheduled variant {variant_id!r} turns off unknown "
+                        f"or non-ablatable xmarket feature group {group!r}")
         else:
             for group in design.get("feature_groups_off") or []:
                 if group not in GROUPS:
@@ -365,6 +445,8 @@ def screen_scheduled_artifact(payload: bytes | str) -> dict:
         module = gbm_training
     elif schema == volcal_training.SCHEMA:
         module = volcal_training
+    elif schema == xmarket_training.SCHEMA:
+        module = xmarket_training
     else:
         return {"retrospective_screen": "insufficient",
                 "reason": f"unknown artifact schema {schema!r}"}
@@ -398,6 +480,9 @@ def scheduled_shadow_identity(design: dict, payload: bytes | str) -> dict:
     elif shape == "volcal-offline-v1":
         identity = volcal_training.artifact_identity(doc)
         family = volcal_training.FAMILY
+    elif shape == "xmarket-offline-v1":
+        identity = xmarket_training.artifact_identity(doc)
+        family = xmarket_training.FAMILY
     else:
         raise ValueError(f"unknown model shape {shape!r}")
     scope = design.get("scope") or {}

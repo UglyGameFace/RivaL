@@ -76,7 +76,7 @@ async def _save(drive, path: Path, document: dict, *, kind: str) -> None:
 
 
 async def _train_variant(drive, request: dict, *, common: dict, full: dict,
-                         training: dict) -> None:
+                         training: dict, cache: Path | None = None) -> None:
     design = lookup_variant(request["design_sha256"])
     assert design is not None
     if design["train_window"] == "per-venue":
@@ -96,6 +96,20 @@ async def _train_variant(drive, request: dict, *, common: dict, full: dict,
         report, model, status = _fit(
             volcal_training, common, training,
             groups_off=tuple(design["feature_groups_off"]),
+        )
+    elif design["model_shape"] == "xmarket-offline-v1":
+        from parlay_bot.research.xmarket_history import weekly_inputs_once
+
+        # Same verified market-data load as the ordinary xmarket fit
+        # below; without it the fit blocks with a measured report
+        # instead of training on missing history.
+        market_data = (await weekly_inputs_once(
+            drive, asset=training["asset"], through=training["trained_through"],
+            cache=cache) if cache is not None else {})
+        report, model, status = _fit(
+            xmarket_training, common, training,
+            groups_off=tuple(design["feature_groups_off"]),
+            market_data=market_data,
         )
     else:
         report, model, status = _fit(
@@ -135,7 +149,8 @@ async def train_weekly_archive(frames: dict, *, training: dict, census: dict,
             request = await next_scheduled_request(drive, asset)
             if request is not None:
                 await _train_variant(drive, request, common=common, full=full,
-                                     training=training)
+                                     training=training,
+                                     cache=out.parent / "data" / "xmarket-inputs")
         for prefix, module in (("archive-v1", archive_training),
                                ("gbm-v1", gbm_training),
                                ("volcal-v1", volcal_training),

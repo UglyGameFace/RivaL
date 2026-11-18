@@ -26,7 +26,7 @@ from parlay_bot.perpetuals.research_loop import (
     get_experiment,
     list_findings,
 )
-from parlay_bot.research import archive_training, gbm_training, volcal_training
+from parlay_bot.research import archive_training, gbm_training, volcal_training, xmarket_training
 from parlay_bot.research.archive_features import (
     FEATURE_CONTRACT,
     FEATURE_DIGEST,
@@ -58,6 +58,12 @@ from parlay_bot.research.volcal_features import (
 )
 from parlay_bot.research.volcal_features import (
     GROUPS as VOLCAL_GROUPS,
+)
+from parlay_bot.research.xmarket_features import (
+    GROUPS as XMARKET_GROUPS,
+)
+from parlay_bot.research.xmarket_features import (
+    feature_names as XMARKET_FEATURE_NAMES,
 )
 from parlay_bot.storage.hot import SQLiteHotStore
 
@@ -150,11 +156,30 @@ def _volcal_doc(design_sha, *, asset: str = "BTC", groups_off=()):
     return doc
 
 
+def _xmarket_doc(design_sha, *, asset: str = "BTC", groups_off=()):
+    """A structurally valid xmarket artifact doc for a scheduled design."""
+    from tests.xmarket_fixtures import valid_doc
+
+    doc = valid_doc(asset=asset, now=datetime(2026, 1, 1, tzinfo=UTC))
+    if groups_off:
+        doc["feature_groups_off"] = list(groups_off)
+    doc["weights_sha256"] = xmarket_training.artifact_identity(doc)[
+        "weights_sha256"]
+    doc["scheduled_design_sha256"] = design_sha
+    return doc
+
+
 def _trial_indices(design: dict) -> list[int]:
     """Feature indices the variant keeps: all features minus its groups off."""
     if design.get("model_shape") == "volcal-offline-v1":
         groups = VOLCAL_GROUPS
         total = len(VOLCAL_FEATURES)
+    elif design.get("model_shape") == "xmarket-offline-v1":
+        names = XMARKET_FEATURE_NAMES(("bitget", "okx"))
+        off = set()
+        for group in design.get("feature_groups_off") or []:
+            off.update(XMARKET_GROUPS[group])
+        return [i for i, name in enumerate(names) if name not in off]
     else:
         groups = GROUPS
         total = len(FEATURES)
@@ -275,9 +300,11 @@ def test_grid_enumerates_deterministically():
         "archive-window-per-venue",
         "volcal-full", "volcal-no-vol", "volcal-no-compression",
         "volcal-no-volume", "volcal-no-dc",
+        "xmarket-full", "xmarket-no-pm", "xmarket-no-kalshi",
+        "xmarket-no-dispersion",
     ]
     hashes = [design_sha256(d) for d in SCHEDULED_VARIANTS]
-    assert len(set(hashes)) == 9
+    assert len(set(hashes)) == 13
     assert hashes == [design_sha256(d) for d in SCHEDULED_VARIANTS]
     # The design hash is the proposal SHA the loop joins on.
     for design in SCHEDULED_VARIANTS:
@@ -287,11 +314,15 @@ def test_grid_enumerates_deterministically():
     assert set(SCHEDULED_VARIANTS[1]["gbm_params"]) <= set(POOLED_PARAMS)
     # Every groups-off name is a real feature group for its own model
     # shape: archive groups for archive designs, volcal groups for
-    # volcal designs (the base candle group is never ablatable).
+    # volcal designs, xmarket groups for xmarket designs (the base
+    # candle group is never ablatable).
     for design in SCHEDULED_VARIANTS:
         if design["model_shape"] == "volcal-offline-v1":
             for group in design["feature_groups_off"]:
                 assert group in VOLCAL_GROUPS and group != "candle"
+        elif design["model_shape"] == "xmarket-offline-v1":
+            for group in design["feature_groups_off"]:
+                assert group in XMARKET_GROUPS and group != "candle"
         else:
             for group in design["feature_groups_off"]:
                 assert group in GROUPS
@@ -603,6 +634,12 @@ def test_screen_scheduled_artifact():
     assert screen_scheduled_artifact(
         json.dumps(_volcal_doc(volcal_sha)).encode()) == {
             "retrospective_screen": "passed"}
+    xmarket_full = next(d for d in SCHEDULED_VARIANTS
+                        if d["variant_id"] == "xmarket-full")
+    xmarket_sha = design_sha256(xmarket_full)
+    assert screen_scheduled_artifact(
+        json.dumps(_xmarket_doc(xmarket_sha)).encode()) == {
+            "retrospective_screen": "passed"}
     assert screen_scheduled_artifact(b"not json") == {
         "retrospective_screen": "insufficient",
         "reason": "artifact payload is not JSON"}
@@ -651,6 +688,36 @@ def test_volcal_grid_entries_resolve_to_volcal_training():
         assert identity["weights_sha256"] == doc["weights_sha256"]
 
 
+def test_xmarket_grid_entries_resolve_to_xmarket_training():
+    """Every xmarket grid entry loads, parses, and resolves to the real
+    xmarket feature/training code — no placeholders, no new family."""
+    xmarket_entries = [d for d in SCHEDULED_VARIANTS
+                       if d["model_shape"] == "xmarket-offline-v1"]
+    assert [d["variant_id"] for d in xmarket_entries] == [
+        "xmarket-full", "xmarket-no-pm", "xmarket-no-kalshi",
+        "xmarket-no-dispersion",
+    ]
+    for design in xmarket_entries:
+        sha = design_sha256(design)
+        assert lookup_variant(sha) is design
+        assert design["variant_kind"] == "feature_group_off"
+        assert design["train_window"] == "common-2021"
+        assert design["gbm_params"] is None
+        assert design["shadow_mode"] == "artifact"
+        for group in design["feature_groups_off"]:
+            assert group in XMARKET_GROUPS and group != "candle"
+        # The training module accepts exactly these ablations.
+        xmarket_training._check_groups_off(design["feature_groups_off"])
+        doc = _xmarket_doc(sha, asset=design["asset"],
+                           groups_off=design["feature_groups_off"])
+        assert screen_scheduled_artifact(
+            json.dumps(doc).encode()) == {"retrospective_screen": "passed"}
+        identity = scheduled_shadow_identity(design, json.dumps(doc).encode())
+        assert identity["family"] == "xmarket_v1"
+        assert identity["asset"] == design["asset"]
+        assert identity["weights_sha256"] == doc["weights_sha256"]
+
+
 def test_volcal_scheduled_variant_closes_discarded_end_to_end(tmp_path):
     store = _store(tmp_path)
     try:
@@ -661,6 +728,33 @@ def test_volcal_scheduled_variant_closes_discarded_end_to_end(tmp_path):
             design=copy.deepcopy(design), proposal_sha256=sha, now=NOW,
         )
         doc = _volcal_doc(sha)
+        _drive_scheduled_to_shadow(
+            store, design_sha=sha,
+            trial=_passing_trial(sha, design=design),
+            artifact_payload=json.dumps(doc).encode())
+        # No promotion row exists and the 30-day lookback expires:
+        # discarded with a finding, never silently.
+        out = advance_one(store, now=NOW + timedelta(days=31))
+        assert out["status"] == "advanced" and out["to"] == "discarded", out
+        findings = list_findings(store, exp["experiment_id"])
+        assert len(findings) == 1
+        assert findings[0]["kind"] == "negative_result"
+        assert findings[0]["recorded_by"] == "system"
+    finally:
+        store.close()
+
+
+def test_xmarket_scheduled_variant_closes_discarded_end_to_end(tmp_path):
+    store = _store(tmp_path)
+    try:
+        design = next(d for d in SCHEDULED_VARIANTS
+                      if d["variant_id"] == "xmarket-full")
+        sha = design_sha256(design)
+        exp = create_experiment(
+            store, proposer="scheduled", hypothesis=SCHEDULED_HYPOTHESIS,
+            design=copy.deepcopy(design), proposal_sha256=sha, now=NOW,
+        )
+        doc = _xmarket_doc(sha)
         _drive_scheduled_to_shadow(
             store, design_sha=sha,
             trial=_passing_trial(sha, design=design),
@@ -723,6 +817,67 @@ async def test_weekly_archive_trains_volcal_scheduled_variant(tmp_path, monkeypa
         if doc["scheduled_trial"]["status"] == "passed":
             assert kind == "model"
             volcal_training.validate(doc)
+    finally:
+        store.close()
+
+
+async def test_weekly_archive_trains_xmarket_scheduled_variant(tmp_path, monkeypatch):
+    """The weekly job routes an xmarket grid design to xmarket_training
+    (not archive): the result doc is an xmarket_v1 artifact/report
+    carrying the design SHA and a scheduled trial status."""
+    from parlay_bot.research import weekly_archive
+    from tests.xmarket_fixtures import frames_and_inputs
+
+    drive = _FakeDrive()
+    monkeypatch.setattr(weekly_archive, "_drive", lambda _: drive)
+    frames, inputs = frames_and_inputs()
+
+    async def _fake_inputs(*args, **kwargs):
+        return inputs
+
+    monkeypatch.setattr(
+        "parlay_bot.research.xmarket_history.weekly_inputs_once", _fake_inputs)
+    store = _store(tmp_path)
+    try:
+        design = next(d for d in SCHEDULED_VARIANTS
+                      if d["variant_id"] == "xmarket-full")
+        sha = design_sha256(design)
+        exp = create_experiment(
+            store, proposer="scheduled", hypothesis=SCHEDULED_HYPOTHESIS,
+            design=copy.deepcopy(design), proposal_sha256=sha, now=NOW,
+        )
+        request = scheduled_request(exp)
+        k = next(iter(frames.values()))[0]
+        train_end = k.index[int(len(k) * .66)]
+        test_start = k.index[int(len(k) * .83)]
+        trained_through = k.index[-1]
+        training = {
+            "asset": "BTC", "horizon": 5, "train_end": train_end,
+            "test_start": test_start, "trained_through": trained_through,
+            "provenance": PROV, "code_version": "test",
+        }
+        common = weekly_archive._window(
+            frames, through=trained_through, first="2021-01-01")
+        full = weekly_archive._window(
+            frames, through=trained_through, first=None)
+        await weekly_archive._train_variant(
+            drive, request, common=common, full=full, training=training,
+            cache=tmp_path / "xmarket-inputs",
+        )
+        name = f"scheduled-result-{exp['experiment_id']}.json"
+        kind = next(
+            (k for k in ("model", "report") if name in drive.files[k]),
+            None,
+        )
+        assert kind is not None
+        doc = json.loads(drive.files[kind][name])
+        assert doc["family"] == "xmarket_v1"
+        assert doc["scheduled_design_sha256"] == sha
+        assert doc["scheduled_trial"]["status"] in (
+            "passed", "rejected", "blocked")
+        if doc["scheduled_trial"]["status"] == "passed":
+            assert kind == "model"
+            xmarket_training.validate(doc)
     finally:
         store.close()
 

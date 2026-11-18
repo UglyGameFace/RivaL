@@ -25,6 +25,18 @@ BASE_FEATURES = ARCHIVE_FEATURES[:10]
 MARKET_FEATURES = ("pm_up", "pm_up_chg_3", "pm_up_chg_12", "kalshi_up", "kalshi_pm_gap")
 DISPERSION_FEATURES = ("venue_spread_ret1", "venue_up_share", "venue_spread_ret5")
 FEATURES = BASE_FEATURES + MARKET_FEATURES + DISPERSION_FEATURES
+# Ablation groups (Lab grid): every feature belongs to exactly one
+# group. The joint gap is its own group — it needs both markets, so
+# masking "pm" or "kalshi" also masks the gap with it. "candle" is
+# the shared base and is never ablated.
+GROUPS = {
+    "candle": BASE_FEATURES,
+    "pm": ("pm_up", "pm_up_chg_3", "pm_up_chg_12"),
+    "kalshi": ("kalshi_up",),
+    "gap": ("kalshi_pm_gap",),
+    "dispersion": DISPERSION_FEATURES,
+}
+FLAG_NAMES = ("candle", "pm", "kalshi", "gap", "dispersion")
 PRICE_SEMANTICS = {"polymarket": "up-token-prices-history",
                    "kalshi": "native-1m-yes-ask-close"}
 

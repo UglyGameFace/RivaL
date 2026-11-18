@@ -35,6 +35,7 @@ from parlay_bot.research.xmarket_features import (
     BASE_FEATURES,
     DISPERSION_FEATURES,
     FEATURE_CONTRACT,
+    GROUPS,
     MARKET_FEATURES,
     MODEL_VERSION,
     PRICE_SEMANTICS,
@@ -219,6 +220,25 @@ def _select_dispersion_venues(dispersion_frames, *, asset, live_venues, bars,
     return (), {**evidence, "selection": "insufficient_joint_market_coverage"}
 
 
+def _masked_features(groups) -> tuple[str, ...]:
+    """Feature names for the ablatable xmarket groups (mirror of
+    archive_training._masked_features). Only the market/dispersion
+    groups are ablatable: the base candle group is the incumbent's 10
+    features, shared by every xmarket design, and is never turned off.
+    The joint gap is its own group — masking "pm" or "kalshi" also
+    masks the gap, which needs both markets."""
+    if not isinstance(groups, (list, tuple)) or any(
+        group not in GROUPS or group == "candle" for group in groups
+    ):
+        raise ValueError("unsupported xmarket feature ablation")
+    return tuple(name for group in groups for name in GROUPS[group])
+
+
+def _check_groups_off(groups) -> None:
+    """Reject any ablation outside the ablatable xmarket groups."""
+    _masked_features(groups)
+
+
 def train_run(
     frames: dict,
     *,
@@ -230,6 +250,7 @@ def train_run(
     provenance: dict,
     code_version: str,
     months_requested=None,
+    groups_off: tuple[str, ...] = (),
     market_data: dict | None = None,
     admission_only: bool = False,
     research_only: bool = False,
@@ -354,6 +375,17 @@ def train_run(
         return blocked("no frames to train on")
     data = pd.concat(parts).sort_index()
     data = data.replace([np.inf, -np.inf], np.nan).dropna(subset=["y", *names])
+    masked_features = _masked_features(groups_off)
+    if masked_features:
+        # Ablation (scheduled-grid feature_group_off): the masked
+        # groups standardise to 0 via _standardize_apply's NaN -> 0
+        # rule, exactly like volcal_training. Masking after the drop
+        # keeps the full design's training bit-identical. Only columns
+        # present in this contract are masked: the 15-input contract
+        # has no dispersion columns to mask.
+        present = [name for name in masked_features if name in data.columns]
+        if present:
+            data[present] = float("nan")
     report_base["effective_window"] = {"rows": len(data),
         "unique_bars": int(data.index.nunique()),
         "first": str(data.index.min()) if len(data) else None,
@@ -494,6 +526,8 @@ def train_run(
         "serving_capable_without_binance_context": "binance" not in venues,
         "serve_clamp": list(SERVE_CLAMP),
     }
+    if groups_off:
+        report["feature_groups_off"] = list(groups_off)
     if not gates_passed:
         # This research does not re-score the sealed validation/test partition
         # to search for new winners. It uses only a purged inner training fold,
@@ -582,6 +616,7 @@ def validate(doc: dict) -> dict:
         raise ValueError("xmarket model built for different inputs")
     if doc.get("feature_digest") != feature_digest(doc.get("dispersion_venues", ()), doc.get("pm_fidelity_minutes", 1)):
         raise ValueError("xmarket model feature digest mismatch")
+    _check_groups_off(doc.get("feature_groups_off", ()))
     weights = doc.get("weights")
     if not isinstance(weights, list) or len(weights) != len(names) + 1:
         raise ValueError("xmarket model weights have the wrong width")
@@ -695,7 +730,16 @@ def probability(doc: dict, vector) -> float:
     validate(doc)
     if len(vector) != len(doc["features"]) or not all(math.isfinite(v) for v in vector):
         raise ValueError("wrong xmarket feature count")
-    return calibrated_probability(doc, vector, serve_clamp=SERVE_CLAMP)
+    values = list(vector)
+    # An ablated artifact never reads its masked groups: NaN them
+    # before standardising, exactly like volcal_training.probability
+    # (their fitted weights are 0 by construction, this is the guard).
+    # Only groups present in this contract are masked: the 15-input
+    # contract has no dispersion features to mask.
+    for name in _masked_features(doc.get("feature_groups_off", ())):
+        if name in doc["features"]:
+            values[doc["features"].index(name)] = float("nan")
+    return calibrated_probability(doc, values, serve_clamp=SERVE_CLAMP)
 
 
 def artifact_identity(doc: dict) -> dict:

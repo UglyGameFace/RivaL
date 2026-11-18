@@ -8,11 +8,12 @@ from parlay_bot.research import xmarket_training as training
 from tests.xmarket_fixtures import frames_and_inputs, valid_doc
 
 
-def run(frames, inputs, *, horizon=5):
+def run(frames, inputs, *, horizon=5, groups_off=()):
     k = next(iter(frames.values()))[0]
     return training.train_run(frames, asset="BTC", horizon=horizon,
         train_end=k.index[int(len(k) * .66)], test_start=k.index[int(len(k) * .83)],
         trained_through=k.index[-1], code_version="test", market_data=inputs,
+        groups_off=groups_off,
         provenance={"provider_sha256_by_month": {"bitget:2026-01": "a" * 64},
                     "months_without_provider_hash": []})
 
@@ -69,6 +70,44 @@ def test_original_frame_admission_never_fits_calibrates_or_promotes(monkeypatch)
     assert report["effective_window"]["rows"] > 0
     assert report["overlap_evidence"]["splits"]["test"]["rows"] > 0
     assert "admission_only_never_fits_or_publishes" in report["gate_failures"]
+
+
+def test_groups_off_masks_ablated_inputs_and_keeps_rows():
+    """Scheduled-grid ablations mask after the drop (volcal pattern):
+    same rows as the full design, masked weights exactly 0, the
+    ablation recorded on the report, and serving blind to the masked
+    inputs. The joint gap goes with either market side."""
+    frames, inputs = frames_and_inputs()
+    full = run(frames, inputs)
+    assert full["publish_kind"] == "model"
+    for groups_off, masked in (
+        (("dispersion",),
+         ("venue_spread_ret1", "venue_up_share", "venue_spread_ret5")),
+        (("pm", "gap"),
+         ("pm_up", "pm_up_chg_3", "pm_up_chg_12", "kalshi_pm_gap")),
+        (("kalshi", "gap"), ("kalshi_up", "kalshi_pm_gap")),
+    ):
+        result = run(frames, inputs, groups_off=groups_off)
+        assert result["publish_kind"] == "model", result["report"].get("gate_failures")
+        assert result["report"]["feature_groups_off"] == list(groups_off)
+        assert (result["report"]["effective_window"]["rows"]
+                == full["report"]["effective_window"]["rows"])
+        doc = training.validate(result["artifact"])
+        weights = doc["weights"]
+        for name in masked:
+            assert weights[doc["features"].index(name) + 1] == 0.0
+        base = [0.3] * len(doc["features"])
+        changed = list(base)
+        for name in masked:
+            changed[doc["features"].index(name)] = 5.0
+        assert training.probability(doc, base) == training.probability(doc, changed)
+
+
+def test_validate_rejects_unknown_ablation_group():
+    doc = valid_doc()
+    doc["feature_groups_off"] = ["nope"]
+    with pytest.raises(ValueError, match="unsupported xmarket feature ablation"):
+        training.validate(doc)
 
 
 def test_noise_is_report_only():

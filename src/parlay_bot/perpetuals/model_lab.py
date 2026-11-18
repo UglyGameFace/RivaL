@@ -730,20 +730,38 @@ class ModelLab:
                  f"AND model_brier BETWEEN 0 AND 1 "
                  f"AND incumbent_brier BETWEEN 0 AND 1")
         params = (*ASSETS, int(horizon), *families, since, until, until)
+        # One statement for both reads: the filtered window is scanned
+        # once into a MATERIALIZED CTE and shared by the per-target
+        # score aggregate and the scored-streams distinct. The two-read
+        # form scanned the same window twice per call (the worst slow
+        # operation in the Sentry triage: 353 events, max 28.9 s).
         rows = optional_rows(
             self.store,
-            f"""SELECT family, SUBSTR(target_opened_at,1,10) AS day,
-                       COUNT(*) AS targets, SUM(forecasts) AS forecasts,
-                       SUM(target_gain) AS gain
-                FROM (
-                    SELECT family, target_opened_at,
-                           COUNT(*) AS forecasts,
-                           AVG(incumbent_brier-model_brier) AS target_gain
+            f"""WITH window_rows AS MATERIALIZED (
+                    SELECT family, target_opened_at, venue, contract,
+                           incumbent_brier - model_brier AS gain_row
                     FROM rival_model_shadow_forecasts
                     WHERE {where}
+                ),
+                per_target AS (
+                    SELECT family, target_opened_at,
+                           COUNT(*) AS forecasts,
+                           AVG(gain_row) AS target_gain
+                    FROM window_rows
                     GROUP BY family, target_opened_at
-                ) AS per_target
-                GROUP BY family, SUBSTR(target_opened_at,1,10)""",
+                )
+                SELECT 'score' AS kind, family,
+                       SUBSTR(target_opened_at,1,10) AS day,
+                       COUNT(*) AS targets, SUM(forecasts) AS forecasts,
+                       SUM(target_gain) AS gain,
+                       NULL AS venue, NULL AS contract
+                FROM per_target
+                GROUP BY family, SUBSTR(target_opened_at,1,10)
+                UNION ALL
+                SELECT 'stream', family, NULL, NULL, NULL, NULL,
+                       venue, contract
+                FROM (SELECT DISTINCT family, venue, contract
+                      FROM window_rows) AS scored_streams""",
             params, what="model lab target-level score read",
         )
         if rows is None:
@@ -758,27 +776,21 @@ class ModelLab:
                                      "gain": None, "se": None, "fitness": None,
                                      "streams": set()} for family in families}
             return None
-        source_rows = optional_rows(
-            self.store,
-            f"""SELECT DISTINCT family, venue, contract
-                FROM rival_model_shadow_forecasts WHERE {where}""",
-            params, what="model lab scored streams read",
-        )
-        if source_rows is None:
-            return None
 
         days: dict[str, dict[str, tuple[int, float]]] = {f: {} for f in families}
         raw_counts: dict[str, int] = {f: 0 for f in families}
         streams: dict[str, set] = {f: set() for f in families}
         for row in rows:
+            if row["kind"] == "stream":
+                streams[str(row["family"])].add(
+                    (str(row["venue"]), str(row["contract"])))
+                continue
             family = str(row["family"])
             target_count = int(row["targets"])
             if target_count <= 0:
                 continue
             days[family][str(row["day"])] = (target_count, float(row["gain"]))
             raw_counts[family] += int(row["forecasts"])
-        for row in source_rows:
-            streams[str(row["family"])].add((str(row["venue"]), str(row["contract"])))
         out = {}
         for family in families:
             daily = [gain / n for n, gain in days[family].values() if n]

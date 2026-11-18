@@ -92,11 +92,12 @@ def test_hot_queries_use_time_bound_and_target_indexes(tmp_path):
 
 
 def test_model_lab_scored_review_uses_targeted_partial_index(tmp_path, monkeypatch):
-    """Exercise both exact PostgreSQL slow-query shapes, not copied SQL.
+    """Exercise the exact PostgreSQL slow-query shape, not copied SQL.
 
     The four-family, four-asset review used to spend 3-5 seconds on each
     scan of the full shadow ledger. Its partial access path must remain
-    selective for both daily target gains and distinct scored streams.
+    selective for both daily target gains and distinct scored streams,
+    which now arrive from one shared window scan.
     """
     from parlay_bot.perpetuals.model_lab import ModelLab
     from parlay_bot.storage import optional_reads
@@ -117,7 +118,7 @@ def test_model_lab_scored_review_uses_targeted_partial_index(tmp_path, monkeypat
     try:
         scores = ModelLab(store)._scores(families, 5, since, through=now)
         assert scores is not None and set(scores) == set(families)
-        assert len(captured) == 2
+        assert len(captured) == 1
         with store.connect() as conn:
             assert _columns(conn, "idx_rival_model_shadow_lab_scored") == [
                 "horizon_minutes", "family", "asset", "issued_at"

@@ -25,6 +25,8 @@ The `rival-evidence-board` Worker is presently a **classic Service Worker** (`ad
 
 The collector has its own `EVIDENCE_KV` KV namespace, GitHub OIDC trust policy, and trusted workflow `.github/workflows/evidence-board-receipt.yml`. Preserve those settings when restoring. **Never** copy secrets into the public Worker, public Git repository, or browser. Never replace the collector with a mocked success response.
 
+One optional binding is allowed on `rival-evidence-board` only: the secret `ALERT_WEBHOOK_URL` (type `secret_text`), set once by the account owner in the Cloudflare dashboard (Worker → Settings → Variables and Secrets → Add → **Secret**). The deploy contract in `tools/deploy_evidence_worker.cjs` preserves it once set and never requires it; a plain-text variable of the same name is refused, because the webhook URL is a credential. The board POSTs warning/critical alerts to it from `/api/status`, with the send registered via `waitUntil` so delivery completes before the worker may terminate. Never commit the URL to this repository.
+
 ## Recovery without ChatGPT
 
 1. Sign in to Cloudflare using the account that owns `the420lobby.com`; go to Workers & Pages and inspect `rival-evidence-board` and the custom domain. Cloudflare must show the Worker and its two service bindings.

@@ -28,4 +28,23 @@ for (const [kind, target] of Object.entries(EXPECTED)) {
     /bindings differ/);
   }
 }
+// The board may additionally carry the owner's ALERT_WEBHOOK_URL secret:
+// deploys must preserve it once set, must not require it before it is set,
+// and must still refuse any other extra binding (or the same name as a
+// plain-text variable — the webhook URL is a credential).
+const board = EXPECTED.board;
+assert.ok(Array.isArray(board.optionalBindings));
+assert.deepEqual(board.optionalBindings, [{ type: 'secret_text', name: 'ALERT_WEBHOOK_URL' }]);
+checkBindings([...board.bindings, ...board.optionalBindings],
+  board.bindings, board.optionalBindings);
+checkBindings(board.bindings, board.bindings, board.optionalBindings);
+assert.throws(() => checkBindings([...board.bindings, ...board.optionalBindings,
+  { type: 'secret_text', name: 'EXPOSE_PRIVATE_SECRETS' }],
+  board.bindings, board.optionalBindings), /bindings differ/);
+assert.throws(() => checkBindings([...board.bindings,
+  { type: 'plain_text', name: 'ALERT_WEBHOOK_URL', text: 'x' }],
+  board.bindings, board.optionalBindings), /bindings differ/);
+assert.throws(() => checkBindings([...board.bindings, ...board.optionalBindings],
+  board.bindings), /bindings differ/);
+
 console.log('Evidence Worker offline deployment contract tests passed');

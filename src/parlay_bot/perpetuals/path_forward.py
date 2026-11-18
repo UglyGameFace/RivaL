@@ -497,10 +497,16 @@ class ProspectivePathLedger:
         while the longer queue still has ready work.
 
         Readiness is two-phase, not a correlated COUNT(*) per candidate
-        row: one indexed scan reads the candidate keys in canonical
-        order, then _batched_window_counts counts valid candles per
-        key in chunks, stopping as soon as ``limit`` ready keys are
-        found, and one row-value IN query fetches their side rows.
+        row: the candidate keys are read a page at a time in canonical
+        order (LIMIT/OFFSET over the same ORDER BY, which is total
+        over the distinct key columns, so paging cannot reorder, skip
+        or duplicate a key), _batched_window_counts counts valid
+        candles per page, stopping as soon as ``limit`` ready keys are
+        found, and one row-value IN query fetches their side rows. The
+        unpaged form materialized every pending key in the 14-day
+        window (~107k rows on the live backlog) into Python on every
+        call, four calls per settle; paging bounds a call's key
+        traffic to the pages it actually scans.
         The selection (keys, order, outcomes) is identical to the old
         per-row subquery — the subquery only ever proved that a key's
         window holds exactly horizon/5 valid bars, which is what the
@@ -519,35 +525,40 @@ class ProspectivePathLedger:
         direction = "DESC" if current else "ASC"
         placeholders = ",".join("?" for _ in horizons)
         stamp_s = stamp.isoformat()
-        rows = conn.execute(
-                f"""SELECT DISTINCT p.venue,p.contract,p.quote,p.horizon_minutes,
-                       p.reference_opened_at,p.issued_at,p.target_opened_at
-                   FROM rival_forward_paths p
-                   WHERE p.state='pending' AND p.target_opened_at<=?
-                    AND p.target_opened_at>=? AND p.horizon_minutes IN ({placeholders})
-                    AND p.target_opened_at {comparison} ?
-                    AND p.side IN ('long','short')
-                   ORDER BY p.target_opened_at {direction},p.venue,p.contract,p.quote,
-                            p.horizon_minutes,p.reference_opened_at,p.issued_at""",
-                ((stamp-timedelta(minutes=5)).isoformat(),
-                 (stamp-timedelta(days=14)).isoformat(),
-                 *horizons,
-                 (stamp-CURRENT_SETTLEMENT_WINDOW).isoformat()),
-            ).fetchall()
         key_fields = ("venue", "contract", "quote", "horizon_minutes",
                       "reference_opened_at", "issued_at", "target_opened_at")
-        keys = [tuple(row[field] for field in key_fields) for row in rows]
+        key_params = ((stamp-timedelta(minutes=5)).isoformat(),
+                      (stamp-timedelta(days=14)).isoformat(),
+                      *horizons,
+                      (stamp-CURRENT_SETTLEMENT_WINDOW).isoformat())
         ready = []
-        for start in range(0, len(keys), _READY_COUNT_CHUNK):
-            chunk = keys[start:start + _READY_COUNT_CHUNK]
+        offset = 0
+        while len(ready) < limit:
+            rows = conn.execute(
+                    f"""SELECT DISTINCT p.venue,p.contract,p.quote,p.horizon_minutes,
+                           p.reference_opened_at,p.issued_at,p.target_opened_at
+                       FROM rival_forward_paths p
+                       WHERE p.state='pending' AND p.target_opened_at<=?
+                        AND p.target_opened_at>=? AND p.horizon_minutes IN ({placeholders})
+                        AND p.target_opened_at {comparison} ?
+                        AND p.side IN ('long','short')
+                       ORDER BY p.target_opened_at {direction},p.venue,p.contract,p.quote,
+                                p.horizon_minutes,p.reference_opened_at,p.issued_at
+                       LIMIT ? OFFSET ?""",
+                    (*key_params, _READY_COUNT_CHUNK, offset),
+                ).fetchall()
+            if not rows:
+                break
+            chunk = [tuple(row[field] for field in key_fields) for row in rows]
             counts = _batched_window_counts(conn, chunk, stamp_s)
             for key in chunk:
                 if counts.get(key, 0) == key[3] // 5:
                     ready.append(key)
                     if len(ready) == limit:
                         break
-            if len(ready) == limit:
+            if len(rows) < _READY_COUNT_CHUNK:
                 break
+            offset += _READY_COUNT_CHUNK
         if not ready:
             return []
         in_placeholders = ",".join("(?,?,?,?,?,?,?)" for _ in ready)

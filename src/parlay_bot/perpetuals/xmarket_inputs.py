@@ -82,6 +82,24 @@ def parse_points(source: str, payload: dict, *, identity: dict, observed_at: dat
     return output
 
 
+_FINALIZATION_GRACE = timedelta(minutes=2)
+
+
+def _sample_is_final(sample) -> bool:
+    """Whether a stored sample can no longer be superseded.
+
+    Both live sources revise their own in-progress bar: Polymarket's live
+    history repeats its final sample with the moving price, and Kalshi's
+    current candle close moves until its period ends (the tracker keeps a
+    just-closed window briefly to finish its final candle). A stored sample
+    is therefore provisional until it was observed after its bar ended plus
+    a finalization grace; past that point it is immutable and a differing
+    re-submission is a genuine revision.
+    """
+    bar_end = timestamp(sample["at"]) + timedelta(minutes=sample["fidelity_minutes"])
+    return timestamp(sample["observed_at"]) >= bar_end + _FINALIZATION_GRACE
+
+
 class XmarketInputs:
     def __init__(self, store):
         self.store = store
@@ -139,8 +157,21 @@ class XmarketInputs:
                 for p in group:
                     previous = existing[p["at"]]
                     if any(previous.get(k) != p.get(k) for k in
-                           ("price", "asset", "opens_at", "closes_at", "price_semantics")):
+                           ("asset", "opens_at", "closes_at", "price_semantics")):
                         raise ValueError("native history revised an immutable XMarket observation")
+                    if previous.get("price") != p.get("price") and _sample_is_final(previous):
+                        raise ValueError("native history revised an immutable XMarket observation")
+                    if previous.get("price") != p.get("price") or \
+                            timestamp(p["observed_at"]) > timestamp(previous["observed_at"]):
+                        # A provisional sample is superseded by the source's
+                        # newer observation of the same bar; an identical
+                        # re-observation only refreshes the sighting time so
+                        # finality tracks the latest observation.
+                        conn.execute(
+                            "UPDATE rival_xmarket_observations SET observed_at=?, sample_json=? "
+                            "WHERE source=? AND contract_id=? AND at=?",
+                            (p["observed_at"], canonical(p).decode(), source, contract, p["at"]))
+                        existing[p["at"]] = p
         return saved
 
     def recent(self, asset: str, *, at: datetime, now: datetime) -> list[dict]:

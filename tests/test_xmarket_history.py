@@ -33,9 +33,27 @@ def test_native_input_record_is_immutable_and_received_time_is_enforced(learning
     assert inputs.record([p]) == 0
     assert inputs.recent("BTC", at=at, now=at) == []
     assert len(inputs.recent("BTC", at=at, now=NOW)) == 1
+    # Finalize the stored sample: the same value observed after the bar
+    # closed plus the finalization grace (bar end at+1min, grace 2min).
+    final = {**p, "observed_at": (at + timedelta(minutes=5)).isoformat()}
+    assert inputs.record([final]) == 0
     with pytest.raises(ValueError, match="revised"):
-        inputs.record([{**p, "price": .9}])
-    assert inputs.recent("BTC", at=at, now=NOW)[0]["price"] == p["price"]
+        inputs.record([{**final, "price": .9}])
+    assert inputs.recent("BTC", at=at, now=at + timedelta(minutes=6))[0]["price"] == p["price"]
+
+
+def test_provisional_sample_is_superseded_until_the_bar_finalizes(learning_store):
+    """RIVAL-29: both live sources revise their own in-progress bar, so the
+    final value must replace the provisional one instead of raising."""
+    inputs = XmarketInputs(learning_store)
+    at = NOW.replace(second=0, microsecond=0)
+    provisional = point("kalshi", at, price=.55)  # observed at+1s, bar still open
+    assert inputs.record([provisional]) == 1
+    final = {**provisional, "price": .57,
+             "observed_at": (at + timedelta(seconds=90)).isoformat()}
+    assert inputs.record([final]) == 0
+    rows = inputs.recent("BTC", at=at, now=at + timedelta(minutes=2))
+    assert [r["price"] for r in rows] == [.57]
 
 
 def test_overlap_counts_unique_points_and_coarse_backfill_does_not_pass():

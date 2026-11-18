@@ -35,13 +35,15 @@ def test_merge_verifies_original_admission_after_source_publication_without_anot
     assert proof > collect
     collector_only = source.split("\n  research_after_source:", 1)[0]
     stage = collector_only.split("- name: Verify recovered chronological admission", 1)[1]
-    assert "if: github.event_name == 'push'" in stage
+    assert "github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.verify_original_admission == true)" in stage
+    assert "verify_original_admission:" in source
+    assert "default: false" in source.split("verify_original_admission:", 1)[1].split("evaluate_models:", 1)[0]
     assert "--lookback-days 90 --xmarket-admission" in stage
     assert '--root "data/recorded-private-originals/$ASSET"' in stage
     assert "--publish" not in stage
     assert "xmarket_training" not in stage
     assert "sklearn" not in stage and "lightgbm" not in stage
-    assert "if: always() && github.event_name == 'push'" in stage
+    assert "if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.verify_original_admission == true))" in stage
     upload = stage.split("- name: Upload concise chronological admission", 1)[1]
     assert "path: data/native-reports/recorded-partial-proof-" in upload
     assert "*.json" not in upload, "never upload private originals or input bundles"

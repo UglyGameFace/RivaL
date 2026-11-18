@@ -28,20 +28,20 @@ def test_native_source_and_archive_training_share_live_writer_lock():
     assert "cancel-in-progress: false" in trainer
 
 
-def test_merge_verifies_original_admission_after_source_publication_without_another_writer():
+def test_credentialed_runs_verify_original_admission_after_source_publication_without_another_writer():
     source = (WORKFLOWS / "xmarket-source-recovery.yml").read_text()
     collect = source.index("--max-windows \"$WINDOW_BUDGET\" --publish")
     proof = source.index("python tools/verify_recorded_partial_restore.py")
     assert proof > collect
     collector_only = source.split("\n  research_after_source:", 1)[0]
     stage = collector_only.split("- name: Verify recovered chronological admission", 1)[1]
-    assert "if: github.event_name == 'push'" in stage
+    assert "if: github.event_name != 'pull_request'" in stage
     assert "--lookback-days 90 --xmarket-admission" in stage
     assert '--root "data/recorded-private-originals/$ASSET"' in stage
     assert "--publish" not in stage
     assert "xmarket_training" not in stage
     assert "sklearn" not in stage and "lightgbm" not in stage
-    assert "if: always() && github.event_name == 'push'" in stage
+    assert "if: always() && github.event_name != 'pull_request'" in stage
     upload = stage.split("- name: Upload concise chronological admission", 1)[1]
     assert "path: data/native-reports/recorded-partial-proof-" in upload
     assert "*.json" not in upload, "never upload private originals or input bundles"

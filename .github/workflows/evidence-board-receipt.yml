@@ -79,4 +79,22 @@ jobs:
           RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
           RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
           RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
-        run: python tools/evidence_board_receipt.py
+        run: |
+          code=0
+          python tools/evidence_board_receipt.py > evidence-board-publish.log 2>&1 || code=$?
+          cat evidence-board-publish.log
+          exit $code
+      - name: Summarize Intelligence probe in run summary
+        if: always()
+        run: |
+          {
+            echo "## Evidence Board receipt"
+            echo ""
+            if grep -q '"publication": "coalesced"' evidence-board-publish.log 2>/dev/null; then
+              echo "- Run coalesced onto a receipt younger than 5 minutes; no new collection ran, so there is no new probe result."
+            elif grep -q "^EVIDENCE-BOARD SUMMARY:" evidence-board-publish.log 2>/dev/null; then
+              grep "^EVIDENCE-BOARD SUMMARY:" evidence-board-publish.log | sed 's/^/- /'
+            else
+              echo "- Receipt publication reported no Intelligence probe summary (see the publish step log); treat the probe as not run."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

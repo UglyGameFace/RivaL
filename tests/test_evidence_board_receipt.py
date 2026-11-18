@@ -24,12 +24,14 @@ from evidence_board_receipt import (
     LLM_METRICS_CMD,
     LLM_METRICS_MARKER,
     _artifact_prefix,
+    _check_receipt_size,
     _collection_block,
     _nonnegative,
     _paper_proof,
     _recent_forecast_summary,
     _recent_receipt_is_fresh,
     _research_loop,
+    _submit_signed_receipt,
     _xmarket_quotes,
     _xmarket_watchdog,
     build_source_details,
@@ -682,6 +684,43 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(details["discloud_learning"]["status"], "unreachable")
         self.assertEqual(details["discloud_forecast"]["reason"], "network_error")
 
+    def test_offline_intelligence_host_is_unreachable_not_ok(self) -> None:
+        # F11: a genuinely offline Intelligence host used to be reported
+        # as source status "ok", so any consumer treating "ok" as healthy
+        # misread a down host as fine. "unreachable" is already in the
+        # collector's status vocabulary; the online case stays "ok".
+        host, db = summarize_host(None)
+        details = build_source_details(
+            host, db, {"status": "unavailable"},
+            {"status": "unavailable"}, {"status": "unavailable"},
+            {"status": "offline"}, {"status": "observed", "scopes": []}, {},
+            checked_at="2026-11-17T02:00:00+00:00")
+        self.assertEqual(details["intelligence_host"]["status"], "unreachable")
+        self.assertEqual(details["intelligence_host"]["reason"], "host_offline")
+        self.assertEqual(details["performance"]["status"], "ok")
+        details = build_source_details(
+            host, db, {"status": "unavailable"},
+            {"status": "unavailable"}, {"status": "unavailable"},
+            {"status": "online"}, {"status": "observed", "scopes": []}, {},
+            checked_at="2026-11-17T02:00:00+00:00")
+        self.assertEqual(details["intelligence_host"]["status"], "ok")
+
+    def test_partial_performance_is_not_ok(self) -> None:
+        # F11: "partial" means some scopes measured and some scope reads
+        # failed, so the read did not complete. It must not read as "ok";
+        # the measured scopes stay visible in the performance section.
+        host, db = summarize_host(None)
+        details = build_source_details(
+            host, db, {"status": "unavailable"},
+            {"status": "unavailable"}, {"status": "unavailable"},
+            {"status": "online"},
+            {"status": "partial", "scopes": [{"asset": "BTC"}],
+             "failed_scopes": 3}, {},
+            checked_at="2026-11-17T02:00:00+00:00")
+        self.assertEqual(details["performance"]["status"], "failed_read")
+        self.assertEqual(details["performance"]["reason"], "partial_performance")
+        self.assertEqual(details["intelligence_host"]["status"], "ok")
+
     def test_collection_block_sanitizes_trigger_run_and_attempt(self) -> None:
         with patch.dict(os.environ, {
             "GITHUB_EVENT_NAME": "schedule", "GITHUB_RUN_ID": "44002956865",
@@ -720,6 +759,50 @@ class ReceiptTests(unittest.TestCase):
                           side_effect=TimeoutError()):
             self.assertFalse(_recent_receipt_is_fresh())
 
+    def test_recent_receipt_check_reads_realistically_sized_receipt(self) -> None:
+        # F1: the live stored receipt is ~52KB, but the freshness check
+        # used to read it with limit=20_000, so _url_json always raised
+        # provider_response_too_large and coalescing never fired. This test
+        # stubs the HTTP layer (urlopen), not the function under test, and
+        # serves a realistically-sized body through the real _url_json.
+        from datetime import UTC, datetime, timedelta
+
+        import evidence_board_receipt as receipt_module
+
+        class _FakeLatestResponse:
+            def __init__(self, body: bytes):
+                self._body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, limit: int = -1) -> bytes:
+                return self._body if limit < 0 else self._body[:limit]
+
+        fresh_at = (datetime.now(UTC) - timedelta(seconds=60)).isoformat()
+        body = json.dumps(
+            {"captured_at": fresh_at, "padding": "x" * 51_700},
+            separators=(",", ":")).encode()
+        # Bigger than the old 20,000-byte limit, smaller than the 80,000
+        # receipt cap: this body would have failed the old check.
+        self.assertGreater(len(body), 20_000)
+        self.assertLess(len(body), 80_000)
+        with patch.object(receipt_module.request, "urlopen",
+                          return_value=_FakeLatestResponse(body)):
+            self.assertTrue(_recent_receipt_is_fresh())
+        # A body over the cap cannot be a legal stored receipt: the check
+        # still fails open to a full collection instead of crashing.
+        oversized = json.dumps(
+            {"captured_at": fresh_at, "padding": "x" * 81_000},
+            separators=(",", ":")).encode()
+        self.assertGreater(len(oversized), 80_000)
+        with patch.object(receipt_module.request, "urlopen",
+                          return_value=_FakeLatestResponse(oversized)):
+            self.assertFalse(_recent_receipt_is_fresh())
+
     def test_flood_trigger_coalesces_instead_of_rehitting_upstreams(self) -> None:
         import evidence_board_receipt as receipt_module
 
@@ -733,6 +816,41 @@ class ReceiptTests(unittest.TestCase):
             self.assertEqual(publish(), 0)
             host_read.assert_not_called()
             report.assert_called_once_with("jwt", "coalesced", None)
+
+    def test_schedule_and_dispatch_runs_never_coalesce(self) -> None:
+        # Schedule runs are the cadence backbone and workflow_dispatch is
+        # the keepalive: both always collect, even when a fresh receipt
+        # stands. The freshness check is forced True here so only the
+        # event gate can save the run from coalescing.
+        import evidence_board_receipt as receipt_module
+
+        seen: dict = {}
+
+        def _capture(payload: dict, jwt: str) -> dict:
+            seen["payload"] = payload
+            return {"status": "accepted"}
+
+        for event in ("schedule", "workflow_dispatch"):
+            with self.subTest(event=event), \
+                    patch.dict(os.environ, {
+                        "GITHUB_EVENT_NAME": event,
+                        "GITHUB_RUN_ID": "44002956865",
+                        "GITHUB_RUN_ATTEMPT": "1", "GITHUB_TOKEN": "",
+                        "DISCLOUD_TOKEN": "", "DISCLOUD_LLM_APP_ID": "",
+                        "RIVAL_DRIVE_REPORTS_FOLDER_ID": "",
+                    }), \
+                    patch.object(receipt_module, "read_host",
+                                 return_value=None), \
+                    patch.object(receipt_module, "_github_oidc",
+                                 return_value="jwt"), \
+                    patch.object(receipt_module, "_submit_signed_receipt",
+                                 side_effect=_capture), \
+                    patch.object(receipt_module, "_recent_receipt_is_fresh",
+                                 return_value=True):
+                seen.clear()
+                self.assertEqual(publish(), 0)
+                self.assertIn("payload", seen)
+                self.assertEqual(seen["payload"]["collection"]["event"], event)
 
     def test_failed_publication_reports_a_signed_attempt_reason(self) -> None:
         import evidence_board_receipt as receipt_module
@@ -839,6 +957,16 @@ class LlmMetricsTests(unittest.TestCase):
         clean = summarize_llm_metrics(raw)
         self.assertFalse(clean["inference_verified"])
         self.assertIsNone(clean["generation_probe"])
+        # F14: a tampered marker must not lend plausible timing numbers to
+        # the published receipt, even when they look realistic.
+        raw["latency_ms_p50"] = 5230.4
+        raw["latency_ms_p95"] = 5230.4
+        raw["tokens_per_second"] = 8.024
+        clean = summarize_llm_metrics(raw)
+        self.assertFalse(clean["inference_verified"])
+        self.assertIsNone(clean["latency_ms_p50"])
+        self.assertIsNone(clean["latency_ms_p95"])
+        self.assertIsNone(clean["tokens_per_second"])
         clean = summarize_llm_metrics(self._valid_raw())
         self.assertIsNone(clean["generation_probe"])
 
@@ -862,12 +990,17 @@ class LlmMetricsTests(unittest.TestCase):
     def test_generation_failure_stays_unverified_but_observed(self) -> None:
         raw = self._valid_raw()
         raw.update({"inference_verified": False, "requests_sampled": 1,
-                    "generation_errors": 1})
+                    "generation_errors": 1,
+                    # F14: plausible timing numbers on an unverified
+                    # generation must not be carried through.
+                    "latency_ms_p50": 5230.4, "latency_ms_p95": 5230.4,
+                    "tokens_per_second": 8.024})
         clean = summarize_llm_metrics(raw)
         self.assertEqual(clean["status"], "observed")
         self.assertFalse(clean["inference_verified"])
         self.assertEqual(clean["generation_errors"], 1)
         self.assertIsNone(clean["latency_ms_p50"])
+        self.assertIsNone(clean["latency_ms_p95"])
         self.assertIsNone(clean["tokens_per_second"])
 
     def test_generation_marker_is_parsed_and_verifies(self) -> None:
@@ -946,6 +1079,23 @@ class LlmMetricsTests(unittest.TestCase):
                    return_value={"stdout": LLM_METRICS_MARKER + "{not json"}):
             self.assertEqual(read_intelligence_metrics()["status"], "unavailable")
 
+    def test_failed_status_read_marker_keeps_probe_ran_and_error(self) -> None:
+        # F15: a marker from a probe whose status read failed must not be
+        # reported as "probe never emitted" — the probe ran, it just could
+        # not read status, and the failure label is preserved.
+        marker = LLM_METRICS_MARKER + json.dumps({
+            "model": None, "ready": None, "status_http": 503,
+            "status_error": "status_http_503", "requests_sampled": 1,
+            "generation_errors": 1,
+        })
+        with patch("evidence_board_receipt._read_llm_console",
+                   return_value={"stdout": marker + "\n"}):
+            result = read_intelligence_metrics()
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["probe"], "llm_console_v1_status")
+        self.assertEqual(result["status_error"], "status_http_503")
+        self.assertIsNotNone(result["captured_at"])
+
 
 class LlmGenerationProbeTests(unittest.TestCase):
     """The console probe program itself, run against a stub gateway.
@@ -984,6 +1134,9 @@ class LlmGenerationProbeTests(unittest.TestCase):
                     return
                 if not self._auth_ok():
                     self._json({"error": "unauthorized"}, 401)
+                    return
+                if test.mode == "status_503":
+                    self._json({"error": "status_unavailable"}, 503)
                     return
                 self._json({
                     "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
@@ -1109,8 +1262,36 @@ class LlmGenerationProbeTests(unittest.TestCase):
         self.assertNotIn("tokens_per_second", marker)
 
     def test_probe_fails_closed_with_wrong_token(self):
+        # F15: a 401 on /v1/status used to crash the probe with no marker
+        # line at all. It now degrades to a clearly-marked status failure.
         result = self._run_probe(token="w" * 48)
-        self.assertIsNone(self._marker(result.stdout))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        marker = self._marker(result.stdout)
+        self.assertIsNotNone(marker)
+        self.assertFalse(marker["inference_verified"])
+        self.assertEqual(marker["status_error"], "status_http_401")
+        self.assertEqual(marker["status_http"], 401)
+        self.assertIsNone(marker["model"])
+        self.assertNotIn("generation_probe", marker)
+        self.assertNotIn("latency_ms_p50", marker)
+
+    def test_probe_status_failure_still_emits_marker(self):
+        # F15: a 503 on /v1/status must not lose the probe: the marker
+        # still prints, the status failure is labelled, and the generation
+        # still runs but cannot verify without the status model to match.
+        self.mode = "status_503"
+        result = self._run_probe()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        marker = self._marker(result.stdout)
+        self.assertIsNotNone(marker)
+        self.assertEqual(marker["status_error"], "status_http_503")
+        self.assertEqual(marker["status_http"], 503)
+        self.assertFalse(marker["inference_verified"])
+        self.assertIsNone(marker["model"])
+        self.assertIsNone(marker["ready"])
+        self.assertEqual(marker["generation_errors"], 1)
+        self.assertNotIn("latency_ms_p50", marker)
+        self.assertNotIn("tokens_per_second", marker)
 
     def test_metrics_command_carries_the_probe_program(self):
         import base64
@@ -1385,6 +1566,33 @@ class CombinedPayloadBudgetTests(unittest.TestCase):
             len(body), 76000,
             f"worst-case combined receipt is {len(body)} bytes; "
             "the collector rejects anything over 80000")
+        # F16b: the worst-case body must also pass the publisher's own
+        # pre-send size guard, not just the collector's 413.
+        _check_receipt_size(body)
+
+    def test_oversized_receipt_is_refused_before_send(self) -> None:
+        # F16b: the publisher refuses a receipt over the 80,000-byte cap
+        # with a clear error instead of sending it for a collector 413.
+        import evidence_board_receipt as receipt_module
+
+        oversized = {"schema_version": 1, "padding": "x" * 80_001}
+        with patch.object(receipt_module, "_url_json",
+                          side_effect=AssertionError("must not send")), \
+                self.assertRaises(ValueError) as caught:
+            _submit_signed_receipt(oversized, "jwt")
+        self.assertEqual(str(caught.exception), "receipt_over_80kb_cap")
+        # At exactly the cap it sends (the collector accepts <= 80,000).
+        at_cap = {"schema_version": 1,
+                  "padding": "x" * (80_000 - len(json.dumps(
+                      {"schema_version": 1, "padding": ""},
+                      separators=(",", ":")).encode()))}
+        self.assertEqual(len(json.dumps(
+            at_cap, separators=(",", ":")).encode()), 80_000)
+        with patch.object(receipt_module, "_url_json",
+                          return_value={"status": "accepted"}) as sender:
+            self.assertEqual(
+                _submit_signed_receipt(at_cap, "jwt"), {"status": "accepted"})
+            sender.assert_called_once()
 
 
 if __name__ == "__main__":

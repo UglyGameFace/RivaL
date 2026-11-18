@@ -41,6 +41,11 @@ AUDIENCE = "https://rival-evidence-collector.staytrippynlw.workers.dev"
 # runs are the cadence backbone and never coalesce.
 COALESCE_FRESH_SECONDS = 300
 COLLECTION_EVENTS = ("schedule", "workflow_dispatch", "push", "workflow_run")
+# The collector rejects any receipt body over 80,000 bytes (413). The
+# freshness check must be able to read any legal stored receipt, so its
+# limit is this cap, not a smaller guess; the publisher also refuses to
+# send a body over it instead of relying only on the receiver's 413.
+RECEIPT_MAX_BYTES = 80_000
 # Per-source reliability reporting (Delivery 1): every upstream is tracked
 # independently, with its own freshness bar. A failed read is unavailable,
 # never zero; a genuinely measured zero stays a zero with status ok (or
@@ -1007,12 +1012,33 @@ token = os.environ.get("RIVAL_LLM_SHARED_TOKEN", "")
 root = "http://127.0.0.1:" + port
 headers = {"Authorization": "Bearer " + token}
 t0 = time.monotonic()
-with urllib.request.urlopen(
-    urllib.request.Request(root + "/v1/status", headers=headers),
-    timeout=10,
-) as resp:
-    status = json.loads(resp.read(200000))
-    status_http = resp.status
+# The status read is wrapped like the generation call below: a 401/429/5xx,
+# timeout or bad body on /v1/status must degrade to a clearly-marked
+# status failure, not crash the probe with no marker line and no status
+# fields at all. Whatever the read did return is preserved; the marker
+# still prints, and the generation attempt still runs (verification still
+# needs the status model to match, so a failed status read can never
+# verify a generation).
+status = {}
+status_http = None
+status_error = None
+try:
+    with urllib.request.urlopen(
+        urllib.request.Request(root + "/v1/status", headers=headers),
+        timeout=10,
+    ) as resp:
+        status = json.loads(resp.read(200000))
+        status_http = resp.status
+        if not isinstance(status, dict):
+            status = {}
+            status_error = "status_not_object"
+except urllib.error.HTTPError as exc:
+    status_http = exc.code
+    status_error = "status_http_%d" % exc.code
+except (urllib.error.URLError, TimeoutError, ValueError):
+    status_error = "status_read_failed"
+if status_error is None and status_http is not None and status_http != 200:
+    status_error = "status_http_%d" % status_http
 memory = status.get("memory") if isinstance(status.get("memory"), dict) else {}
 marker = {
     "model": status.get("model"),
@@ -1027,6 +1053,8 @@ marker = {
     "requests_sampled": 1,
     "generation_errors": 0,
 }
+if status_error is not None:
+    marker["status_error"] = status_error
 probe = {"asset": "BTC", "evidence": {
     "asset": "BTC", "analysis": "unvalidated_research",
     "horizon_minutes": 5, "sources": []}}
@@ -1116,6 +1144,12 @@ def summarize_llm_metrics(raw: object) -> dict:
     flag, so stripping it here leaves the board Unverified even when
     the generation proved. Prompts, tokens, conversations,
     private endpoints and secrets are never accepted fields.
+    Latency and tokens-per-second are only carried when the generation
+    is verified: an unverified (tampered/ungrounded) marker must not
+    lend plausible timing numbers to the published receipt. A failed
+    status read is carried as ``status_error`` (validated label, else
+    null) so a probe that ran but could not read status stays
+    distinguishable from a probe that never ran.
     """
     unavailable = {
         "status": "unavailable", "probe": "host_probe_not_emitted",
@@ -1125,7 +1159,8 @@ def summarize_llm_metrics(raw: object) -> dict:
         "repair_state": None, "repair_count": None,
         "runtime_context_tokens": None, "memory": None,
         "memory_pressure_pct": None, "status_latency_ms": None,
-        "status_http": None, "latency_ms_p50": None,
+        "status_http": None, "status_error": None,
+        "latency_ms_p50": None,
         "latency_ms_p95": None, "tokens_per_second": None,
         "requests_sampled": None, "generation_errors": None,
         "fallback_count": None, "cpu_pct": None, "dns_ok": None,
@@ -1133,6 +1168,10 @@ def summarize_llm_metrics(raw: object) -> dict:
     }
     if not isinstance(raw, dict):
         return unavailable
+    status_error = raw.get("status_error")
+    unavailable["status_error"] = (
+        status_error if isinstance(status_error, str)
+        and re.fullmatch(r"[a-z0-9_]{1,80}", status_error) else None)
     model = raw.get("model")
     if not isinstance(model, str) or LLM_MODEL_RE.fullmatch(model) is None:
         return unavailable
@@ -1175,11 +1214,13 @@ def summarize_llm_metrics(raw: object) -> dict:
         out["status_http"] = 200
     for key, maximum in (("latency_ms_p50", 600_000), ("latency_ms_p95", 600_000)):
         value = raw.get(key)
-        out[key] = (round(float(value), 1) if type(value) in (int, float)
+        out[key] = (round(float(value), 1) if out["inference_verified"]
+                    and type(value) in (int, float)
                     and 0 <= value <= maximum else None)
     tps = raw.get("tokens_per_second")
     out["tokens_per_second"] = (
-        round(float(tps), 3) if type(tps) in (int, float)
+        round(float(tps), 3) if out["inference_verified"]
+        and type(tps) in (int, float)
         and 0 <= tps <= 100_000 else None)
     for key in ("requests_sampled", "generation_errors", "fallback_count"):
         out[key] = _nonnegative(raw.get(key))
@@ -1235,7 +1276,18 @@ def read_intelligence_metrics() -> dict:
             return unavailable
         clean = summarize_llm_metrics(parsed)
         if clean["status"] != "observed":
-            return unavailable
+            # The probe ran and emitted a marker, but the marker did not
+            # validate (e.g. the status read failed inside the probe, or
+            # the host model string was unexpected). Report that honestly:
+            # the probe ran, the status failure label is preserved, and
+            # the read time is stamped — instead of claiming the probe
+            # never emitted, which would hide a failing probe behind the
+            # same "unavailable" as a probe that never started.
+            failed = summarize_llm_metrics(None)
+            failed["probe"] = "llm_console_v1_status"
+            failed["status_error"] = clean["status_error"]
+            failed["captured_at"] = datetime.now(UTC).isoformat()
+            return failed
         clean["captured_at"] = datetime.now(UTC).isoformat()
         clean["probe"] = "llm_console_v1_status"
         return clean
@@ -1519,11 +1571,27 @@ def _oidc_contract_summary(jwt: str) -> str:
         return "local_oidc_invalid"
 
 
+def _check_receipt_size(body: bytes) -> None:
+    """Refuse to send a receipt over the collector's 80,000-byte cap.
+
+    The cap was previously enforced only receiver-side (413); a receipt
+    that grew past it would burn a full collection and an OIDC token on a
+    send the receiver was always going to reject. Refusing here fails the
+    run loudly instead, with the size in the log.
+    """
+    if len(body) > RECEIPT_MAX_BYTES:
+        print(f"Evidence-board receipt refused: {len(body)} bytes exceeds "
+              f"the {RECEIPT_MAX_BYTES}-byte collector cap")
+        raise ValueError("receipt_over_80kb_cap")
+
+
 def _submit_signed_receipt(payload: dict, jwt: str) -> dict:
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    _check_receipt_size(body)
     try:
         return _url_json(
             INGEST_URL, method="POST",
-            body=json.dumps(payload, separators=(",", ":")).encode(),
+            body=body,
             headers={"Authorization": "Bearer " + jwt,
                      "Content-Type": "application/json",
                      "Accept": "application/json",
@@ -1623,9 +1691,12 @@ def _recent_receipt_is_fresh(max_age_seconds: int = COALESCE_FRESH_SECONDS) -> b
 
     Public GET-only read of the signed snapshot. Any failure fails open to a
     full collection: a broken freshness check must never suppress evidence.
+    The read limit is the enforced receipt cap: any legal stored receipt
+    parses, and a body over the cap cannot be a legal receipt, so it also
+    fails open instead of being trusted.
     """
     try:
-        latest = _url_json(COLLECTOR_LATEST_URL, timeout=8, limit=20_000)
+        latest = _url_json(COLLECTOR_LATEST_URL, timeout=8, limit=RECEIPT_MAX_BYTES)
         at = _iso_timestamp(latest.get("captured_at"))
         if not at:
             return False
@@ -1750,10 +1821,15 @@ def build_source_details(host: dict, db: dict, drive: dict, github: dict,
     details["intelligence"] = _snapshot_source_detail(
         intelligence, errors, "intelligence", at, ok_status="verified")
     host_status = intelligence_host.get("status")
-    if host_status in ("online", "offline"):
-        # Offline is a genuine observation of the Intelligence app, not a
-        # failed read; the value itself carries the bad news.
+    if host_status == "online":
         details["intelligence_host"] = _source_detail("ok", None, at)
+    elif host_status == "offline":
+        # Offline is a genuine observation, but it is not healthy: a down
+        # host must not read as "ok" to any consumer of per-source status.
+        # "unreachable" is already in the collector's status vocabulary,
+        # so no vocabulary change is needed on either side.
+        details["intelligence_host"] = _source_detail(
+            "unreachable", "host_offline", at)
     elif "intelligence_host" in errors:
         details["intelligence_host"] = _error_detail(errors["intelligence_host"], at)
     elif not os.getenv("DISCLOUD_TOKEN", "") or not os.getenv("DISCLOUD_LLM_APP_ID", ""):
@@ -1761,8 +1837,17 @@ def build_source_details(host: dict, db: dict, drive: dict, github: dict,
             "not_configured", "credentials_not_configured", at)
     else:
         details["intelligence_host"] = _source_detail("failed_read", "read_failed", at)
-    if performance.get("status") in ("observed", "partial"):
+    if performance.get("status") == "observed":
         details["performance"] = _source_detail("ok", None, at)
+    elif performance.get("status") == "partial":
+        # Some scopes measured, some scope reads failed: the read did not
+        # complete, so it is not "ok". The measured scopes stay visible in
+        # the performance section itself; only the health claim is
+        # corrected. No "partial" exists in the shared status vocabulary,
+        # so this is failed_read with a precise reason rather than a new
+        # status (which would need a collector + worker change).
+        details["performance"] = _source_detail(
+            "failed_read", "partial_performance", at)
     elif performance.get("status") == "no_pairs":
         details["performance"] = _source_detail(
             "measured_zero", "no_pairs_measured", at)
@@ -1773,6 +1858,29 @@ def build_source_details(host: dict, db: dict, drive: dict, github: dict,
     for name in SOURCE_NAMES:
         details[name]["freshness_seconds"] = SOURCE_FRESHNESS_SECONDS[name]
     return details
+
+
+def _print_intelligence_summary(publication: str, metrics: dict) -> None:
+    """One prominent log line naming the Intelligence probe's outcome.
+
+    An accepted receipt can still carry intelligence_metrics "unavailable"
+    because the probe never ran (no Discloud credentials in the workflow)
+    or ran and failed — and the workflow stays green either way. This line
+    makes "probe never ran" visible in the run log instead of silent: the
+    probe ran exactly when its label is llm_console_v1_status.
+    """
+    probe = metrics.get("probe") or "host_probe_not_emitted"
+    line = (
+        f"EVIDENCE-BOARD SUMMARY: publication={publication} "
+        f"intelligence_metrics.status={metrics.get('status')} "
+        f"llm_probe={probe} "
+        f"llm_probe_ran={probe == 'llm_console_v1_status'} "
+        f"inference_verified={metrics.get('inference_verified')}"
+    )
+    status_error = metrics.get("status_error")
+    if status_error:
+        line += f" status_error={status_error}"
+    print(line)
 
 
 def publish() -> int:
@@ -1862,9 +1970,11 @@ def publish() -> int:
         result = _submit_signed_receipt(payload, jwt)
     except ValueError as exc:
         _report_attempt(jwt, "failed", _attempt_reason(exc))
+        _print_intelligence_summary("failed", intelligence_metrics)
         raise
     if result.get("status") not in ("accepted", "stale_ignored"):
         _report_attempt(jwt, "failed", "receipt_not_accepted")
+        _print_intelligence_summary("not_accepted", intelligence_metrics)
         raise ValueError("receipt_not_accepted")
     # The only logged output is a bounded status. Never print provider output.
     print(json.dumps({
@@ -1873,12 +1983,14 @@ def publish() -> int:
         "drive_scopes": drive["reports_considered"],
         "github": github["status"], "intelligence": intelligence["status"],
         "intelligence_metrics": intelligence_metrics["status"],
+        "intelligence_probe": intelligence_metrics["probe"],
         "llm_inference_verified": intelligence_metrics["inference_verified"],
         "performance": performance["status"],
         "sources": {name: details["status"]
                     for name, details in sources.items()},
         "source": "read-only", "no_trades_or_db_writes": True,
     }, sort_keys=True))
+    _print_intelligence_summary(result["status"], intelligence_metrics)
     return 0
 
 

@@ -95,7 +95,11 @@ function cleanXmarketScopeProgress(value){
 function cleanGithub(g,identity) {
   if(!g||g.status!=='verified'||!Array.isArray(g.prs)||!Array.isArray(g.runs))return null;
   const fetched=isoOrNull(g.fetched_at);
-  if(!fetched||Math.abs(Date.now()-Date.parse(fetched))>3600000)return null;
+  // A fetch time more than 5 minutes in the future is clock skew or a
+  // crafted payload, not fresh data (same allowance as the receipt-level
+  // capture gate); the 1h past bound is unchanged.
+  const fetchedAgeMs=fetched?Date.now()-Date.parse(fetched):Infinity;
+  if(fetchedAgeMs<-300000||fetchedAgeMs>3600000)return null;
   const sha=x=>typeof x==='string'&&/^[0-9a-fA-F]{40}$/.test(x)?x.toLowerCase():null;
   const pickDate=isoOrNull;
   const prs=g.prs.slice(0,55).map(p=>{
@@ -127,11 +131,14 @@ function cleanGithub(g,identity) {
 }
 
 
-function cleanIntelligence(source, host) {
+function cleanIntelligence(source, host, inferenceVerified) {
+  // inference_verified is derived from the intelligence_metrics probe gate
+  // (cleanIntelligenceMetrics), never from this section's own fields: the
+  // repo/PRs data here cannot prove an authenticated generation.
   const out={status:'unavailable',repository:'UglyGameFace/RivaL-Intelligence',
     fetched_at:null,head_sha:null,prs:[],runs:[],
     host_status:oneOf(host&&host.status,['online','offline','unavailable']),
-    inference_verified:false};
+    inference_verified:inferenceVerified===true};
   if(!source||source.status!=='verified'||source.repository!==out.repository)return out;
   const sha=s=>typeof s==='string'&&/^[0-9a-fA-F]{40}$/.test(s)?s.toLowerCase():null;
   const time=isoOrNull(source.fetched_at);
@@ -187,16 +194,29 @@ function cleanIntelligenceMetrics(value){
   // Authenticated LFM3 health only; a status-endpoint read never proves
   // generation. Unknown fields stay null, never zero or healthy.
   const empty={status:'unavailable',probe:'host_probe_not_emitted',captured_at:null,
-    model:null,ready:null,inference_verified:false,source_sha:null,
+    model:null,ready:null,inference_verified:false,generation_probe:null,source_sha:null,
     repair_state:null,repair_count:null,runtime_context_tokens:null,
     memory:null,memory_pressure_pct:null,status_latency_ms:null,status_http:null,
+    status_error:null,
     latency_ms_p50:null,latency_ms_p95:null,tokens_per_second:null,
     requests_sampled:null,generation_errors:null,fallback_count:null,
     cpu_pct:null,dns_ok:null,upstream_ok:null,db_pressure:null};
-  if(!value||typeof value!=='object'||value.status!=='observed')return empty;
+  // A probe that ran but could not validate (e.g. its status read
+  // failed) must stay distinguishable in storage from a probe that
+  // never ran: carry the probe label, the validated failure label,
+  // and the read time through even on the unavailable path. The
+  // publisher stamps all three (see read_intelligence_metrics).
+  const probeOut=value&&value.probe==='llm_console_v1_status'
+    ?'llm_console_v1_status':'host_probe_not_emitted';
+  const statusErrorOut=value&&typeof value.status_error==='string'
+    &&/^[a-z0-9_]{1,80}$/.test(value.status_error)?value.status_error:null;
+  const atOut=isoOrNull(value&&value.captured_at);
+  const emptyWithProbe=()=>({...empty,probe:probeOut,
+    status_error:statusErrorOut,captured_at:atOut});
+  if(!value||typeof value!=='object'||value.status!=='observed')return emptyWithProbe();
   if(typeof value.model!=='string'||
-     !/^[A-Za-z0-9][A-Za-z0-9\/_.-]{0,79}:[A-Za-z0-9_.-]{1,40}$/.test(value.model))return empty;
-  if(typeof value.ready!=='boolean')return empty;
+     !/^[A-Za-z0-9][A-Za-z0-9\/_.-]{0,79}:[A-Za-z0-9_.-]{1,40}$/.test(value.model))return emptyWithProbe();
+  if(typeof value.ready!=='boolean')return emptyWithProbe();
   const mem=value.memory&&typeof value.memory==='object'?value.memory:null;
   const memKeys=['current_mb','limit_mb','peak_mb','anon_mb','file_mb',
     'file_mapped_mb','gateway_rss_mb','backend_rss_mb'];
@@ -208,12 +228,17 @@ function cleanIntelligenceMetrics(value){
   const num=(v,max)=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=max?+v.toFixed(3):null;
   const at=isoOrNull(value.captured_at);
   const http=value.status_http;
-  if(http!==null&&http!==undefined&&http!==200)return empty;
+  if(http!==null&&http!==undefined&&http!==200)return emptyWithProbe();
   return {...empty,status:'observed',
     probe:value.probe==='llm_console_v1_status'?'llm_console_v1_status':'host_probe_not_emitted',
     captured_at:at,model:value.model.slice(0,120),ready:value.ready,
     inference_verified:value.inference_verified===true&&
       value.generation_probe==='authenticated_generation',
+    // Carry the probe marker into storage (exact string or null, mirroring
+    // the publisher's #670 validation) so the Verified badge is auditable
+    // after ingest instead of provable only at ingest time.
+    generation_probe:value.generation_probe==='authenticated_generation'
+      ?'authenticated_generation':null,
     source_sha:typeof value.source_sha==='string'&&/^[0-9a-f]{40}$/.test(value.source_sha)
       ?value.source_sha:null,
     repair_state:['healthy','warming','backend_health_check_failed','cooldown',
@@ -224,6 +249,7 @@ function cleanIntelligenceMetrics(value){
     memory,memory_pressure_pct:pressure,
     status_latency_ms:num(value.status_latency_ms,120000),
     status_http:http===200?200:null,
+    status_error:statusErrorOut,
     latency_ms_p50:num(value.latency_ms_p50,600000),
     latency_ms_p95:num(value.latency_ms_p95,600000),
     tokens_per_second:num(value.tokens_per_second,100000),
@@ -256,7 +282,7 @@ function cleanForwardCalls(value){
       ||Date.parse(target)-Date.parse(opened)!==300000
       ||Date.parse(target)<=Date.parse(issued)
       ||Date.parse(issued)>Date.parse(captured)+120000
-      ||Date.parse(captured)-Date.parse(issued)>7*3600000)continue;
+      ||Date.parse(captured)-Date.parse(issued)>6*3600000)continue; // 6h admission matches the window_hours===6 contract and the UI label
    if(typeof x.probability_up!=='number'||typeof x.baseline_up!=='number'
       ||!Number.isFinite(x.probability_up)||!Number.isFinite(x.baseline_up)
       ||x.probability_up<0||x.probability_up>1||x.baseline_up<0||x.baseline_up>1)continue;
@@ -495,6 +521,16 @@ function cleanCollection(value){
     attempted_at:at,coalesced:value.coalesced===true};
 }
 
+function sanitizeReason(reason){
+  // Reduce a malformed reason string to the allowlisted shape so its source
+  // can still be reported (F12); returns null when nothing salvageable
+  // remains. Never used for display beyond the sanitized token itself.
+  if(typeof reason!=='string')return null;
+  const clean=reason.toLowerCase().replace(/[^a-z0-9_]+/g,'_')
+    .replace(/^_+|_+$/g,'').slice(0,80);
+  return clean||null;
+}
+
 function cleanSources(value){
   if(!value||typeof value!=='object')return null;
   const out={};
@@ -502,12 +538,20 @@ function cleanSources(value){
     const entry=value[name];
     if(!entry||typeof entry!=='object')continue;
     if(!SOURCE_STATUSES.includes(entry.status))continue;
-    const reason=entry.reason===null||entry.reason===undefined?null:
-      (typeof entry.reason==='string'&&/^[a-z0-9_]{1,80}$/.test(entry.reason)?entry.reason:null);
-    if(entry.reason!==null&&entry.reason!==undefined&&reason===null)continue;
+    let status=entry.status,reason=null;
+    if(entry.reason!==null&&entry.reason!==undefined){
+      if(typeof entry.reason==='string'&&/^[a-z0-9_]{1,80}$/.test(entry.reason)){
+        reason=entry.reason;
+      }else{
+        // A source with a malformed reason is a failed read, not an unknown
+        // source: keep it in the failure count with a sanitized reason.
+        status='failed_read';
+        reason=sanitizeReason(entry.reason)||'malformed_reason';
+      }
+    }
     const checked=isoOrNull(entry.checked_at);
     const fresh=Number.isSafeInteger(entry.freshness_seconds)&&entry.freshness_seconds>=60&&entry.freshness_seconds<=604800?entry.freshness_seconds:null;
-    out[name]={status:entry.status,reason,checked_at:checked,freshness_seconds:fresh};
+    out[name]={status,reason,checked_at:checked,freshness_seconds:fresh};
   }
   return Object.keys(out).length?out:null;
 }
@@ -563,10 +607,21 @@ function appendAttempt(history,entry){
 function build(payload,identity){
   if(!payload||payload.schema_version!==1||typeof payload!=='object')throw Error('invalid_schema');
   const received=new Date().toISOString(),at=isoOrNull(payload.captured_at);
-  if(!at||Math.abs(Date.now()-Date.parse(at))>86400000)throw Error('invalid_capture_timestamp');
+  if(!at)throw Error('invalid_capture_timestamp');
+  // Reject captures dated in the future beyond a 5-minute clock-skew
+  // allowance: a future-dated receipt would otherwise become "latest" and
+  // block every honestly-dated receipt until its date passes (the stored
+  // receipt is only replaced when the new one is newer). The 24h past
+  // bound is unchanged.
+  const captureAgeMs=Date.now()-Date.parse(at);
+  if(captureAgeMs<-300000||captureAgeMs>86400000)throw Error('invalid_capture_timestamp');
   const h=payload.host||{},db=payload.database||{},d=payload.drive||{};
   const reports=Array.isArray(d.reports)?d.reports.slice(0,12):[];
   const scopeProgress=cleanXmarketScopeProgress(h.xmarket_scope_progress);
+  // Hoisted so cleanIntelligence can derive its inference_verified from the
+  // same probe gate cleanIntelligenceMetrics applies (F13): the field is
+  // true exactly when the metrics say verified.
+  const intelMetrics=cleanIntelligenceMetrics(payload.intelligence_metrics);
   const cleanReports=reports.map(r=>{
     if(!['BTC','ETH','SOL','XRP'].includes(r.asset)||![5,15,60].includes(r.horizon))return null;
     const s=['blocked','fitted','rejected','accepted','unverified','not_recorded','unknown'];
@@ -677,8 +732,8 @@ function build(payload,identity){
       file_metadata_is_not_import_proof:true
     },
     github:cleanGithub(payload.github,identity),
-    intelligence:cleanIntelligence(payload.intelligence,payload.intelligence_host),
-    intelligence_metrics:cleanIntelligenceMetrics(payload.intelligence_metrics),
+    intelligence:cleanIntelligence(payload.intelligence,payload.intelligence_host,intelMetrics.inference_verified),
+    intelligence_metrics:intelMetrics,
     performance:cleanPerformance(payload.performance),
     limitations:['This is a timestamped read-only receipt, not continuously live health','Changed weights do not prove an after-cost edge','Drive report existence does not prove host import or shadow issuance']
   };

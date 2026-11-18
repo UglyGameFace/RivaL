@@ -172,6 +172,46 @@ def test_research_omits_usage_when_backend_reports_none(monkeypatch):
         server.server_close()
 
 
+def test_backend_usage_rejects_malformed_blocks():
+    # F16: the fail-closed property _backend_usage's docstring claims —
+    # only a well-formed usage dict with non-negative integer counts is
+    # accepted — was untested. Wrong types, out-of-range values and
+    # partial blocks must all yield None, never a fabricated rate.
+    backend_usage = SERVICE["_backend_usage"]
+    valid = {"usage": {"prompt_tokens": 180, "completion_tokens": 42,
+                       "total_tokens": 222}}
+    assert backend_usage(valid) == {"prompt_tokens": 180,
+                                    "completion_tokens": 42,
+                                    "total_tokens": 222}
+    assert backend_usage(None) is None
+    assert backend_usage("usage") is None
+    assert backend_usage({}) is None
+    assert backend_usage({"usage": None}) is None
+    assert backend_usage({"usage": "180/42/222"}) is None
+    # Partial blocks: one count missing.
+    for missing in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        partial = {"usage": {"prompt_tokens": 180, "completion_tokens": 42,
+                             "total_tokens": 222}}
+        del partial["usage"][missing]
+        assert backend_usage(partial) is None
+    # Wrong types: strings, floats, bools (bool is not int here), None.
+    for bad in ("180", 180.0, True, None):
+        block = {"usage": {"prompt_tokens": bad, "completion_tokens": 42,
+                           "total_tokens": 222}}
+        assert backend_usage(block) is None
+        block = {"usage": {"prompt_tokens": 180, "completion_tokens": bad,
+                           "total_tokens": 222}}
+        assert backend_usage(block) is None
+    # Out of range: negative counts and absurd values.
+    for bad in (-1, 1_000_001):
+        block = {"usage": {"prompt_tokens": bad, "completion_tokens": 42,
+                           "total_tokens": 222}}
+        assert backend_usage(block) is None
+        block = {"usage": {"prompt_tokens": 180, "completion_tokens": 42,
+                           "total_tokens": bad}}
+        assert backend_usage(block) is None
+
+
 def test_one_authenticated_private_research_request(gateway):
     server, calls = gateway
     status, result = send(server)

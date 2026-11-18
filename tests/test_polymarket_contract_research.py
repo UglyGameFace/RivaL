@@ -359,3 +359,80 @@ async def test_hourly_uma_resolution_is_read_from_settled_price(hot):
         saved = conn.execute("SELECT * FROM rival_polymarket_ai_outcomes").fetchone()
     assert saved["direction"] == "UP"
     await service.aclose()
+
+
+def test_unsettled_dedupes_across_sources_and_keeps_rotation(hot):
+    """_unsettled returns each distinct slug once, least-recently-checked first.
+
+    The same contract sits in ai_calls (twice: an original and a
+    revision), in observations and in contest rounds; the UNION ALL +
+    Python dedupe must return it once, exclude resolved slugs, keep
+    the 20 cap and the checked_at rotation, and stamp resolution
+    attempts for exactly the returned slugs.
+    """
+    import uuid
+
+    prefix = "tu" + uuid.uuid4().hex[:8]
+    dup, done = f"{prefix}-dup", f"{prefix}-done"
+    plain = [f"{prefix}-s{i:02d}" for i in range(25)]
+    with hot.connect() as conn:
+        for table in ("rival_polymarket_ai_calls", "rival_polymarket_ai_outcomes",
+                      "rival_polymarket_observations", "rival_poly_contest_rounds",
+                      "rival_polymarket_resolution_attempts"):
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+    service = PolymarketResearch(hot, ai=None)
+    service.initialize()
+    now = datetime(2026, 11, 18, 5, 0, tzinfo=UTC)
+    base = now - timedelta(hours=2)
+
+    def call_row(slug, expires, sha):
+        return (slug, "BTC", 15, f"cond-{slug}",
+                (expires - timedelta(minutes=15)).isoformat(), expires.isoformat(),
+                (expires - timedelta(minutes=14)).isoformat(),
+                "m", "UP", "t", "r", sha, "{}")
+
+    def obs_row(slug, expires):
+        return (slug, f"cond-{slug}", "BTC", 15, "src", expires.isoformat(),
+                now.isoformat(), "{}", f"sha-{slug}", "{}", None)
+
+    def round_row(slug, expires):
+        return (slug, f"cond-{slug}", "BTC", 15, "k",
+                (expires - timedelta(minutes=15)).isoformat(), expires.isoformat(),
+                (expires - timedelta(minutes=14)).isoformat(), now.isoformat(),
+                0.5, None, None, f"sha-{slug}", "{}")
+
+    with hot.connect() as conn:
+        conn.execute("INSERT INTO rival_polymarket_ai_calls VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     call_row(dup, base, "sha-a"))
+        conn.execute("INSERT INTO rival_polymarket_ai_calls VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     call_row(dup, base, "sha-b"))
+        conn.execute("INSERT INTO rival_polymarket_observations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                     obs_row(dup, base))
+        conn.execute("INSERT INTO rival_poly_contest_rounds VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     round_row(dup, base))
+        conn.execute("INSERT INTO rival_polymarket_observations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                     obs_row(done, base + timedelta(minutes=5)))
+        conn.execute("INSERT INTO rival_polymarket_ai_outcomes VALUES (?,?,?,?,?,?,?)",
+                     (done, f"cond-{done}", "UP", now.isoformat(), now.isoformat(), "sha", "{}"))
+        for i, slug in enumerate(plain):
+            conn.execute("INSERT INTO rival_polymarket_observations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                         obs_row(slug, base + timedelta(minutes=10 + i)))
+        conn.execute("INSERT INTO rival_polymarket_resolution_attempts VALUES (?,?)",
+                     (plain[3], (now - timedelta(hours=1)).isoformat()))
+
+    result = service._unsettled(now)
+    slugs = [row["slug"] for row in result]
+    assert slugs[0] == dup
+    assert slugs.count(dup) == 1
+    assert done not in slugs
+    assert len(slugs) == 20
+    assert slugs[1:4] == plain[0:3]
+    assert slugs[-1] == plain[19]
+    assert plain[3] not in slugs  # checked an hour ago: rotated behind unchecked
+    with hot.connect() as conn:
+        attempts = {row["slug"]: row["checked_at"] for row in conn.execute(
+            "SELECT slug,checked_at FROM rival_polymarket_resolution_attempts").fetchall()}
+    assert attempts[dup] == now.isoformat()
+    assert attempts[plain[0]] == now.isoformat()
+    assert attempts[plain[3]] == (now - timedelta(hours=1)).isoformat()
+    assert done not in attempts

@@ -136,6 +136,11 @@ def test_handled_task_errors_are_not_reported_but_real_crashes_are():
                                           "stacktrace": {"frames": [{"lineno": 1}]}}]}}
     assert observability.before_send(task_error("MarketUnavailable"), {}) is None
     assert observability.before_send(task_error("HTTPStatusError"), {}) is None
+    # RIVAL-24/3N: websocket closes are caught, logged and reconnected by
+    # every consumer; the library's internal close task still leaks them
+    # to the loop handler as asyncio "crashes" with no app frames.
+    assert observability.before_send(task_error("ConnectionClosedError"), {}) is None
+    assert observability.before_send(task_error("ConnectionClosedError", "logging"), {}) is not None
     assert observability.before_send(task_error("KeyError"), {}) is not None
     # The same handled type logged by our own _LOG.exception still reports.
     assert observability.before_send(task_error("HTTPStatusError", "logging"), {}) is not None

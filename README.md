@@ -23,7 +23,7 @@ The primary commands are `/rival`, `/rival-signal`, `/rival-stop`, and the optio
 
 ### Market paths stay separate
 
-- **Crypto perpetuals:** BTC, ETH, SOL, and XRP are configured for read-only five-minute observations across ten venues. Five-, fifteen-, and sixty-minute **forecast horizons** refer to future targets based on completed five-minute candles; a 60-minute forecast is **not** an hourly-candle forecast. A venue or asset with missing current evidence produces WAIT, not invented accuracy.
+- **Crypto perpetuals:** BTC, ETH, SOL, and XRP are configured for read-only five-minute observations across nine venues. Binance is test-only: region-blocked from the live host (HTTP 451), available only as an explicitly injected provider for controlled tests. Five-, fifteen-, and sixty-minute **forecast horizons** refer to future targets based on completed five-minute candles; a 60-minute forecast is **not** an hourly-candle forecast. A venue or asset with missing current evidence produces WAIT, not invented accuracy.
 - **Polymarket:** exact listed Up/Down contracts, public book research, optional experimental contract-specific AI/model calls, and opted-in updating DM tracking. Contract quotes are **prices**, not calibrated win probabilities. Settlement requires the exact condition and an authoritative terminal receipt.
 - **Kalshi:** separate public contract discovery and prospective research. No approved Kalshi-specific model or interchangeable Polymarket signal is assumed.
 - **DraftKings:** sportsbook odds and futures belong under Sports. Independent crypto event-contract research must be labeled separately when a verified native contract or price is unavailable.
@@ -36,7 +36,7 @@ See [local-only Intelligence](docs/RIVAL_INTELLIGENCE_LOCAL_ONLY.md) and [contin
 ### Live collection and mathematical research
 
 - A shared read-only five-minute perpetual collector, with source-specific freshness checks, bounded recovery, and persistent PostgreSQL observations.
-- Ten configured venue identities: **Binance, Bitget, Deribit, dYdX, Gate, Hyperliquid, KuCoin, Lighter, OKX, and Phemex**. A configured adapter is **not** proof that every venue, instrument, or historical period is available.
+- Ten configured venue identities: **Binance, Bitget, Deribit, dYdX, Gate, Hyperliquid, KuCoin, Lighter, OKX, and Phemex**. Nine are live from the host; Binance is configured but test-only (region-blocked, HTTP 451 from Discloud). A configured adapter is **not** proof that every venue, instrument, or historical period is available.
 - Frozen, prospective forecasts and later source-matched settlement. The incumbent learner and independent logistic, Gaussian Naive Bayes, kNN, and screened historical/boosted challenger research use model identity and provenance rather than borrowing another exchange's records.
 - Source-balanced forward probability scoring, calibration and accuracy screens; disagreements or missing/late data remain visible rather than becoming artificial wins.
 - Lightweight [autonomous price/volume spike observations](docs/RIVAL_SPIKE_ANALYTICS.md), with immutable source evidence and future-only *research* outcomes. Spike detections are descriptive, not trade calls.
@@ -47,7 +47,7 @@ For mathematical admission requirements see [source-specific challenger promotio
 
 ### Historical collection: ambitious scope, incomplete proof
 
-The source-exact historical coordinator inventories **10 venues × 4 assets × 16 investigated perpetual data families**. Its investigated families include 1m/5m/15m/1h/4h/1d candles, individual trades, funding, mark/index/premium, open interest, positioning, liquidations, level-2 books, and options/volatility. **Being listed in that inventory does not mean a collector exists or that the source publishes the history.**
+The source-exact historical coordinator inventories **10 venues × 4 assets × 16 investigated perpetual data families**. Its investigated families include 1m/5m/15m/1h/4h/1d candles, individual trades, funding, mark/index/premium, open interest, positioning, liquidations, level-2 books, and options/volatility. **Being listed in that inventory does not mean a collector exists or that the source publishes the history.** The 10-venue count is the historical-research inventory — Binance's official monthly archives are public and unblocked — while live five-minute observations run on nine venues, Binance test-only.
 
 - The target is each instrument's **actual, independently verified listing date through the present**, not a fabricated 2021 start for contracts that listed later.
 - Scheduled GitHub workflows and bounded Discloud recovery acquire source-specific history where supported. The coordinator routes only known source/family combinations and reports missing routes separately.

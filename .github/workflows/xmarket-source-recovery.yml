@@ -212,10 +212,13 @@ jobs:
               out.write("No source-gap checkpoint proves a fitted or profitable model.\n")
           PY
       - name: Verify recovered chronological admission against private original archives
-        # On substantive collector merges, prove the next stage AFTER the
-        # new originals/checkpoint publish. Regular six-hour passes keep
-        # their existing source-only workload. This reader never fits models.
-        if: github.event_name == 'push'
+        # Prove the next stage AFTER the new originals/checkpoint publish on
+        # every credentialed run (push, six-hour schedule, manual dispatch).
+        # Pull requests never get Drive credentials, so they are excluded.
+                # A failed admission fails the source job (exit 3) and blocks the
+                        # research step — fail-closed, the same as on push runs today.
+                                # This reader never fits models.
+        if: github.event_name != 'pull_request'
         shell: bash
         env:
           ASSET: ${{ matrix.asset }}
@@ -227,7 +230,7 @@ jobs:
             --root "data/recorded-private-originals/$ASSET" \
             --out "data/native-reports/recorded-partial-proof-$ASSET.json"
       - name: Upload concise chronological admission verdict only
-        if: always() && github.event_name == 'push'
+        if: always() && github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: xmarket-chronological-proof-${{ matrix.asset }}-${{ github.run_id }}

@@ -89,6 +89,12 @@ EXPECTED_IN_TASKS = frozenset({
     # Every Drive caller catches and logs it (RIVAL-W: each failure arrived
     # twice, once handled via logging and once as an asyncio "crash").
     "DriveArchiveError",
+    # Every websocket consumer (stream_quotes book/liquidity loops,
+    # PolyBolt TWAP) catches WebSocketException, logs the disconnect and
+    # reconnects with backoff; the websockets library's internal close
+    # path still surfaces the ConnectionClosedError to the loop handler
+    # (RIVAL-24/3N: 200+ events, no app frames, feeds unaffected).
+    "ConnectionClosedError",
 })
 
 

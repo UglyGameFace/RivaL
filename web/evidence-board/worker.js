@@ -216,9 +216,11 @@ function maybeSendAlert(alerts){
   const now=Date.now();
   if(alertMemory.level===level&&now-alertMemory.at<3600000)return;
   alertMemory={level,at:now};
+  const stamp=new Date(now).toISOString();
+  const codes=alerts.map(a=>a.code);
   fetch(url,{method:'POST',headers:{'content-type':'application/json'},
-   body:JSON.stringify({service:'rival-evidence-board',level,
-    alerts:alerts.map(a=>a.code),at:new Date(now).toISOString()})}).catch(()=>{});
+   body:JSON.stringify({service:'rival-evidence-board',level,alerts:codes,at:stamp,
+    content:'RivaL Evidence Board '+level.toUpperCase()+': '+codes.join(', ')+' at '+stamp})}).catch(()=>{});
  }catch(_){}
 }
 async function buildReliability(snapshot,diag,probeMarket){

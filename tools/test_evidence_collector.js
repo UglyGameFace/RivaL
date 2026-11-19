@@ -522,6 +522,16 @@ async function main(){
  assert.equal((await throttleRes.json()).send,true,'a record older than the window no longer suppresses');
  throttleRes=await cx.worker.fetch(throttleReq('bad key with spaces'),env);
  assert.equal(throttleRes.status,400,'a malformed key is rejected');
+ // Every throttle decision is recorded in the consult log, readable for
+ // diagnosis: who was told what, when. (The malformed key above must NOT
+ // appear — it was rejected before any decision.)
+ const consultsRes=await cx.worker.fetch(new Request(claims.aud+'/alert-throttle-consults'),env);
+ assert.equal(consultsRes.status,200);
+ const consults=(await consultsRes.json()).consults;
+ assert.ok(Array.isArray(consults)&&consults.length>=4,'decisions are recorded in the consult log');
+ assert.ok(consults.some(c=>c.key===driveIdentity&&c.send===true),'the first-sight send is logged');
+ assert.ok(consults.some(c=>c.key===driveIdentity&&c.send===false),'the suppression is logged');
+ assert.ok(!consults.some(c=>String(c.key).includes('bad key')),'rejected keys are not logged as consults');
  console.log('Evidence collector signed round-trip, redaction and rejection regressions passed');
 }
 main().catch(error=>{console.error(error);process.exitCode=1});

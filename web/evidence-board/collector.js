@@ -745,6 +745,23 @@ export default {
   if(req.method==='GET'&&u.pathname==='/github-snapshot'){const data=await env.EVIDENCE_KV.get('github-snapshot','json');return reply(data||{status:'unavailable',reason:'github_snapshot_not_yet_published'},200,'public,max-age=60');}
   if(req.method==='GET'&&u.pathname==='/training-snapshot'){const data=await env.EVIDENCE_KV.get('training-report-20261112','json');return reply(data||{status:'unavailable'},200,'public,max-age=3600');}
   if(req.method==='GET'&&u.pathname==='/history'){const records=await env.EVIDENCE_KV.get('metrics-series','json');return reply({source:'signed-github-actions',points:Array.isArray(records)?records:[]},200,'public,max-age=60');}
+  // Durable alert dedupe for the board worker: worker isolates are
+  // ephemeral, so the "already sent" record for an alert set cannot live
+  // in the sender. Check-and-set on the alert set's identity: the same
+  // identity may send at most once per hour across all isolates; a changed
+  // identity is a new key and sends immediately. The key is an opaque
+  // bounded token built from a fixed vocabulary (levels, alert codes,
+  // ISO timestamps) — never a secret and never receipt content.
+  if(req.method==='POST'&&u.pathname==='/alert-throttle'){
+    let body;try{body=await req.json()}catch(_){return reply({error:'invalid_key'},400,'no-store')}
+    const key=body&&typeof body.key==='string'?body.key:'';
+    if(!/^[A-Za-z0-9:._@|-]{1,512}$/.test(key))return reply({error:'invalid_key'},400,'no-store');
+    const now=Date.now();
+    const prev=await env.EVIDENCE_KV.get('alert-throttle:'+key,'json');
+    if(prev&&Number.isFinite(prev.at)&&now-prev.at<3600000)return reply({send:false,last_sent_at:new Date(prev.at).toISOString()},200,'no-store');
+    await env.EVIDENCE_KV.put('alert-throttle:'+key,JSON.stringify({at:now}),{expirationTtl:7200});
+    return reply({send:true},200,'no-store');
+  }
   if(req.method==='GET'&&u.pathname==='/latest'){
     const data=await env.EVIDENCE_KV.get('latest','json');
     return reply(data||{status:'not_configured',source:'GitHub-signed collector pending'},200,'public,max-age=45,stale-while-revalidate=60');

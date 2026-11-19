@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { checkBindings, checkSource, EXPECTED } = require('./deploy_evidence_worker.cjs');
+const { checkBindings, checkSource, uploadBindings, EXPECTED } = require('./deploy_evidence_worker.cjs');
 
 const root = path.resolve(__dirname, '..');
 assert.deepEqual(Object.keys(EXPECTED).sort(), ['board', 'collector']);
@@ -46,5 +46,25 @@ assert.throws(() => checkBindings([...board.bindings,
   board.bindings, board.optionalBindings), /bindings differ/);
 assert.throws(() => checkBindings([...board.bindings, ...board.optionalBindings],
   board.bindings), /bindings differ/);
+
+// Upload translation (build aaee7f79, 2026-11-19): the settings API
+// returns the owner's secret without a value, and an upload carrying a
+// text-less secret_text is rejected (HTTP 400 / error 10021) — the exact
+// failure that froze board deploys after the dashboard set the secret.
+// The upload payload must carry the secret as an inherit directive and
+// leave every other binding byte-identical.
+const storedBoard = [...board.bindings, ...board.optionalBindings];
+assert.deepEqual(uploadBindings(storedBoard), [
+  ...board.bindings, { type: 'inherit', name: 'ALERT_WEBHOOK_URL' }],
+  'a stored secret must upload as inherit, everything else unchanged');
+assert.deepEqual(uploadBindings(board.bindings), board.bindings,
+  'with no secret set, the upload payload is the stored bindings verbatim');
+assert.deepEqual(
+  uploadBindings([{ type: 'secret_text', name: 'NEW_SECRET', text: 'v' }]),
+  [{ type: 'secret_text', name: 'NEW_SECRET', text: 'v' }],
+  'a secret carrying a value is an explicit set and passes through');
+assert.deepEqual(uploadBindings(EXPECTED.collector.bindings),
+  EXPECTED.collector.bindings,
+  'the collector payload is untouched by the translation');
 
 console.log('Evidence Worker offline deployment contract tests passed');

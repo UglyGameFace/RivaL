@@ -110,7 +110,7 @@ class GoogleDriveArchiveClient:
                     if isinstance(body, dict) and isinstance(
                         body.get("error_description"), str
                     ):
-                        reason += f": {body['error_description'][:200}"
+                        reason += f": {body['error_description'][:200]}"
                 except ValueError:
                     pass
                 raise DriveArchiveError(

@@ -413,7 +413,7 @@ async def test_drive_session_rejects_out_of_bounds_remote_offset(
 
 @pytest.mark.parametrize(("body", "expected"), (
     ({"error": "invalid_grant", "error_description": "Token has been expired or revoked."},
-     "Google OAuth refresh failed with 400 (invalid_grant)"),
+     "Google OAuth refresh failed with 400 (invalid_grant): Token has been expired or revoked."),
     (None, "Google OAuth refresh failed with 400"),
 ))
 @pytest.mark.asyncio

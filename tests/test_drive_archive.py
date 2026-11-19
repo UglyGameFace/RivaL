@@ -597,7 +597,7 @@ async def test_drive_boundary_failure_names_role_without_exposing_folder_identit
             assert "PRIVATE" not in message
             assert client._boundary_verified is False
     assert seen.count(failed_role) == 2
-    assert "reports" not in seen if failed_role != "reports" else True
+    assert seen == ["root", "history", "manifests", "staging", "models", "reports"][:["root", "history", "manifests", "staging", "models", "reports"].index(failed_role) + 1] * 2
 
 
 @pytest.mark.asyncio

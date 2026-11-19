@@ -276,3 +276,147 @@ def test_load_windows_pairs_snapshots_and_references(tmp_path):
     assert window["kalshi_reference"] == 100_050.0
     assert len(window["pm_snapshots"]) == 1
     assert len(window["kalshi_snapshots"]) == 1
+
+
+def _record_full_window(quotes, *, pm_reference=None, kalshi_reference=None):
+    """One complete ETH window recorded through the real collector.
+
+    PM entry book at +300 (avg ask 0.40) and exit book at +600 (avg bid
+    0.46); two Kalshi books so the entry book at +300 has a measurable
+    age against the different book at +270 (mid 0.48 at entry).
+    """
+    close = OPEN + timedelta(minutes=15)
+    entry_book = {
+        "timestamp": str(int((OPEN + timedelta(seconds=298)).timestamp() * 1000)),
+        "bids": [{"price": "0.39", "size": "20"}],
+        "asks": [{"price": "0.40", "size": "20"}],
+    }
+    assert quotes.record_polymarket(
+        asset="ETH", slug="eth-updown-15m-1", window_open=OPEN,
+        window_close=close, fee_rate=0.01, book=entry_book,
+        received_at=OPEN + timedelta(seconds=300),
+        reference_level=pm_reference)
+    exit_book = {
+        "timestamp": str(int((OPEN + timedelta(seconds=598)).timestamp() * 1000)),
+        "bids": [{"price": "0.46", "size": "20"}],
+        "asks": [{"price": "0.47", "size": "20"}],
+    }
+    assert quotes.record_polymarket(
+        asset="ETH", slug="eth-updown-15m-1", window_open=OPEN,
+        window_close=close, fee_rate=0.01, book=exit_book,
+        received_at=OPEN + timedelta(seconds=600),
+        reference_level=pm_reference)
+    early = {"orderbook_fp": {
+        "yes_dollars": [["0.4000", "20.0"]],
+        "no_dollars": [["0.5800", "20.0"]]}}
+    assert quotes.record_kalshi(
+        asset="ETH", ticker="KXETH15M-1", window_open=OPEN,
+        window_close=close, payload=early,
+        received_at=OPEN + timedelta(seconds=270),
+        reference_level=kalshi_reference)
+    entry = {"orderbook_fp": {
+        "yes_dollars": [["0.4700", "20.0"]],
+        "no_dollars": [["0.5100", "20.0"]]}}
+    assert quotes.record_kalshi(
+        asset="ETH", ticker="KXETH15M-1", window_open=OPEN,
+        window_close=close, payload=entry,
+        received_at=OPEN + timedelta(seconds=300),
+        reference_level=kalshi_reference)
+
+
+def test_load_windows_pairs_from_snapshot_carried_references(tmp_path):
+    store = SQLiteHotStore(tmp_path / "hot.sqlite")
+    quotes = ConvergenceQuotes(store)
+    quotes.initialize()
+    # No evidence tables exist at all: the snapshot-carried levels are
+    # the only reference source, and they pair the window end to end.
+    _record_full_window(quotes, pm_reference=100_000.0,
+                        kalshi_reference=100_050.0)
+    windows = load_windows(store)
+    assert len(windows) == 1
+    assert windows[0]["pm_reference"] == 100_000.0
+    assert windows[0]["kalshi_reference"] == 100_050.0
+    report = evaluate_windows(windows, now=NOW)
+    assert report["coverage"]["exclusions"]["strike_unavailable"] == 0
+    assert report["coverage"]["trigger_windows"] == 1
+
+
+def test_load_windows_snapshot_references_outrank_evidence_joins(tmp_path):
+    store = SQLiteHotStore(tmp_path / "hot.sqlite")
+    quotes = ConvergenceQuotes(store)
+    quotes.initialize()
+    _record_full_window(quotes, pm_reference=100_000.0,
+                        kalshi_reference=100_050.0)
+    with store.connect() as conn:
+        conn.execute(
+            "CREATE TABLE rival_kalshi_updown ("
+            "ticker TEXT PRIMARY KEY, asset TEXT NOT NULL,"
+            " opens_at TEXT NOT NULL, closes_at TEXT NOT NULL,"
+            " open_reference DOUBLE PRECISION, issued_at TEXT NOT NULL)")
+        conn.execute(
+            "INSERT INTO rival_kalshi_updown VALUES (?,?,?,?,?,?)",
+            ("KXETH15M-1", "ETH", OPEN.isoformat(),
+             (OPEN + timedelta(minutes=15)).isoformat(), 101_500.0,
+             OPEN.isoformat()))
+        conn.execute(
+            "CREATE TABLE rival_poly_oracle_observations ("
+            "slug TEXT PRIMARY KEY, evidence_json TEXT NOT NULL)")
+        conn.execute(
+            "INSERT INTO rival_poly_oracle_observations VALUES (?,?)",
+            ("eth-updown-15m-1", '{"price_to_beat": 90000.0}'))
+    # The join values (90,000 vs 101,500) diverge far beyond the frozen
+    # tolerance, as does any mix; only the carried pair (100,000 vs
+    # 100,050) aligns, so a trigger proves both carried levels won.
+    windows = load_windows(store)
+    assert windows[0]["pm_reference"] == 100_000.0
+    assert windows[0]["kalshi_reference"] == 100_050.0
+    report = evaluate_windows(windows, now=NOW)
+    assert report["coverage"]["trigger_windows"] == 1
+
+
+def test_load_windows_pre_repair_rows_stay_strike_unavailable(tmp_path):
+    store = SQLiteHotStore(tmp_path / "hot.sqlite")
+    quotes = ConvergenceQuotes(store)
+    quotes.initialize()
+    # Recorded exactly as the pre-repair collector recorded: no carried
+    # level on any row, and no evidence tables to fall back to. The
+    # window stays honestly excluded -- never retro-filled.
+    _record_full_window(quotes)
+    rows = quotes.snapshots(venue="polymarket", contract_id="eth-updown-15m-1")
+    assert all(row["reference_level"] is None for row in rows)
+    windows = load_windows(store)
+    assert windows[0]["pm_reference"] is None
+    assert windows[0]["kalshi_reference"] is None
+    report = evaluate_windows(windows, now=NOW)
+    assert report["coverage"]["exclusions"]["strike_unavailable"] == 1
+    assert report["coverage"]["trigger_windows"] == 0
+
+
+def test_load_windows_survives_a_pre_repair_schema(tmp_path):
+    # The snapshots table exists but predates the reference_level
+    # column: the loader reads the levels as unavailable, not as an
+    # error.
+    store = SQLiteHotStore(tmp_path / "hot.sqlite")
+    with store.connect() as conn:
+        conn.execute(
+            "CREATE TABLE rival_convergence_book_snapshots ("
+            "venue TEXT NOT NULL, asset TEXT NOT NULL,"
+            " contract_id TEXT NOT NULL, window_open TEXT NOT NULL,"
+            " window_close TEXT NOT NULL, source_at TEXT NOT NULL,"
+            " received_at TEXT NOT NULL, best_bid DOUBLE PRECISION,"
+            " best_ask DOUBLE PRECISION, bid_size DOUBLE PRECISION,"
+            " ask_size DOUBLE PRECISION, avg_bid DOUBLE PRECISION,"
+            " avg_ask DOUBLE PRECISION, fee_rate DOUBLE PRECISION,"
+            " book_sha256 TEXT NOT NULL,"
+            " PRIMARY KEY (venue, contract_id, source_at))")
+        conn.execute(
+            "INSERT INTO rival_convergence_book_snapshots VALUES"
+            " (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("polymarket", "ETH", "eth-updown-15m-1", OPEN.isoformat(),
+             (OPEN + timedelta(minutes=15)).isoformat(),
+             (OPEN + timedelta(seconds=300)).isoformat(),
+             (OPEN + timedelta(seconds=300)).isoformat(),
+             0.39, 0.41, 20.0, 20.0, 0.39, 0.40, 0.01, "sha"))
+    windows = load_windows(store)
+    assert len(windows) == 1
+    assert windows[0]["pm_reference"] is None

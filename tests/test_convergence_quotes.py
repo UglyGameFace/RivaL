@@ -197,3 +197,96 @@ def test_collection_settings_defaults():
     settings = Settings()
     assert settings.rival_convergence_quotes_enabled is True
     assert settings.rival_convergence_quotes_seconds == 30
+
+
+def test_record_polymarket_persists_reference_level(tmp_path):
+    quotes = ConvergenceQuotes(SQLiteHotStore(tmp_path / "conv.sqlite"))
+    assert quotes.record_polymarket(
+        asset="BTC", slug="btc-updown-15m-1", window_open=OPEN,
+        window_close=CLOSE, fee_rate=0.07, book=_clob_book(),
+        received_at=RECEIVED, reference_level=100_000.0)
+    row = quotes.snapshots(venue="polymarket", contract_id="btc-updown-15m-1")[0]
+    assert row["reference_level"] == pytest.approx(100_000.0)
+
+
+def test_record_kalshi_persists_reference_level(tmp_path):
+    quotes = ConvergenceQuotes(SQLiteHotStore(tmp_path / "conv.sqlite"))
+    assert quotes.record_kalshi(
+        asset="BTC", ticker="KXBTC15M-1", window_open=OPEN,
+        window_close=CLOSE, payload=_kalshi_book(), received_at=RECEIVED,
+        reference_level=100_050.0)
+    row = quotes.snapshots(venue="kalshi", contract_id="KXBTC15M-1")[0]
+    assert row["reference_level"] == pytest.approx(100_050.0)
+
+
+def test_reference_level_is_cached_per_contract(tmp_path):
+    quotes = ConvergenceQuotes(SQLiteHotStore(tmp_path / "conv.sqlite"))
+    assert quotes.record_polymarket(
+        asset="BTC", slug="btc-updown-15m-1", window_open=OPEN,
+        window_close=CLOSE, fee_rate=0.07, book=_clob_book(),
+        received_at=RECEIVED, reference_level=100_000.0)
+    # A later snapshot of the same contract whose fetch lost the Gamma
+    # metadata still carries the level the first snapshot resolved --
+    # the reference is static for the life of the market.
+    later = RECEIVED + timedelta(seconds=30)
+    assert quotes.record_polymarket(
+        asset="BTC", slug="btc-updown-15m-1", window_open=OPEN,
+        window_close=CLOSE, fee_rate=0.07,
+        book=_clob_book(stamp=later), received_at=later)
+    rows = quotes.snapshots(venue="polymarket", contract_id="btc-updown-15m-1")
+    assert len(rows) == 2
+    assert rows[1]["reference_level"] == pytest.approx(100_000.0)
+    # A different contract does not inherit it.
+    assert quotes.record_polymarket(
+        asset="BTC", slug="btc-updown-15m-2", window_open=OPEN,
+        window_close=CLOSE, fee_rate=0.07,
+        book=_clob_book(stamp=later), received_at=later)
+    other = quotes.snapshots(venue="polymarket", contract_id="btc-updown-15m-2")
+    assert other[0]["reference_level"] is None
+
+
+@pytest.mark.parametrize("bad", [
+    None, 0.0, -1.0, float("nan"), float("inf"), "100000.0", True,
+])
+def test_unusable_reference_levels_stay_unknown(tmp_path, bad):
+    quotes = ConvergenceQuotes(SQLiteHotStore(tmp_path / "conv.sqlite"))
+    assert quotes.record_polymarket(
+        asset="BTC", slug="s", window_open=OPEN, window_close=CLOSE,
+        fee_rate=0.07, book=_clob_book(), received_at=RECEIVED,
+        reference_level=bad)
+    row = quotes.snapshots(venue="polymarket", contract_id="s")[0]
+    assert row["reference_level"] is None
+
+
+_PRE_REPAIR_SCHEMA = """
+CREATE TABLE rival_convergence_book_snapshots (
+    venue TEXT NOT NULL, asset TEXT NOT NULL, contract_id TEXT NOT NULL,
+    window_open TEXT NOT NULL, window_close TEXT NOT NULL,
+    source_at TEXT NOT NULL, received_at TEXT NOT NULL,
+    best_bid DOUBLE PRECISION, best_ask DOUBLE PRECISION,
+    bid_size DOUBLE PRECISION, ask_size DOUBLE PRECISION,
+    avg_bid DOUBLE PRECISION, avg_ask DOUBLE PRECISION,
+    fee_rate DOUBLE PRECISION, book_sha256 TEXT NOT NULL,
+    PRIMARY KEY (venue, contract_id, source_at)
+);
+"""
+
+
+def test_initialize_adds_reference_level_to_pre_repair_tables(tmp_path):
+    store = SQLiteHotStore(tmp_path / "conv.sqlite")
+    with store.connect() as conn:
+        conn.executescript(_PRE_REPAIR_SCHEMA)
+    quotes = ConvergenceQuotes(store)
+    quotes.initialize()
+    quotes.initialize()  # the extension is idempotent too
+    with store.connect() as conn:
+        present = store.database.column_names(
+            conn, "rival_convergence_book_snapshots")
+    assert "reference_level" in present
+    # And the extended table records references like a fresh one.
+    assert quotes.record_polymarket(
+        asset="BTC", slug="s", window_open=OPEN, window_close=CLOSE,
+        fee_rate=0.07, book=_clob_book(), received_at=RECEIVED,
+        reference_level=100_000.0)
+    row = quotes.snapshots(venue="polymarket", contract_id="s")[0]
+    assert row["reference_level"] == pytest.approx(100_000.0)

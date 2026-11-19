@@ -428,10 +428,21 @@ def _reference_from_evidence(raw) -> float | None:
     return value if math.isfinite(value) and value > 0 else None
 
 
+def _snapshot_reference(value) -> float | None:
+    """A snapshot-carried reference level, or None when not evidence."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    level = float(value)
+    return level if math.isfinite(level) and level > 0 else None
+
+
 def load_windows(store) -> list[dict]:
     """Read snapshots + venue reference levels from the hot store.
 
-    SELECT-only. Reference levels: Kalshi strike from
+    SELECT-only. Reference levels, in preference order: the level each
+    snapshot carried from its own venue fetch (``reference_level`` --
+    Polymarket's price-to-beat from Gamma metadata, Kalshi's
+    ``floor_strike``), then the stored joins -- Kalshi strike from
     ``rival_kalshi_updown.open_reference`` by ticker; Polymarket
     price-to-beat from the evidence JSON of
     ``rival_poly_oracle_observations`` (fallback:
@@ -453,10 +464,19 @@ def load_windows(store) -> list[dict]:
         return found is not None
 
     with store.connect() as conn:
+        # A store the repaired collector has not initialized yet has no
+        # reference_level column: every snapshot then simply carries no
+        # level (unavailable, counted downstream), never a loader error.
+        ref_expr = (
+            "reference_level"
+            if "reference_level" in store.database.column_names(
+                conn, "rival_convergence_book_snapshots")
+            else "NULL AS reference_level")
         rows = conn.execute(
             "SELECT venue, asset, contract_id, window_open, source_at,"
             " received_at, best_bid, best_ask, avg_bid, avg_ask, fee_rate,"
-            " book_sha256 FROM rival_convergence_book_snapshots"
+            f" {ref_expr}, book_sha256"
+            " FROM rival_convergence_book_snapshots"
             " ORDER BY asset, window_open, venue, source_at",
         ).fetchall()
         kalshi_refs: dict[str, float] = {}
@@ -479,6 +499,7 @@ def load_windows(store) -> list[dict]:
                         pm_refs[slug] = value
 
     grouped: dict[tuple[str, str], dict] = {}
+    carried: dict[tuple[str, str], dict[str, float]] = {}
     for row in rows:
         record = dict(row)
         key = (str(record["asset"]), str(record["window_open"]))
@@ -490,14 +511,30 @@ def load_windows(store) -> list[dict]:
         })
         if window["window_open"] is None:
             continue
+        # The reference is static per contract, so the first snapshot of
+        # the window that carries one speaks for the whole window.
+        snapshot_ref = _snapshot_reference(record.get("reference_level"))
         if record["venue"] == "polymarket":
             window["pm_snapshots"].append(record)
+            if snapshot_ref is not None:
+                carried.setdefault(key, {}).setdefault("pm", snapshot_ref)
             ref = pm_refs.get(str(record["contract_id"]))
             if ref is not None:
                 window["pm_reference"] = ref
         elif record["venue"] == "kalshi":
             window["kalshi_snapshots"].append(record)
+            if snapshot_ref is not None:
+                carried.setdefault(key, {}).setdefault(
+                    "kalshi", snapshot_ref)
             ref = kalshi_refs.get(str(record["contract_id"]))
             if ref is not None:
                 window["kalshi_reference"] = ref
+    # Snapshot-carried levels outrank the stored joins: they are the
+    # level the venue itself had resolved when the book was fetched.
+    for key, window in grouped.items():
+        refs = carried.get(key) or {}
+        if refs.get("pm") is not None:
+            window["pm_reference"] = refs["pm"]
+        if refs.get("kalshi") is not None:
+            window["kalshi_reference"] = refs["kalshi"]
     return [w for w in grouped.values() if w["window_open"] is not None]

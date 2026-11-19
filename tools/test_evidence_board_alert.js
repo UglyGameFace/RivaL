@@ -111,6 +111,18 @@ async function main() {
     'collector allows the identity -> the alert POSTs');
   assert.equal(bindingCalls.length, 2, 'an allowed send also records the identity first');
 
+  // The identity is the alert SET, never a timestamp: a source alert's
+  // `since` is its latest failed check and advances on every receipt, so
+  // keying on it would re-send at receipt cadence forever.
+  const identityOf = expr => vm.runInContext(expr, context);
+  const idA = identityOf(`alertIdentity('warning', [{code: 'source_failed:drive', since: '2026-11-19T01:00:00.000Z'}])`);
+  const idB = identityOf(`alertIdentity('warning', [{code: 'source_failed:drive', since: '2026-11-19T02:37:00.000Z'}])`);
+  assert.equal(idA, idB, 'identity must not rotate when only the since timestamp moves');
+  const idC = identityOf(`alertIdentity('warning', [{code: 'source_failed:drive'}, {code: 'source_failed:github'}])`);
+  assert.notEqual(idA, idC, 'a changed alert set must be a new identity');
+  const idD = identityOf(`alertIdentity('critical', [{code: 'source_failed:drive'}])`);
+  assert.notEqual(idA, idD, 'a level change must be a new identity');
+
   console.log('alert webhook body OK (content + structured fields, throttle intact, delivery awaited, durable dedupe consulted)');
 }
 

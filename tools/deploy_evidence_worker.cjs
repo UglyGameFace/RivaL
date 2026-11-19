@@ -28,6 +28,12 @@ const EXPECTED = Object.freeze({
     // require it before it is set, and must accept no other extra binding.
     // A plain-text variable of the same name is NOT accepted: the webhook
     // URL is a credential and is stored as a secret or not at all.
+    // Upload note (proven 2026-11-19, build aaee7f79): the settings API
+    // returns this binding WITHOUT its value, and re-sending it verbatim
+    // in an upload is rejected (HTTP 400, error 10021 'invalid or missing
+    // text property') — every board deploy failed at the PUT from the
+    // dashboard secret deploy (2026-11-18) until uploadBindings() below
+    // translated it to an inherit directive.
     optionalBindings: [
       { type: 'secret_text', name: 'ALERT_WEBHOOK_URL' }
     ]
@@ -64,6 +70,22 @@ function checkBindings(actual, expected, optional = []) {
       'Unrecognized Worker binding configuration; refusing upload');
   }
 }
+/* Bindings as an upload must carry them. The settings API never returns
+   secret values, so a stored secret_text binding arrives text-less; the
+   upload API rejects a text-less secret_text outright (HTTP 400, error
+   10021). The supported carry-forward is an inherit directive naming the
+   binding, which keeps the existing value on the new version — the same
+   mechanism Wrangler uses for dashboard-set secrets. A secret_text that
+   DOES carry a value is an explicit set and passes through untouched, as
+   does every non-secret binding. Checks keep using the stored shape;
+   only the upload payload is translated. */
+function uploadBindings(bindings) {
+  return bindings.map(binding =>
+    binding && binding.type === 'secret_text' && typeof binding.text !== 'string'
+      ? { type: 'inherit', name: binding.name }
+      : binding);
+}
+
 function checkSource(source, target) {
   assert.ok(source.length > (target.module ? 15000 : 160000), 'Worker source unexpectedly truncated');
   if (target.module) {
@@ -125,7 +147,7 @@ async function deploy(targetKey, dryRun) {
   const filename = target.module ? 'collector.js' : 'worker.js';
   const metadata = {
     compatibility_date: EXPECTED_DATE,
-    bindings: settings.bindings,
+    bindings: uploadBindings(settings.bindings),
     [target.module ? 'main_module' : 'body_part']: filename
   };
   const form = new FormData();
@@ -153,4 +175,4 @@ if (require.main === module) {
     process.exitCode = 1;
   });
 }
-module.exports = { checkBindings, checkSource, EXPECTED };
+module.exports = { checkBindings, checkSource, uploadBindings, EXPECTED };

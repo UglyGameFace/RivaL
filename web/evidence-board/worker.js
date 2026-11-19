@@ -255,18 +255,57 @@ function alertIdentity(level,alerts){
    board that never deployed from a board whose consult throws. The
    marker names the build; last_consult is this isolate's most recent
    consult outcome ('not-run' until one settles; read a later poll). */
-const BOARD_BUILD='2026-11-19-dedupe-diag-1';
+const BOARD_BUILD='2026-11-19-dedupe-fallback-1';
 let alertDiag={consult:'not-run',at:null};
-async function alertAlreadySent(identity){
+/* The consult's verdict is tri-state: 'suppressed' / 'allowed' are the
+   collector's definitive answers; 'unknown' means the consult itself
+   failed (no binding, HTTP error, exception) and the caller must decide
+   without it. */
+async function consultAlertThrottle(identity){
  try{
-  if(typeof RIVAL_EVIDENCE_RECEIPTS==='undefined'||!RIVAL_EVIDENCE_RECEIPTS||typeof RIVAL_EVIDENCE_RECEIPTS.fetch!=='function'){alertDiag={consult:'no-binding',at:new Date().toISOString()};return false}
+  if(typeof RIVAL_EVIDENCE_RECEIPTS==='undefined'||!RIVAL_EVIDENCE_RECEIPTS||typeof RIVAL_EVIDENCE_RECEIPTS.fetch!=='function'){alertDiag={consult:'no-binding',at:new Date().toISOString()};return 'unknown'}
   const r=await RIVAL_EVIDENCE_RECEIPTS.fetch('https://rival-evidence-collector.staytrippynlw.workers.dev/alert-throttle',
    {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:identity})});
-  if(!r.ok){alertDiag={consult:'http-'+r.status,at:new Date().toISOString()};return false}
+  if(!r.ok){alertDiag={consult:'http-'+r.status,at:new Date().toISOString()};return 'unknown'}
   const j=await r.json();
   alertDiag={consult:j&&j.send===false?'suppressed':'allowed',at:new Date().toISOString()};
-  return !!(j&&j.send===false);
- }catch(e){alertDiag={consult:'error:'+String(e&&e.message||e).slice(0,80),at:new Date().toISOString()};return false}
+  return j&&j.send===false?'suppressed':'allowed';
+ }catch(e){alertDiag={consult:'error:'+String(e&&e.message||e).slice(0,80),at:new Date().toISOString()};return 'unknown'}
+}
+/* Consult-failure fallback (2026-11-19): failing open on EVERY poll
+   spammed #rival-evidence every ~10 minutes for hours when the
+   collector's KV writes died with the free tier's daily quota — the
+   consult 500'd, no 'already sent' record could ever be written, and
+   each fresh isolate posted again. The fallback remembers
+   fallback-allowed identities in the Cache API, which every isolate in
+   the same Cloudflare colo shares: a repeat of the same identity
+   within the hour is suppressed there. It is per-colo and evictable,
+   so it bounds spam rather than promising the durable layer's global
+   once-per-hour, and it only ever engages while the consult is failing
+   — the first send of an identity still posts immediately. */
+function alertFallbackCache(){
+ try{
+  if(typeof caches!=='undefined'&&caches&&caches.default)return caches.default;
+ }catch(_){}
+ return null;
+}
+async function alertFallbackSuppresses(identity,now){
+ const cache=alertFallbackCache();
+ if(!cache)return false;
+ try{
+  const hit=await cache.match('https://alert-fallback.invalid/'+encodeURIComponent(identity));
+  if(!hit)return false;
+  const j=await hit.json();
+  return !!(j&&Number.isFinite(j.at)&&now-j.at<3600000);
+ }catch(_){return false}
+}
+async function alertFallbackRecord(identity,now){
+ const cache=alertFallbackCache();
+ if(!cache)return;
+ try{
+  await cache.put('https://alert-fallback.invalid/'+encodeURIComponent(identity),
+   new Response(JSON.stringify({at:now}),{headers:{'content-type':'application/json','cache-control':'public, max-age=3600'}}));
+ }catch(_){}
 }
 async function maybeSendAlert(alerts){
  try{
@@ -276,9 +315,19 @@ async function maybeSendAlert(alerts){
   if(!url||typeof fetch!=='function')return;
   const now=Date.now();
   if(alertMemory.level===level&&now-alertMemory.at<3600000)return;
-  if(await alertAlreadySent(alertIdentity(level,alerts))){
+  const identity=alertIdentity(level,alerts);
+  const verdict=await consultAlertThrottle(identity);
+  if(verdict==='suppressed'){
    alertMemory={level,at:now};
    return;
+  }
+  if(verdict==='unknown'){
+   if(await alertFallbackSuppresses(identity,now)){
+    alertDiag={...alertDiag,fallback:'suppressed'};
+    return;
+   }
+   await alertFallbackRecord(identity,now);
+   alertDiag={...alertDiag,fallback:'recorded'};
   }
   alertMemory={level,at:now};
   const stamp=new Date(now).toISOString();

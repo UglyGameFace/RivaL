@@ -105,11 +105,17 @@ async function main() {
     'the throttle call must target the collector alert-throttle route');
   assert.ok(JSON.parse(bindingCalls[0].opts.body).key.includes('durable_gate'),
     'the throttle key must identify the alert set');
+  assert.equal(vm.runInContext('alertDiag.consult', context), 'suppressed',
+    'the denial must be visible in the delivery diagnostics');
   throttleAnswer = {send: true};
   await send([{level: 'critical', code: 'durable_open', since: '2026-11-19T00:05:00.000Z'}]);
   assert.equal(calls.length, beforeDurable + 1,
     'collector allows the identity -> the alert POSTs');
   assert.equal(bindingCalls.length, 2, 'an allowed send also records the identity first');
+  assert.equal(vm.runInContext('alertDiag.consult', context), 'allowed',
+    'the approval must be visible in the delivery diagnostics');
+  assert.equal(vm.runInContext('BOARD_BUILD', context), '2026-11-19-dedupe-diag-1',
+    'the build marker must name this build');
 
   // The identity is the alert SET, never a timestamp: a source alert's
   // `since` is its latest failed check and advances on every receipt, so

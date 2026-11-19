@@ -721,3 +721,94 @@ async def test_step8_receipt_surfaces_okx_source_conflict_evidence(
     assert conflict["comparison"]["price_fields_differ"] is True
     assert conflict["comparison"]["volume_fields_differ"] is True
     assert "private-" not in json.dumps(result)
+
+
+def test_safe_detail_keeps_fixed_reader_strings_and_redacts_ids():
+    fixed = "records original lacks verified SHA-256/size metadata"
+    assert proof._safe_detail(fixed) == fixed
+    with_id = "records original in folder 1ku9cbhkYpAmcNny34L6y-TrpSoCtAnm7 failed"
+    redacted = proof._safe_detail(with_id)
+    assert "1ku9cbhkYpAmcNny34L6y" not in redacted
+    assert "<redacted>" in redacted
+    sha = "a" * 64
+    assert sha not in proof._safe_detail(f"digest {sha} mismatch")
+    assert len(proof._safe_detail("x" * 500)) <= 200
+
+
+def test_bundle_diagnostic_counts_origins_and_identity():
+    bundle = {
+        "_bundle_sha256": "0123456789abcdef" * 4,
+        "day": "2026-11-12",
+        "created_at": "2026-11-13T00:00:00+00:00",
+        "samples": [
+            {"origin": "live"}, {"origin": "live"}, {"origin": "backfill"},
+            {"origin": "mystery"}, {},
+        ],
+    }
+    diag = proof._bundle_diagnostic(bundle)
+    assert diag == {
+        "sha256_16": "0123456789abcdef",
+        "day": "2026-11-12",
+        "backfill_checkpoint": False,
+        "created_at": "2026-11-13T00:00:00+00:00",
+        "samples": 5,
+        "live_samples": 2,
+        "backfill_samples": 1,
+        "other_origin_samples": 2,
+    }
+    journal = {"_bundle_sha256": "f" * 64, "backfill_checkpoint": True, "samples": []}
+    assert proof._bundle_diagnostic(journal)["backfill_checkpoint"] is True
+    assert proof._bundle_diagnostic(journal)["day"] is None
+
+
+@pytest.mark.asyncio
+async def test_recorded_leg_detail_is_published_redacted_venue_details_stay_local(
+    monkeypatch, tmp_path,
+):
+    from parlay_bot.research import archive_training
+
+    class Drive:
+        async def aclose(self):
+            pass
+
+    drive = Drive()
+    monkeypatch.setattr(proof, "Settings", lambda: object())
+    monkeypatch.setattr(proof, "_drive", lambda _: drive)
+
+    async def production_restore(**kwargs):
+        (tmp_path / "complete.manifest.json").write_text("{}")
+        return {
+            "months_requested": kwargs["months"],
+            "restored": {"okx": ["private-id/original-path"]},
+            "excluded": {
+                "recorded-partial-partitions": {
+                    "reason": "ValueError",
+                    "detail": "records original lacks verified SHA-256/size metadata",
+                },
+                "gate": {
+                    "reason": "HistoryImportError",
+                    "detail": "gate detail with folder 1ku9cbhkYpAmcNny34L6y-TrpSoCtAnm7",
+                },
+            },
+        }
+
+    monkeypatch.setattr(archive_training, "restore_verified_months", production_restore)
+    monkeypatch.setattr(proof, "audit_partition", lambda _: {
+        "venue": "okx", "contract": "BTC-USDT-SWAP", "month": "2026-09",
+        "rows": 8640, "full_calendar_month_verified": True,
+    })
+
+    async def admission(*_args, **_kwargs):
+        return {"status": "no_complete_source_and_label_rows",
+                "verified_native_fidelity": {"polymarket": False, "kalshi": False},
+                "horizons": {}}
+
+    monkeypatch.setattr(proof, "verify_xmarket_admission", admission)
+    result = await proof.verify(asset="BTC", root=tmp_path, now=NOW, lookback_days=90,
+                                xmarket_admission=True)
+    details = result["input_restoration"]["excluded_reason_details"]
+    assert details == {
+        "recorded-partial-partitions":
+            "records original lacks verified SHA-256/size metadata",
+    }
+    assert "1ku9cbhkYpAmcNny34L6y" not in json.dumps(result)

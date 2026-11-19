@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -43,6 +44,40 @@ def _source_conflict_receipt(evidence: dict) -> dict:
         "comparison": {
             key: comparison.get(key) for key in _CONFLICT_COMPARISON_FIELDS
         },
+    }
+
+
+# ID/SHA-shaped runs are never receipt-safe; the warehouse reader's own
+# failure strings are fixed literals with no such runs, so redacting the
+# runs keeps those diagnostics intact while upholding the receipt contract
+# (no private IDs, paths or digests beyond the 16-hex name convention).
+_UNSAFE_DETAIL_RUN = re.compile(r"[A-Za-z0-9_-]{24,}")
+
+
+def _safe_detail(detail: object) -> str:
+    """Bounded exclusion detail with ID/SHA-shaped runs redacted."""
+    return _UNSAFE_DETAIL_RUN.sub("<redacted>", str(detail))[:200]
+
+
+def _bundle_diagnostic(bundle: dict) -> dict:
+    """Receipt-safe shape of one verified bundle: identity and origin mix.
+
+    Distinguishes the bot's dated prospective exports (``day`` set) from the
+    collector's backfill chunks and progress journals, and counts samples by
+    origin so a missing live side is attributable to a specific bundle set.
+    """
+    samples = bundle.get("samples") or []
+    live = sum(1 for row in samples if row.get("origin") == "live")
+    backfill = sum(1 for row in samples if row.get("origin") == "backfill")
+    return {
+        "sha256_16": str(bundle.get("_bundle_sha256") or "")[:16],
+        "day": bundle.get("day"),
+        "backfill_checkpoint": bool(bundle.get("backfill_checkpoint")),
+        "created_at": bundle.get("created_at"),
+        "samples": len(samples),
+        "live_samples": live,
+        "backfill_samples": backfill,
+        "other_origin_samples": len(samples) - live - backfill,
     }
 
 
@@ -180,6 +215,7 @@ async def verify_xmarket_admission(drive, *, asset: str, root: Path,
                    if any(r["effective_joined_rows"] > 0 for r in reports.values())
                    else "no_complete_source_and_label_rows"),
         "verified_source_bundles": len(bundles),
+        "bundle_diagnostics": [_bundle_diagnostic(b) for b in bundles],
         "verified_native_fidelity": {
             name: item.get("status") == "verified"
             for name, item in market.get("verification", {}).items()
@@ -301,6 +337,15 @@ async def verify(*, asset: str, root: Path, now: datetime, lookback_days: int,
                 # source names and exception class; keep the raw report local.
                 "excluded_reason_classes": {
                     source: item["reason"] for source, item in restoration["excluded"].items()
+                },
+                # The recorded-partitions leg is the one exception: its
+                # reader raises fixed diagnostic literals, so a redacted
+                # detail names the failure without exposing IDs or paths.
+                "excluded_reason_details": {
+                    source: _safe_detail(item["detail"])
+                    for source, item in restoration["excluded"].items()
+                    if source == "recorded-partial-partitions"
+                    and isinstance(item, dict) and item.get("detail")
                 },
                 # Conflict month/differing fields only; the full evidence
                 # (manifest SHAs, no prices or IDs) stays in the local report.

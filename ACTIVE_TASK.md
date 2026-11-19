@@ -1,6 +1,6 @@
 # RivaL ACTIVE_TASK — canonical current execution plan
 
-Updated 2026-11-19 16:08 EST. This is a short status checkpoint, not a global work lock. Earlier detailed evidence remains in Git history (prior blob 83db098437f104f2bbb5b846ed5cefba909e0cae); verify current main and parallel work each run.
+Updated 2026-11-19 17:41 EST. This is a short status checkpoint, not a global work lock. Earlier detailed evidence remains in Git history (prior blob 83db098437f104f2bbb5b846ed5cefba909e0cae); verify current main and parallel work each run.
 
 ## Objective and governance
 Source-authentic research-only XMarket recovery, immutable prospective scoring, executable paired quotes, after-cost baseline comparisons, safe promotion/demotion/rollback, and truthful Discord delivery. No real-money orders, retrospective forecasts, holdout mining, recurring retraining, lowered thresholds, or fabricated source history. Edge requires >=150 independent forward targets, >=21 days, >=80% matched quote coverage, and robust positive after-cost comparison.
@@ -15,7 +15,7 @@ Source-authentic research-only XMarket recovery, immutable prospective scoring, 
 - Parallel price-first changes affect directional challenger issuance. Respect current main and do not silently re-enable it. Jarvis work is unrelated.
 
 ## Active implementation
-- Draft [PR #712](https://github.com/UglyGameFace/RivaL/pull/712), branch `fix/records-original-integrity-reasons-20261119`: classify exact rejected records-original metadata field without exposing private identifiers, add fail-closed malformed-size handling and parameterized regression tests. CI and authenticated original readback pending. This is diagnostic progress, **not** restored history or proof of publisher root cause. Main remains `f13a4c93` until merge.
+- Draft [PR #712](https://github.com/UglyGameFace/RivaL/pull/712), branch `fix/records-original-integrity-reasons-20261119`: classify exact rejected records-original metadata field without exposing private identifiers, add fail-closed malformed-size handling and parameterized regression tests. CI #44615546070 passed on head `be8b9b8f` (lint, critical regressions, full test job with PostgreSQL service); verified historical research #44615545838 passed. Authenticated original readback remains pending. This is diagnostic progress, **not** restored history or proof of publisher root cause. Main remains `f13a4c93` until merge.
 
 ## Highest-priority actionable repair
 1. Obtain authenticated read-only metadata for **each rejected original**: bounded file identity, declared SHA/size/kind, actual Drive MD5/size, source run and publication provenance. Identify the exact failing field without exposing credentials, folder IDs, or private content.
@@ -26,6 +26,6 @@ Source-authentic research-only XMarket recovery, immutable prospective scoring, 
 Verify fresh Discloud deployed SHA and health, source-specific forward quote matching, fee/slippage/baseline grading, next-target Discord channel delivery, and overdue path settlement. Investigate historical RAM-kill recurrence using fresh host measurements before declaring fixed. Do not confuse Model Lab six-year candidates with XMarket fits.
 
 ## Integration status and next proof
-No source-authentic history repair, fresh eligible-day increase, full current-main CI, live Discloud SHA parity, or model promotion was established at this checkpoint. Draft PR #712 is open with validation pending. Preserve other branches and independent changes. Next proof is authenticated original-file metadata and publication lineage, followed by an evidence-backed cohesive repair; keep relevant issues open until production acceptance.
+No source-authentic history repair, fresh eligible-day increase, full current-main CI, live Discloud SHA parity, or model promotion was established at this checkpoint. Draft PR #712 is open with CI passing but original-file readback and live parity pending. Preserve other branches and independent changes. Next proof is authenticated original-file metadata and publication lineage, followed by an evidence-backed cohesive repair; keep relevant issues open until production acceptance.
 
 At every run: reread this file and current main/PRs/CI/host/source artifacts; recover existing work, implement and test a meaningful repair, integrate only with authorization, verify live outcome, safely reconcile fixed issues/obsolete branches, and update this document in place. Git history retains earlier detailed receipts.

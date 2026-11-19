@@ -196,7 +196,7 @@ class GoogleDriveArchiveClient:
 
             headers = await self._headers()
 
-            async def folder_metadata(folder_id: str) -> dict[str, Any]:
+            async def folder_metadata(folder_id: str, role: str) -> dict[str, Any]:
                 response = await self._client.get(
                     f"{self.DRIVE_URL}/files/{folder_id}",
                     params={"fields": "id,name,mimeType,parents,trashed"},
@@ -204,43 +204,43 @@ class GoogleDriveArchiveClient:
                 )
                 if response.status_code >= 400:
                     raise DriveArchiveError(
-                        f"Google Drive folder verification failed with {response.status_code}"
+                        f"Google Drive folder verification failed for {role} with {response.status_code}"
                     )
                 payload = response.json()
                 if not isinstance(payload, dict):
                     raise DriveArchiveError(
-                        "Google Drive folder verification returned invalid metadata"
+                        f"Google Drive {role} folder verification returned invalid metadata"
                     )
                 if payload.get("trashed") is True:
-                    raise DriveArchiveError("Configured RivaL Drive folder is trashed")
+                    raise DriveArchiveError(f"Configured RivaL Drive {role} folder is trashed")
                 if payload.get("mimeType") != "application/vnd.google-apps.folder":
                     raise DriveArchiveError(
-                        "Configured RivaL Drive boundary ID is not a folder"
+                        f"Configured RivaL Drive {role} boundary ID is not a folder"
                     )
                 if str(payload.get("id") or "") != folder_id:
                     raise DriveArchiveError(
-                        "Google Drive folder verification returned unexpected identity"
+                        f"Google Drive {role} folder verification returned unexpected identity"
                     )
                 return payload
 
-            root = await folder_metadata(self.folders.root)
+            root = await folder_metadata(self.folders.root, "root")
             root_parents = root.get("parents") or []
             if not isinstance(root_parents, list):
                 raise DriveArchiveError("RivaL Drive root returned invalid parent metadata")
 
-            for child_id in (
-                self.folders.history,
-                self.folders.manifests,
-                self.folders.staging,
-                *(v for v in (self.folders.models, self.folders.reports) if v),
+            for role, child_id in (
+                ("history", self.folders.history),
+                ("manifests", self.folders.manifests),
+                ("staging", self.folders.staging),
+                *((role, value) for role, value in (("models", self.folders.models), ("reports", self.folders.reports)) if value),
             ):
-                child = await folder_metadata(child_id)
+                child = await folder_metadata(child_id, role)
                 parents = child.get("parents") or []
                 if not isinstance(parents, list) or self.folders.root not in {
                     str(item) for item in parents
                 }:
                     raise DriveArchiveError(
-                        "Configured archive folder is outside the RivaL Data Warehouse root"
+                        f"Configured {role} archive folder is outside the RivaL Data Warehouse root"
                     )
 
             self._boundary_verified = True

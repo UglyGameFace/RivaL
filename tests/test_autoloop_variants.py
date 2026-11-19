@@ -754,25 +754,25 @@ async def test_async_tick_opens_scheduled_variant(tmp_path):
     store = _store(tmp_path)
     try:
         drive = _FakeDrive()
-        out = await drive_research_loop_tick(store, drive=drive, now=NOW)
+        out = await drive_research_loop_tick(store, drive=drive, now=NOW, scheduled_variants_enabled=True)
         assert out["status"] == "opened", out
         assert out["variant_id"] == "archive-premium-off"
         # One action per tick: the next tick advances the open variant
         # instead of opening another.
-        out = await drive_research_loop_tick(store, drive=drive, now=NOW)
+        out = await drive_research_loop_tick(store, drive=drive, now=NOW, scheduled_variants_enabled=True)
         assert out["status"] == "advanced", out
         assert out["to"] == "ablating"
-        out = await drive_research_loop_tick(store, drive=drive, now=NOW)
+        out = await drive_research_loop_tick(store, drive=drive, now=NOW, scheduled_variants_enabled=True)
         assert out["status"] == "submitted", out
         # Nothing to advance (no trial report yet): the tick opens the
         # next grid entry.
-        out = await drive_research_loop_tick(store, drive=drive, now=NOW)
+        out = await drive_research_loop_tick(store, drive=drive, now=NOW, scheduled_variants_enabled=True)
         assert out["status"] == "opened", out
         assert out["variant_id"] == "gbm-trees-150"
         # Weekly cap spent: later ticks open nothing.
-        await drive_research_loop_tick(store, drive=drive, now=NOW)
-        await drive_research_loop_tick(store, drive=drive, now=NOW)
-        out = await drive_research_loop_tick(store, drive=drive, now=NOW)
+        await drive_research_loop_tick(store, drive=drive, now=NOW, scheduled_variants_enabled=True)
+        await drive_research_loop_tick(store, drive=drive, now=NOW, scheduled_variants_enabled=True)
+        out = await drive_research_loop_tick(store, drive=drive, now=NOW, scheduled_variants_enabled=True)
         assert out["status"] == "nothing_to_advance", out
     finally:
         store.close()
@@ -791,10 +791,10 @@ async def test_weekly_archive_job_resolves_the_requested_attempt(tmp_path, monke
     monkeypatch.setattr(weekly_archive, "_drive", lambda _: drive)
     store = _store(tmp_path)
     try:
-        first = await drive_research_loop_tick(store, drive=drive, now=NOW)
+        first = await drive_research_loop_tick(store, drive=drive, now=NOW, scheduled_variants_enabled=True)
         exp_id = first["opened"]
-        assert (await drive_research_loop_tick(store, drive=drive, now=NOW))["to"] == "ablating"
-        assert (await drive_research_loop_tick(store, drive=drive, now=NOW))["status"] == "submitted"
+        assert (await drive_research_loop_tick(store, drive=drive, now=NOW, scheduled_variants_enabled=True))["to"] == "ablating"
+        assert (await drive_research_loop_tick(store, drive=drive, now=NOW, scheduled_variants_enabled=True))["status"] == "submitted"
 
         train_end, test_start, trained_through = _splits()
         frames = _frames() if has_history else {}
@@ -811,16 +811,16 @@ async def test_weekly_archive_job_resolves_the_requested_attempt(tmp_path, monke
 
         store.close()
         store = _store(tmp_path)
-        outcome = await drive_research_loop_tick(store, drive=drive, now=NOW)
+        outcome = await drive_research_loop_tick(store, drive=drive, now=NOW, scheduled_variants_enabled=True)
         if not has_history:
             assert outcome["to"] == "discarded"
-            await drive_research_loop_tick(store, drive=drive, now=NOW)
+            await drive_research_loop_tick(store, drive=drive, now=NOW, scheduled_variants_enabled=True)
             findings = list_findings(store, exp_id)
             assert len(findings) == 1 and "blocked" in findings[0]["summary"]
             return
 
         assert outcome["to"] == "screened"
-        assert (await drive_research_loop_tick(store, drive=drive, now=NOW))["to"] == "shadow"
+        assert (await drive_research_loop_tick(store, drive=drive, now=NOW, scheduled_variants_enabled=True))["to"] == "shadow"
         assert "gbm-v1-BTC-5m-model.json" in drive.files["model"]
         file_name = f"scheduled-result-{exp_id}.json"
         artifact = drive.files["model"][file_name]

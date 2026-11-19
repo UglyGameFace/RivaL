@@ -465,14 +465,17 @@ def test_kill_switches_independent_in_cycle(tmp_path, monkeypatch):
     """Flag on: the cycle issues live rows for both families. Each flag off
     stops only its own family, while the other family and the incumbent
     keep running."""
-    assert forward_audit.ISSUE_REGIME_LIVE_V1_CHALLENGERS is True
-    assert forward_audit.ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS is True
+    assert forward_audit.ISSUE_REGIME_LIVE_V1_CHALLENGERS is False  # pivot stop
+    assert forward_audit.ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS is False  # pivot stop
     now = datetime.now(UTC)
     store = SQLiteHotStore(tmp_path / "live-cycle.sqlite")
     market = PerpetualMarketStore(store)
     monitor = ForwardAccuracyMonitor(market)
     try:
         _seed_shape_candles(market, now=now, shape="trend")
+        # The competition funnel is gated off too since the pivot; open it
+        # so this test isolates the family kill switches.
+        monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", True)
         monkeypatch.setattr(forward_audit, "ISSUE_REGIME_LIVE_V1_CHALLENGERS", True)
         monkeypatch.setattr(forward_audit, "ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS", True)
         monitor.run_once(now=now)
@@ -575,8 +578,8 @@ def test_live_call_exception_never_blocks_incumbent(tmp_path, monkeypatch):
 def test_offline_regime_v2_retired():
     """Kill switch off and no longer in the weekly training loop."""
     assert forward_audit.ISSUE_REGIME_V2_CHALLENGERS is False
-    assert forward_audit.ISSUE_REGIME_LIVE_V1_CHALLENGERS is True
-    assert forward_audit.ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS is True
+    assert forward_audit.ISSUE_REGIME_LIVE_V1_CHALLENGERS is False  # pivot stop
+    assert forward_audit.ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS is False  # pivot stop
     from parlay_bot.research import weekly_archive
 
     assert not hasattr(weekly_archive, "regime2_training")

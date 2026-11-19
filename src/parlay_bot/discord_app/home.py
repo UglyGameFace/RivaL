@@ -882,8 +882,9 @@ def _best_sections(reports: dict) -> tuple[str | None, str | None]:
             h, top = max(tops, key=lambda t: t[1]["fitness"])
             lead = (f" Leading so far (all coins): **{trial_board.short_name(top['family'])}** "
                     f"on {h}-min (early, not proven).")
-        lab_text = (f"🧬 Model Lab: {testing} designs testing, {closed} closed so far, "
-                    f"each loser replaced automatically.{lead}\n{footnote}")
+        lab_text = (f"🧬 Model Lab: {testing} designs testing, {closed} closed so far; "
+                    f"new designs are paused, so open designs only finish and "
+                    f"close.{lead}\n{footnote}")
         return ("\n".join(leaders) if leaders else None), lab_text
     return ("\n".join(leaders + [footnote]) if leaders else None), None
 

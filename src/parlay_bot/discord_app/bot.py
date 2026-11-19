@@ -2507,11 +2507,18 @@ class RivalDiscordClient(discord.Client):
         if getattr(market, "model_lab", None) is None:
             from parlay_bot.perpetuals.model_lab import ModelLab
 
-            market.model_lab = ModelLab(self.store)
+            market.model_lab = ModelLab(
+                self.store,
+                refill_enabled=self.settings.rival_lab_refill_enabled,
+            )
         return market.model_lab
 
     async def _model_lab_loop(self) -> None:
-        """Score, close and refill the Model Lab's designs every 30 minutes."""
+        """Score and close the Model Lab's designs every 30 minutes.
+
+        Refill (opening replacement designs) happens only when
+        rival_lab_refill_enabled is on; it is off since the price-first
+        pivot, so the lab's roster only shrinks."""
         from parlay_bot.perpetuals.model_lab import REVIEW_EVERY
 
         await self.wait_until_ready()
@@ -3329,6 +3336,8 @@ class RivalDiscordClient(discord.Client):
                 result = await drive_research_loop_tick(
                     self.store, drive=self.research_loop_drive,
                     memory_pressure=host_memory.snapshot().pressure,
+                    scheduled_variants_enabled=(
+                        self.settings.rival_scheduled_variants_enabled),
                 )
                 if result.get("status") == "advanced":
                     _LOG.info(

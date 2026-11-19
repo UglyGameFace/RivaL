@@ -311,7 +311,7 @@ def test_regime_calls_reuses_incumbent_probability():
 def test_regime_prefix_accepted_everywhere_it_must_be():
     assert "regime_" in CHALLENGER_PREFIXES
     assert FAMILY.startswith(CHALLENGER_PREFIXES)
-    assert forward_audit.ISSUE_REGIME_V1_CHALLENGERS is True
+    assert forward_audit.ISSUE_REGIME_V1_CHALLENGERS is False  # pivot stop
 
 
 # --- issue() / settle() ------------------------------------------------------
@@ -421,13 +421,16 @@ def test_kill_switch_stops_regime_issuance_in_cycle(tmp_path, monkeypatch):
     forecasts; with the flag off -- its kill-switch state -- the same cycle
     issues nothing new for regime_v1, while the incumbent cycle still runs.
     """
-    assert forward_audit.ISSUE_REGIME_V1_CHALLENGERS is True
+    assert forward_audit.ISSUE_REGIME_V1_CHALLENGERS is False  # pivot stop
     now = datetime.now(UTC)
     store = SQLiteHotStore(tmp_path / "regime-cycle.sqlite")
     market = PerpetualMarketStore(store)
     monitor = ForwardAccuracyMonitor(market)
     try:
         _seed_shape_candles(market, now=now, shape="trend")
+        # The competition funnel is gated off too since the pivot; open it
+        # so this test isolates the family kill switch.
+        monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", True)
         monkeypatch.setattr(forward_audit, "ISSUE_REGIME_V1_CHALLENGERS", True)
         monitor.run_once(now=now)
         shadow_on, incumbent_on = _cycle_counts(store)

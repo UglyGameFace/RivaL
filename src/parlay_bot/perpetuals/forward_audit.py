@@ -81,6 +81,13 @@ HORIZONS = RESEARCH_HORIZONS
 MIN_PREVIOUS_EVALUATED = 20
 MAX_STREAMS_PER_CYCLE = 40
 MAX_PENDING_SETTLEMENTS = 120
+# Price-first pivot stop (2026-11-19, Felix's decision): every directional
+# trial family's issuance switch in this block is OFF, and the calibrated,
+# pooled and competition paths further below are gated off the same way.
+# No new directional trial forecasts are issued. Settlement and grading of
+# already-issued rows are never gated and keep running; the live per-stream
+# logistic (MODEL) is not a trial family and is untouched. Re-enabling any
+# family is a new decision, not a default.
 # flow_v1/flow_v2 are retired: over 7 days of graded outcomes (to Nov 5, 2026)
 # they lost to every venue's up-rate at every horizon (60m: -0.047/-0.054
 # Brier) and their ~78%-UP calls came true 33-44% of the time. A calibrated,
@@ -97,7 +104,7 @@ ISSUE_FLOW_V3_CHALLENGERS = False
 # artifact is imported; it never serves until Route B promotes it.
 # Kill switch for issuance; serving is gated separately by promotion.
 # Existing rows keep settling either way.
-ISSUE_ARCHIVE_V1_CHALLENGERS = True
+ISSUE_ARCHIVE_V1_CHALLENGERS = False
 # liq_v1 shadow issuance (Phase 3, spec §2.10.2): the live liquidity
 # challenger issues shadow forecasts from the buckets being recorded
 # right now; it never serves until Route B promotes it (and cannot
@@ -119,14 +126,14 @@ ISSUE_LIQ_V1_CHALLENGERS = False
 # it. Kill switch for issuance; serving is gated separately by
 # promotion. Existing rows keep settling either way. It shares the
 # archive vector (same 32-feature contract, same restored bytes).
-ISSUE_GBM_V1_CHALLENGERS = True
+ISSUE_GBM_V1_CHALLENGERS = False
 # regime_v1 shadow issuance (spec rival-regime-gated-spec-20261107, D6):
 # the regime-gated challenger issues the incumbent's own call as a shadow
 # forecast only on trending cycles (ER > 0.30 over 20 closed bars); it
 # never serves until Route B promotes it. Kill switch for issuance;
 # serving is gated separately by promotion. Existing rows keep settling
 # either way.
-ISSUE_REGIME_V1_CHALLENGERS = True
+ISSUE_REGIME_V1_CHALLENGERS = False
 # regime_wild_v1 shadow issuance (audit Step 5, 2026-11-10): the
 # wild-only challenger issues the incumbent's own call as a shadow
 # forecast only when the market-condition stamp recorded at issuance
@@ -135,7 +142,7 @@ ISSUE_REGIME_V1_CHALLENGERS = True
 # it. Kill switch for issuance; serving is gated separately by
 # promotion. Existing rows keep settling either way. The family starts
 # with no track record and proves nothing until 150 targets + 21 days.
-ISSUE_REGIME_WILD_V1_CHALLENGERS = True
+ISSUE_REGIME_WILD_V1_CHALLENGERS = False
 # regime_v2 shadow issuance (spec rival-regime-v2-spec-20261108, D6):
 # the trending-subset trained logistic issues shadow forecasts only on
 # trending cycles (same frozen gate) AND only when a pinned artifact is
@@ -154,8 +161,8 @@ ISSUE_REGIME_V2_CHALLENGERS = False
 # incumbent 10 + vol/compression/volume/DC-leg features, rebuilt
 # RivaL-native from Obi-Stoned Kenobi's perp-engine ideas (his DM
 # permission, 2026-11-11); no weights or code copied from their engine.
-ISSUE_VOLCAL_V1_CHALLENGERS = True
-ISSUE_XMARKET_V1_CHALLENGERS = True
+ISSUE_VOLCAL_V1_CHALLENGERS = False
+ISSUE_XMARKET_V1_CHALLENGERS = False
 # regime live-learning shadow issuance (spec
 # rival-regime-live-learning-spec-20261108, D8): each live family issues
 # its own learner's call as a shadow forecast only on trending cycles
@@ -163,8 +170,8 @@ ISSUE_XMARKET_V1_CHALLENGERS = True
 # switch per family (default True); serving is gated separately by
 # promotion. Existing rows keep settling either way. Regime_v1 keeps
 # issuing as the control.
-ISSUE_REGIME_LIVE_V1_CHALLENGERS = True
-ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS = True
+ISSUE_REGIME_LIVE_V1_CHALLENGERS = False
+ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS = False
 # Cross-exchange shadow issuance (cross_model.py, 2026-11-10): cross_v1 is
 # one learner per coin and horizon that reads every exchange at once;
 # cross_all_v1 shares one learner per horizon across coins. Both issue the
@@ -172,7 +179,7 @@ ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS = True
 # once a learner has a day of graded lessons, and never serve until Route B
 # promotes them. One kill switch for issuance and learning of both;
 # existing rows keep settling either way.
-ISSUE_CROSS_V1_CHALLENGERS = True
+ISSUE_CROSS_V1_CHALLENGERS = False
 # The Model Lab (model_lab.py, 2026-11-11): RivaL's own search for better
 # models. Up to SLOTS_PER_HORIZON live-learning designs per timeframe; a
 # closed design is replaced by one the lab has never tried. Test-only like
@@ -193,7 +200,22 @@ _GRADED_SETTLE_SQL = """UPDATE perp_forward_audit
        WHERE venue=? AND contract=? AND quote=?
          AND horizon_minutes=? AND model_version=?
          AND reference_opened_at=? AND settled_at IS NULL"""
-ISSUE_LAB_CHALLENGERS = True
+ISSUE_LAB_CHALLENGERS = False
+# Calibrated incumbent shadow issuance (calibrated_challenger.py): the
+# Platt-refit clone of the incumbent issues beside the live model on its
+# own rows. Kill switch for issuance only; the refit keeps running and
+# existing rows keep settling either way.
+ISSUE_CALIBRATED_CHALLENGERS = False
+# Pooled multi-year ("6-year") shadow issuance: _pooled_calls rows enter
+# the same competition ledger as every other challenger family. Kill
+# switch for issuance only; existing rows keep settling either way.
+ISSUE_POOLED_CHALLENGERS = False
+# Shadow-model competition issuance (model_competition.py): the NB/kNN
+# pattern families plus the imported boosted/historical artifact
+# candidates all enter through ShadowModelCompetition.issue(). Kill
+# switch for that call (and its prepare()) only; competition settlement
+# keeps grading existing rows either way.
+ISSUE_COMPETITION_CHALLENGERS = False
 
 # The per-cycle fast pass grades recent targets; the hourly full pass (same
 # place) still grades anything older. 3 days made every batch walk ~19k
@@ -1602,11 +1624,14 @@ class ForwardAccuracyMonitor:
                         metrics["lab_issued"] += len(lab_items)
                     # Shadow-model fitting is CPU work on inputs already
                     # fixed at issuance: do it before the transaction opens.
-                    try:
-                        shadow_prepared = ShadowModelCompetition.prepare(
-                            samples, features, now=stamp, stopped=stream_stops or frozenset())
-                    except Exception:  # noqa: BLE001 - optional challenger
-                        shadow_prepared = None  # issue() recomputes and isolates it
+                    # Skipped entirely while competition issuance is off.
+                    shadow_prepared = None
+                    if ISSUE_COMPETITION_CHALLENGERS:
+                        try:
+                            shadow_prepared = ShadowModelCompetition.prepare(
+                                samples, features, now=stamp, stopped=stream_stops or frozenset())
+                        except Exception:  # noqa: BLE001 - optional challenger
+                            shadow_prepared = None  # issue() recomputes and isolates it
                     # Path priors likewise: CPU work, before the transaction,
                     # with each reference bar's samples carried across cycles.
                     path_options = None
@@ -1686,24 +1711,28 @@ class ForwardAccuracyMonitor:
                                         reference_opened_at=utc(last.opened_at),
                                         issued_at=issued_at, features=features,
                                         flow=flow_inputs[flow.family][asset])))
-                                calib_call = calib.call(asset=asset, horizon=horizon,
-                                                        incumbent_up=probability,
-                                                        baseline_up=baseline)
+                                calib_call = (calib.call(
+                                    asset=asset, horizon=horizon,
+                                    incumbent_up=probability,
+                                    baseline_up=baseline)
+                                    if ISSUE_CALIBRATED_CHALLENGERS else None)
                                 if calib_call is not None:
                                     flow_calls = (*flow_calls, calib_call)
-                                ShadowModelCompetition(self.store).issue(
-                                    conn, samples=samples, features=features,
-                                    now=stamp, venue=venue, contract=contract, quote=quote,
-                                    asset=asset, horizon=horizon,
-                                    reference_opened_at=last.opened_at,
-                                    target_opened_at=target_open, issued_at=issued_at,
-                                    incumbent_up=probability, baseline_up=baseline,
-                                    boosters=boosters,
-                                    historical_candidates=historical_shadows,
-                                    pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
-                                    challengers=(*flow_calls, *archive_items, *gbm_items, *volcal_items, *xmarket_items, *regime_items, *wild_items, *regime2_items, *regime_live_items, *regime_live_fast_items, *lab_items),
-                                    prepared=shadow_prepared, stopped=stream_stops,
-                                )
+                                if ISSUE_COMPETITION_CHALLENGERS:
+                                    ShadowModelCompetition(self.store).issue(
+                                        conn, samples=samples, features=features,
+                                        now=stamp, venue=venue, contract=contract, quote=quote,
+                                        asset=asset, horizon=horizon,
+                                        reference_opened_at=last.opened_at,
+                                        target_opened_at=target_open, issued_at=issued_at,
+                                        incumbent_up=probability, baseline_up=baseline,
+                                        boosters=boosters,
+                                        historical_candidates=historical_shadows,
+                                        pooled=(self._pooled_calls(pooled_set, horizon, pooled_vector)
+                                                if ISSUE_POOLED_CHALLENGERS else ()),
+                                        challengers=(*flow_calls, *archive_items, *gbm_items, *volcal_items, *xmarket_items, *regime_items, *wild_items, *regime2_items, *regime_live_items, *regime_live_fast_items, *lab_items),
+                                        prepared=shadow_prepared, stopped=stream_stops,
+                                    )
                             except Exception:  # noqa: BLE001 - optional challenger
                                 conn.execute("ROLLBACK TO SAVEPOINT rival_shadow_prediction")
                                 _LOG.exception("RivaL shadow model failed; incumbent preserved")

@@ -105,7 +105,7 @@ def test_wild_prefix_accepted_everywhere_it_must_be():
     assert "regime_" in CHALLENGER_PREFIXES
     assert FAMILY.startswith(CHALLENGER_PREFIXES)
     assert FAMILY == "regime_wild_v1"
-    assert forward_audit.ISSUE_REGIME_WILD_V1_CHALLENGERS is True
+    assert forward_audit.ISSUE_REGIME_WILD_V1_CHALLENGERS is False  # pivot stop
 
 
 # --- issue() / settle() ------------------------------------------------------
@@ -252,13 +252,16 @@ def test_kill_switch_stops_wild_issuance_in_cycle(tmp_path, monkeypatch):
     cycle issues nothing new for regime_wild_v1, while the incumbent
     cycle still runs.
     """
-    assert forward_audit.ISSUE_REGIME_WILD_V1_CHALLENGERS is True
+    assert forward_audit.ISSUE_REGIME_WILD_V1_CHALLENGERS is False  # pivot stop
     now = datetime.now(UTC)
     store = SQLiteHotStore(tmp_path / "wild-cycle.sqlite")
     market = PerpetualMarketStore(store)
     monitor = ForwardAccuracyMonitor(market)
     try:
         _seed_shape_candles(market, now=now, shape="wild")
+        # The competition funnel is gated off too since the pivot; open it
+        # so this test isolates the family kill switch.
+        monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", True)
         monkeypatch.setattr(forward_audit, "ISSUE_REGIME_WILD_V1_CHALLENGERS", True)
         monitor.run_once(now=now)
         shadow_on, incumbent_on = _cycle_counts(store)

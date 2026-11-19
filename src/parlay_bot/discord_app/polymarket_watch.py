@@ -368,6 +368,29 @@ class PolymarketReader:
         return event
 
     @staticmethod
+    def _event_price_to_beat(event: dict) -> float | None:
+        """Gamma's published price-to-beat for an event, or None.
+
+        The value lives at event level (``eventMetadata.priceToBeat``),
+        never on the market object. Gamma publishes it only AFTER the
+        window closes -- measured live 2026-11-19 on 5m and 15m BTC
+        windows: the ``eventMetadata`` key was absent at every in-window
+        poll and first appeared ~20-140s after close (alongside a
+        ``context_requires_regen`` marker). Live reads of the current
+        window therefore never carry it; see published_price_to_beat.
+        """
+        if not isinstance(event, dict):
+            return None
+        metadata = event.get("eventMetadata")
+        if not isinstance(metadata, dict):
+            return None
+        try:
+            candidate = float(metadata.get("priceToBeat"))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return candidate if math.isfinite(candidate) and candidate > 0 else None
+
+    @staticmethod
     def _window(event: dict, *, asset: str, horizon: int,
                 start: datetime, now: datetime) -> PolymarketListedWindow:
         slug = market_slug(asset, horizon, start)
@@ -412,14 +435,8 @@ class PolymarketReader:
             and start <= now < closes
         )
         target = None
-        metadata = event.get("eventMetadata")
-        if start <= now < closes and isinstance(metadata, dict):
-            try:
-                candidate = float(metadata.get("priceToBeat"))
-                if math.isfinite(candidate) and candidate > 0:
-                    target = candidate
-            except (TypeError, ValueError, OverflowError):
-                pass
+        if start <= now < closes:
+            target = PolymarketReader._event_price_to_beat(event)
         return PolymarketListedWindow(
             asset=asset, horizon=horizon, slug=slug, opens=opens, closes=closes,
             accepting_orders=active, price_to_beat=target,
@@ -456,6 +473,34 @@ class PolymarketReader:
                 asset, horizon, self._reason(exc),
             )
             return None
+
+    async def published_price_to_beat(self, slug: str) -> float | None:
+        """The price-to-beat Gamma has published for a closed window.
+
+        Gamma publishes ``eventMetadata.priceToBeat`` only after the
+        window closes (see _event_price_to_beat), so no live read --
+        active(), market(), window_board() -- can ever carry it: those
+        paths only read the current window, whose payload has no such
+        key yet. The convergence collector resolves a just-closed
+        contract's reference through this dedicated fetch instead. The
+        event identity is verified against the requested slug and the
+        value is Polymarket's own published figure for that exact
+        market -- never a spot price or a computed proxy. Anything
+        missing or malformed stays unknown (None), fail-closed.
+        """
+        try:
+            response = await self._http().get(f"{GAMMA}/events/slug/{slug}")
+            response.raise_for_status()
+            event = response.json()
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            _LOG.info(
+                "Polymarket published price-to-beat unavailable slug=%s reason=%s",
+                slug, self._reason(exc),
+            )
+            return None
+        if not isinstance(event, dict) or event.get("slug") != slug:
+            return None
+        return self._event_price_to_beat(event)
 
     async def window_board(
         self, asset: str, horizon: int, *, now: datetime | None = None,

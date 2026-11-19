@@ -37,6 +37,23 @@ level its venue had already resolved when the book was fetched
 Polymarket, the market payload's ``floor_strike`` for Kalshi. Rows
 recorded before this repair keep NULL -- unknown, never backfilled or
 approximated from a spot proxy.
+
+The production proof of that repair (2026-11-19) split by venue:
+Kalshi snapshots landed their reference 134/134, Polymarket 0/112.
+Root cause, verified against the live Gamma API: Gamma publishes
+``eventMetadata.priceToBeat`` only AFTER a window closes (absent at
+every in-window poll of 5m/15m windows; first present ~20-140s after
+close), while the reader paths that build notices only ever read the
+current window -- so a Polymarket notice's price-to-beat is None by
+construction, and the per-contract cache never sees a value. Nor can
+the value ride a post-close book snapshot: the closed contract's book
+freezes ~30s after close and fails this module's 25-second freshness
+rule before Gamma's publication reliably lands. The collector
+therefore resolves each just-closed Polymarket contract's published
+price-to-beat with one dedicated Gamma fetch and stores it in
+``rival_convergence_reference_levels`` -- its own record, appended
+after close; existing snapshot rows are never modified. Kalshi needs
+no such path: its ``floor_strike`` is in the live open-markets listing.
 """
 from __future__ import annotations
 
@@ -69,6 +86,13 @@ CREATE TABLE IF NOT EXISTS rival_convergence_book_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_convergence_quotes_window
     ON rival_convergence_book_snapshots (venue, asset, window_open);
+CREATE TABLE IF NOT EXISTS rival_convergence_reference_levels (
+    venue TEXT NOT NULL, asset TEXT NOT NULL, contract_id TEXT NOT NULL,
+    window_open TEXT NOT NULL, window_close TEXT NOT NULL,
+    reference_level DOUBLE PRECISION NOT NULL,
+    resolved_at TEXT NOT NULL,
+    PRIMARY KEY (venue, contract_id)
+);
 """
 
 
@@ -374,6 +398,45 @@ class ConvergenceQuotes:
                 "kalshi", ticker, reference_level, received_at),
             **snap,
         })
+
+    def record_reference(self, *, venue: str, asset: str, contract_id: str,
+                         window_open: datetime, window_close: datetime,
+                         reference_level, resolved_at: datetime) -> bool:
+        """Store a venue-published reference level for one contract.
+
+        A separate record, not a snapshot: Polymarket publishes its
+        price-to-beat only after the window closes, when no book of
+        that contract can still pass snapshot freshness, so the level
+        cannot honestly ride a book row -- and existing snapshot rows
+        are never modified. The first published value wins (the level
+        is static per contract); an unusable value stores nothing.
+        """
+        level = _valid_reference(reference_level)
+        if level is None:
+            return False
+        self.initialize()
+        with self._lock, self.store.connect() as conn:
+            cursor = conn.execute(
+                """INSERT INTO rival_convergence_reference_levels
+                   (venue, asset, contract_id, window_open, window_close,
+                    reference_level, resolved_at)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT DO NOTHING""",
+                (venue, asset, contract_id, _iso(window_open),
+                 _iso(window_close), level, _iso(resolved_at)),
+            )
+            return cursor.rowcount > 0
+
+    def reference_level_for(self, venue: str, contract_id: str) -> float | None:
+        """The stored reference level for one contract, or None."""
+        self.initialize()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT reference_level FROM rival_convergence_reference_levels
+                   WHERE venue=? AND contract_id=?""",
+                (venue, contract_id),
+            ).fetchone()
+        return _valid_reference(row["reference_level"]) if row else None
 
     def snapshots(self, *, venue: str, contract_id: str) -> list[dict]:
         """Stored snapshots for one contract, in source-time order."""

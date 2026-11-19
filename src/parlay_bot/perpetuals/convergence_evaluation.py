@@ -442,7 +442,11 @@ def load_windows(store) -> list[dict]:
     SELECT-only. Reference levels, in preference order: the level each
     snapshot carried from its own venue fetch (``reference_level`` --
     Polymarket's price-to-beat from Gamma metadata, Kalshi's
-    ``floor_strike``), then the stored joins -- Kalshi strike from
+    ``floor_strike``), then the collector-resolved levels in
+    ``rival_convergence_reference_levels`` (Polymarket publishes its
+    price-to-beat only after the window closes, so the collector
+    resolves it post-close with a dedicated Gamma fetch), then the
+    stored joins -- Kalshi strike from
     ``rival_kalshi_updown.open_reference`` by ticker; Polymarket
     price-to-beat from the evidence JSON of
     ``rival_poly_oracle_observations`` (fallback:
@@ -497,6 +501,22 @@ def load_windows(store) -> list[dict]:
                     value = _reference_from_evidence(row["evidence_json"])
                     if value is not None:
                         pm_refs[slug] = value
+        # Collector-resolved levels outrank the legacy evidence joins:
+        # they are the venue's own published figure for the exact
+        # contract, fetched by the collector when the venue published
+        # it. Snapshot-carried levels still outrank these (applied
+        # after the scan below).
+        if _exists(conn, "rival_convergence_reference_levels"):
+            for row in conn.execute(
+                    "SELECT venue, contract_id, reference_level"
+                    " FROM rival_convergence_reference_levels").fetchall():
+                value = _snapshot_reference(row["reference_level"])
+                if value is None:
+                    continue
+                if row["venue"] == "polymarket":
+                    pm_refs[str(row["contract_id"])] = value
+                elif row["venue"] == "kalshi":
+                    kalshi_refs[str(row["contract_id"])] = value
 
     grouped: dict[tuple[str, str], dict] = {}
     carried: dict[tuple[str, str], dict[str, float]] = {}

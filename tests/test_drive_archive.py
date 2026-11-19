@@ -549,3 +549,82 @@ async def test_drive_resumable_initiation_fails_closed_on_denial_or_retry_exhaus
     assert requests["post"] == (
         MAX_TRANSIENT_UPLOAD_RETRIES + 1 if failure == 502 else 1
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("failed_role", "status"), (
+    ("root", 404), ("history", 403), ("manifests", 404),
+    ("staging", 404), ("models", 403), ("reports", 404),
+))
+async def test_drive_boundary_failure_names_role_without_exposing_folder_identity(
+    failed_role, status,
+) -> None:
+    from parlay_bot.archive.drive import DriveArchiveError
+
+    folders = DriveArchiveFolders(
+        root="PRIVATE-root", history="PRIVATE-history",
+        manifests="PRIVATE-manifests", staging="PRIVATE-staging",
+        models="PRIVATE-models", reports="PRIVATE-reports",
+    )
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "PRIVATE-token", "expires_in": 3600})
+        assert request.method == "GET"
+        folder_id = request.url.path.rsplit("/", 1)[-1]
+        role = folder_id.removeprefix("PRIVATE-")
+        seen.append(role)
+        if role == failed_role:
+            return httpx.Response(status, json={"error": {"message": "PRIVATE-provider-detail"}})
+        parents = [] if role == "root" else [folders.root]
+        return httpx.Response(200, json={
+            "id": folder_id, "name": "PRIVATE-name",
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": parents, "trashed": False,
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = GoogleDriveArchiveClient(
+            client_id="PRIVATE-client", client_secret="PRIVATE-secret",
+            refresh_token="PRIVATE-refresh", folders=folders, client=http,
+        )
+        for _ in range(2):
+            with pytest.raises(DriveArchiveError) as exc:
+                await client._verify_folder_boundary()
+            message = str(exc.value)
+            assert f"for {failed_role} with {status}" in message
+            assert "PRIVATE" not in message
+            assert client._boundary_verified is False
+    assert seen.count(failed_role) == 2
+    assert seen == ["root", "history", "manifests", "staging", "models", "reports"][:["root", "history", "manifests", "staging", "models", "reports"].index(failed_role) + 1] * 2
+
+
+@pytest.mark.asyncio
+async def test_drive_boundary_rejects_wrong_parent_with_role_and_no_ids() -> None:
+    from parlay_bot.archive.drive import DriveArchiveError
+
+    folders = DriveArchiveFolders(
+        root="PRIVATE-root", history="PRIVATE-history",
+        manifests="PRIVATE-manifests", staging="PRIVATE-staging",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 3600})
+        folder_id = request.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(200, json={
+            "id": folder_id, "name": "folder",
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [] if folder_id == folders.root else ["PRIVATE-wrong-parent"],
+            "trashed": False,
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = GoogleDriveArchiveClient(
+            client_id="c", client_secret="s", refresh_token="r",
+            folders=folders, client=http,
+        )
+        with pytest.raises(DriveArchiveError, match="history archive folder") as exc:
+            await client._verify_folder_boundary()
+    assert "PRIVATE" not in str(exc.value)

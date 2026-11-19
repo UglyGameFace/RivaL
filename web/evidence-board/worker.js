@@ -158,8 +158,9 @@ async function marketPredictions(asset){
    - History fallback (24 h, collector ingest + UI opsHomeObservation):
      retention. A prior verified observation is only reused as a fallback
      while it is less than a day old; older history is never presented as
-     current. The 1 h per-level alert throttle in maybeSendAlert is a fourth,
-     separate number (delivery rate-limiting, not staleness). */
+     current. The 1 h alert dedupe window in maybeSendAlert (per alert-set
+     identity, recorded durably by the collector) is a fourth, separate
+     number (delivery rate-limiting, not staleness). */
 const EVIDENCE_RECENT_SECONDS=1500;
 const COLLECTION_STALE_SECONDS=3600;
 const RELIABILITY_SOURCE_NAMES=['discloud_forecast','discloud_learning','postgres','drive','github','intelligence','intelligence_host','performance','market_feed','signed_collector'];
@@ -227,6 +228,31 @@ let alertMemory={level:null,at:0};
    promise with the fetch event's waitUntil: a fire-and-forget fetch is
    cancelled when the response completes, which is how the 2026-11-17
    outage alert was lost even with a working webhook. */
+/* Dedupe is two-layered. The in-isolate note above is only a fast path:
+   worker isolates are ephemeral, so on its own it re-sent one continuing
+   alert from every fresh isolate (2026-11-18: a single Drive warning
+   posted 8+ times in 25 minutes, including duplicate pairs seconds
+   apart). The durable layer asks the collector — the only component here
+   with storage — to check-and-set the alert set's identity in KV: the
+   same identity sends at most once per hour across ALL isolates, while a
+   changed set (a source joins or leaves, or a failure's start moves) is a
+   new identity and sends immediately. If the collector cannot be reached
+   the send fails open: a possibly duplicated alert beats a lost one. */
+function alertIdentity(level,alerts){
+ const parts=alerts.map(a=>a.code+'@'+(a.since||'')).sort();
+ const identity=(level+'|'+parts.join('|')).replace(/[^A-Za-z0-9:._@|-]/g,'_');
+ return identity.length<=512?identity:(level+'|'+alerts.map(a=>a.code).sort().join('|'));
+}
+async function alertAlreadySent(identity){
+ try{
+  if(typeof RIVAL_EVIDENCE_RECEIPTS==='undefined'||!RIVAL_EVIDENCE_RECEIPTS||typeof RIVAL_EVIDENCE_RECEIPTS.fetch!=='function')return false;
+  const r=await RIVAL_EVIDENCE_RECEIPTS.fetch('https://rival-evidence-collector.staytrippynlw.workers.dev/alert-throttle',
+   {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:identity})});
+  if(!r.ok)return false;
+  const j=await r.json();
+  return !!(j&&j.send===false);
+ }catch(_){return false}
+}
 async function maybeSendAlert(alerts){
  try{
   const level=alerts.some(a=>a.level==='critical')?'critical':alerts.length?'warning':null;
@@ -235,6 +261,10 @@ async function maybeSendAlert(alerts){
   if(!url||typeof fetch!=='function')return;
   const now=Date.now();
   if(alertMemory.level===level&&now-alertMemory.at<3600000)return;
+  if(await alertAlreadySent(alertIdentity(level,alerts))){
+   alertMemory={level,at:now};
+   return;
+  }
   alertMemory={level,at:now};
   const stamp=new Date(now).toISOString();
   const codes=alerts.map(a=>a.code);

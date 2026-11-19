@@ -502,6 +502,25 @@ async function main(){
  assert.equal(unavailable.performance.status,'unavailable');
  assert.equal(unavailable.performance.scopes.length,0,
   'A model ID must not be mistaken for an observed scored outcome');
+ // Alert dedupe throttle: the board worker's durable "already sent"
+ // record. First sight of an identity may send; the same identity is
+ // suppressed for an hour; a moved failure start is a new identity; an
+ // expired record no longer suppresses; malformed keys are rejected.
+ const throttleReq=key=>new Request(claims.aud+'/alert-throttle',
+  {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key})});
+ const driveIdentity='warning|source_failed:drive@2026-11-19T03:50:55.769Z';
+ let throttleRes=await cx.worker.fetch(throttleReq(driveIdentity),env);
+ assert.equal(throttleRes.status,200);
+ assert.equal((await throttleRes.json()).send,true,'first sight of an identity may send');
+ throttleRes=await cx.worker.fetch(throttleReq(driveIdentity),env);
+ assert.equal((await throttleRes.json()).send,false,'the same identity within the hour is suppressed');
+ throttleRes=await cx.worker.fetch(throttleReq('warning|source_failed:drive@2026-11-19T05:00:00.000Z'),env);
+ assert.equal((await throttleRes.json()).send,true,'a moved failure start is a new identity');
+ records.set('alert-throttle:warning|old-identity',JSON.stringify({at:Date.now()-2*3600000}));
+ throttleRes=await cx.worker.fetch(throttleReq('warning|old-identity'),env);
+ assert.equal((await throttleRes.json()).send,true,'a record older than the window no longer suppresses');
+ throttleRes=await cx.worker.fetch(throttleReq('bad key with spaces'),env);
+ assert.equal(throttleRes.status,400,'a malformed key is rejected');
  console.log('Evidence collector signed round-trip, redaction and rejection regressions passed');
 }
 main().catch(error=>{console.error(error);process.exitCode=1});

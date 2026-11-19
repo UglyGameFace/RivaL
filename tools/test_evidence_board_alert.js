@@ -87,7 +87,31 @@ async function main() {
   assert.equal(settled, true, 'alert send must settle once the webhook fetch completes');
   context.fetch = realFetch;
 
-  console.log('alert webhook body OK (content + structured fields, throttle intact, delivery awaited)');
+  // Durable dedupe: the in-isolate throttle alone re-sent one continuing
+  // alert from every fresh isolate. The worker now asks the collector to
+  // check-and-set the alert set's identity before sending.
+  const bindingCalls = [];
+  let throttleAnswer = {send: false};
+  context.RIVAL_EVIDENCE_RECEIPTS = {fetch: async (url, opts) => {
+    bindingCalls.push({url, opts});
+    return {ok: true, json: async () => throttleAnswer};
+  }};
+  const beforeDurable = calls.length;
+  await send([{level: 'warning', code: 'durable_gate', since: '2026-11-19T00:00:00.000Z'}]);
+  assert.equal(calls.length, beforeDurable,
+    'collector reports the identity already sent -> no POST from this isolate either');
+  assert.equal(bindingCalls.length, 1, 'the throttle must be consulted exactly once per send decision');
+  assert.ok(String(bindingCalls[0].url).includes('/alert-throttle'),
+    'the throttle call must target the collector alert-throttle route');
+  assert.ok(JSON.parse(bindingCalls[0].opts.body).key.includes('durable_gate'),
+    'the throttle key must identify the alert set');
+  throttleAnswer = {send: true};
+  await send([{level: 'critical', code: 'durable_open', since: '2026-11-19T00:05:00.000Z'}]);
+  assert.equal(calls.length, beforeDurable + 1,
+    'collector allows the identity -> the alert POSTs');
+  assert.equal(bindingCalls.length, 2, 'an allowed send also records the identity first');
+
+  console.log('alert webhook body OK (content + structured fields, throttle intact, delivery awaited, durable dedupe consulted)');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

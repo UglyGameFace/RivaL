@@ -9,11 +9,16 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '..', 'web', 'evidence-board', 'worker.js'), 'utf8');
 const calls = [];
+const cacheStore = new Map();
 const context = {
   URL, Request, Response, Date, console,
   ALERT_WEBHOOK_URL: 'https://example.invalid/webhook-placeholder',
   fetch: async (url, opts) => { calls.push({url, opts}); return {ok: true}; },
   addEventListener() {},
+  caches: {default: {
+    match: async (key) => { const v = cacheStore.get(String(key)); return v ? {json: async () => v} : undefined; },
+    put: async (key, resp) => { cacheStore.set(String(key), await resp.json()); }
+  }},
   RIVAL_EVIDENCE_RECEIPTS: {fetch: async () => { throw Error('Unexpected upstream fetch'); }}
 };
 vm.createContext(context);
@@ -114,8 +119,35 @@ async function main() {
   assert.equal(bindingCalls.length, 2, 'an allowed send also records the identity first');
   assert.equal(vm.runInContext('alertDiag.consult', context), 'allowed',
     'the approval must be visible in the delivery diagnostics');
-  assert.equal(vm.runInContext('BOARD_BUILD', context), '2026-11-19-dedupe-diag-1',
+  assert.equal(vm.runInContext('BOARD_BUILD', context), '2026-11-19-dedupe-fallback-1',
     'the build marker must name this build');
+
+  // Consult-failure fallback: when the collector itself is failing (its
+  // KV writes died with the daily quota, so every consult 500s), failing
+  // open on every poll spammed the channel for hours. The first send of
+  // an identity still posts; the fallback records it in the shared cache
+  // and a repeat of the SAME identity is suppressed even from a fresh
+  // isolate (alertMemory cleared to simulate one), while a different
+  // identity still posts.
+  context.RIVAL_EVIDENCE_RECEIPTS = {fetch: async () => ({ok: false, status: 500, json: async () => ({})})};
+  const clearMemory = () => vm.runInContext('alertMemory={level:null,at:0}', context);
+  clearMemory();
+  const beforeFallback = calls.length;
+  await send([{level: 'warning', code: 'fallback_gate'}]);
+  assert.equal(calls.length, beforeFallback + 1,
+    'consult failing -> the first send of an identity still posts');
+  assert.equal(vm.runInContext('alertDiag.fallback', context), 'recorded',
+    'the fallback send must be visible in the delivery diagnostics');
+  clearMemory();
+  await send([{level: 'warning', code: 'fallback_gate'}]);
+  assert.equal(calls.length, beforeFallback + 1,
+    'consult failing + fallback record -> a repeat of the same identity is suppressed');
+  assert.equal(vm.runInContext('alertDiag.fallback', context), 'suppressed',
+    'the fallback suppression must be visible in the delivery diagnostics');
+  clearMemory();
+  await send([{level: 'warning', code: 'fallback_other'}]);
+  assert.equal(calls.length, beforeFallback + 2,
+    'a different identity still posts under the fallback');
 
   // The identity is the alert SET, never a timestamp: a source alert's
   // `since` is its latest failed check and advances on every receipt, so

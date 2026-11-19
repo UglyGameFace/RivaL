@@ -1,6 +1,6 @@
 # RivaL ACTIVE_TASK — canonical current execution plan
 
-Updated 2026-11-19 17:41 EST. This is a short status checkpoint, not a global work lock. Earlier detailed evidence remains in Git history (prior blob 83db098437f104f2bbb5b846ed5cefba909e0cae); verify current main and parallel work each run.
+Updated 2026-11-19 18:31 EST. This is a short status checkpoint, not a global work lock. Earlier detailed evidence remains in Git history (prior blob 83db098437f104f2bbb5b846ed5cefba909e0cae); verify current main and parallel work each run.
 
 ## Objective and governance
 Source-authentic research-only XMarket recovery, immutable prospective scoring, executable paired quotes, after-cost baseline comparisons, safe promotion/demotion/rollback, and truthful Discord delivery. No real-money orders, retrospective forecasts, holdout mining, recurring retraining, lowered thresholds, or fabricated source history. Edge requires >=150 independent forward targets, >=21 days, >=80% matched quote coverage, and robust positive after-cost comparison.
@@ -17,8 +17,13 @@ Source-authentic research-only XMarket recovery, immutable prospective scoring, 
 ## Active implementation
 - Draft [PR #712](https://github.com/UglyGameFace/RivaL/pull/712), branch `fix/records-original-integrity-reasons-20261119`: classify exact rejected records-original metadata field without exposing private identifiers, add fail-closed malformed-size handling and parameterized regression tests. CI #44615546070 passed on head `be8b9b8f` (lint, critical regressions, full test job with PostgreSQL service); verified historical research #44615545838 passed. Authenticated original readback remains pending. This is diagnostic progress, **not** restored history or proof of publisher root cause. Main remains `f13a4c93` until merge.
 
+## New authenticated read-only Drive evidence (2026-11-19)
+- Connected UglyGameFace Google Drive account can enumerate the `RivaL Data Warehouse` root and its `history`, `manifests`, `staging`, and other folders. This disproves a blanket lack of access to this connected account's warehouse root; it does **not** establish parity with the credentials or Drive folder IDs used by production workflows.
+- A metadata-only query for direct children of this connected account's `manifests` folder returned no items. Metadata-only history queries for filenames containing `records`, `okx`, or `source_native` returned no matches; an unfiltered history listing returned many Binance auxiliary checksum files. These are bounded search observations, **not** proof that the rejected originals were deleted or never published: originals may be elsewhere, named differently, or accessible only to the workflow identity.
+- No original-file identity from failed recovery run #44517973204 was available to correlate with these results, so no SHA/size defect can be attributed to a particular file and no admission change is justified.
+
 ## Highest-priority actionable repair
-1. Obtain authenticated read-only metadata for **each rejected original**: bounded file identity, declared SHA/size/kind, actual Drive MD5/size, source run and publication provenance. Identify the exact failing field without exposing credentials, folder IDs, or private content.
+1. Correlate the exact rejected original IDs and production workflow Drive principal/folder configuration with the connected warehouse root; then obtain authenticated read-only metadata for **each rejected original**: bounded file identity, declared SHA/size/kind, actual Drive MD5/size, source run and publication provenance. Identify the exact failing field without exposing credentials, folder IDs, or private content.
 2. Correlate both real original OKX manifest SHA/provenance identities for each venue/contract/month; distinguish identical replay, differing manifest provenance, differing history bytes, tampering, and cross-asset collision. Preserve unresolved divergence fail-closed.
 3. Repair the authoritative publisher/restore boundary **only when the originals prove a root cause**; test divergent, identical, tampered, cross-asset and legacy metadata paths. Run lint, critical tests, full SQLite/PostgreSQL CI, then credentialed source readback and chronological eligibility. No new training until verified coverage and explicit authorization.
 

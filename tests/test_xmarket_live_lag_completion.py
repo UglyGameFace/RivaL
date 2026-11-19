@@ -214,6 +214,10 @@ async def test_recovered_inputs_issue_immutable_shadows_through_real_cycle(
         assert conn.execute("SELECT COUNT(*) AS n FROM rival_model_shadow_forecasts "
             "WHERE family='xmarket_v1'").fetchone()["n"] == 0
     monkeypatch.setattr(forward_audit, "ISSUE_XMARKET_V1_CHALLENGERS", True)
+    # XMarket rows enter through the competition funnel, whose issuance
+    # gate is also off by default since the price-first pivot; this test
+    # exercises the real cycle path, so it opens the funnel explicitly.
+    monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", True)
     if not scientific_available:
         actual_import = builtins.__import__
 

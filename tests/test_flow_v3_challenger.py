@@ -394,11 +394,17 @@ def test_retirement_flag_stops_flow_v3_issuance_in_cycle(tmp_path, monkeypatch):
             return features, shadow
 
         monkeypatch.setattr(forward_audit, "ISSUE_FLOW_V3_CHALLENGERS", True)
+        # flow_v3 shadow rows enter through the competition funnel, whose
+        # issuance gate is also off by default since the price-first pivot;
+        # the control isolates the flow_v3 kill switch, so it opens the
+        # funnel explicitly.
+        monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", True)
         monitor.run_once(now=now)
         features_on, shadow_on = _flow3_counts()
         assert features_on >= 1  # the control proves this cycle can issue flow_v3
         assert shadow_on >= 1
         monkeypatch.setattr(forward_audit, "ISSUE_FLOW_V3_CHALLENGERS", False)
+        monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", False)
         monitor.run_once(now=now)
         assert _flow3_counts() == (features_on, shadow_on)
     finally:

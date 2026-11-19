@@ -669,6 +669,11 @@ def test_liq_v1_kill_switch_blocks_issuance_in_cycle(tmp_path, monkeypatch):
     """
     assert forward_audit.ISSUE_LIQ_V1_CHALLENGERS is False   # retired
     monkeypatch.setattr(forward_audit, "ISSUE_LIQ_V1_CHALLENGERS", True)
+    # liq_v1 shadow rows enter through the competition funnel, whose
+    # issuance gate is also off by default since the price-first pivot;
+    # the control isolates the liq_v1 kill switch, so it opens the
+    # funnel explicitly.
+    monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", True)
     now = datetime.now(UTC)
     store = SQLiteHotStore(tmp_path / "liq-kill.sqlite")
     market = PerpetualMarketStore(store)
@@ -698,6 +703,7 @@ def test_liq_v1_kill_switch_blocks_issuance_in_cycle(tmp_path, monkeypatch):
         assert features_on >= 1  # the control proves this cycle can issue liq_v1
         assert shadow_on >= 1
         monkeypatch.setattr(forward_audit, "ISSUE_LIQ_V1_CHALLENGERS", False)
+        monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", False)
         monitor.run_once(now=now)
         assert _liq1_counts() == (features_on, shadow_on)
     finally:

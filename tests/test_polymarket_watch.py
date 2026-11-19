@@ -366,3 +366,77 @@ def test_five_and_fifteen_minute_markets_must_settle_on_their_chainlink_twap(hor
         event["markets"][0]["description"] = details
         with pytest.raises(polymarket_watch.MarketUnavailable, match="settlement_source"):
             reader._window(event, asset="BTC", horizon=horizon, start=start, now=now)
+
+
+def _published_reader(monkeypatch, payload):
+    """A reader whose Gamma transport serves one canned event payload."""
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "gamma-api.polymarket.com":
+            return httpx.Response(200, json=payload)
+        return httpx.Response(400)
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        polymarket_watch.httpx, "AsyncClient",
+        lambda *a, **kw: real_client(
+            transport=httpx.MockTransport(handler), timeout=kw["timeout"],
+        ),
+    )
+    return polymarket_watch.PolymarketReader()
+
+
+def test_published_price_to_beat_reads_gamma_post_close_metadata(monkeypatch):
+    # The exact shape Gamma served for a closed 15m window in the live
+    # 2026-11-19 probe: eventMetadata appears only after close, holding
+    # a float priceToBeat beside a context_requires_regen marker. No
+    # in-window payload carries the key at all, which is why the live
+    # notice paths can never supply this value.
+    slug = "btc-updown-15m-1795104900"
+    reader = _published_reader(monkeypatch, {
+        "slug": slug, "active": True, "closed": False,
+        "eventMetadata": {
+            "context_requires_regen": True,
+            "priceToBeat": 63052.83564008944,
+        },
+        "markets": [{"slug": slug}],
+    })
+    try:
+        assert run(reader.published_price_to_beat(slug)) == pytest.approx(
+            63052.83564008944)
+    finally:
+        run(reader.aclose())
+
+
+def test_published_price_to_beat_unknown_until_gamma_publishes(monkeypatch):
+    slug = "btc-updown-15m-1795104900"
+    # In-window shape: the eventMetadata key is absent entirely.
+    reader = _published_reader(monkeypatch, {
+        "slug": slug, "active": True, "closed": False, "markets": [],
+    })
+    try:
+        assert run(reader.published_price_to_beat(slug)) is None
+    finally:
+        run(reader.aclose())
+    # Near-close shape: metadata exists but holds only the regen marker.
+    reader = _published_reader(monkeypatch, {
+        "slug": slug, "active": True, "closed": False,
+        "eventMetadata": {"context_requires_regen": True},
+        "markets": [],
+    })
+    try:
+        assert run(reader.published_price_to_beat(slug)) is None
+    finally:
+        run(reader.aclose())
+
+
+def test_published_price_to_beat_rejects_a_mismatched_event(monkeypatch):
+    reader = _published_reader(monkeypatch, {
+        "slug": "btc-updown-15m-1795104900", "active": True, "closed": False,
+        "eventMetadata": {"priceToBeat": 63052.83564008944},
+        "markets": [],
+    })
+    try:
+        assert run(reader.published_price_to_beat(
+            "eth-updown-15m-1795104900")) is None
+    finally:
+        run(reader.aclose())

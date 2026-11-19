@@ -197,6 +197,36 @@ def candidate_import_delay(*, backlog: bool, failed: bool = False) -> int:
     return 300 if failed else 900 if backlog else 3600
 
 
+async def _resolve_closed_pm_reference(quotes, reader, notice, *, now: datetime) -> bool:
+    """Store one just-closed Polymarket contract's published price-to-beat.
+
+    Gamma publishes ``eventMetadata.priceToBeat`` only after the window
+    closes (measured live 2026-11-19: absent at every in-window poll,
+    first present ~20-140s after close), so the in-window notices the
+    convergence collector records never carry it -- the production
+    proof after PR #707 landed Kalshi references 134/134 but
+    Polymarket 0/112. One dedicated fetch per contract, bounded by the
+    caller to the minutes after close and skipped once a level is
+    stored, resolves the venue's own published figure for that exact
+    market. Returns True when the contract's reference is stored (by
+    this call or an earlier one); False while Gamma has not published
+    it yet, so the caller retries on its normal cadence.
+    """
+    stored = await asyncio.to_thread(
+        quotes.reference_level_for, "polymarket", notice.slug)
+    if stored is not None:
+        return True
+    level = await reader.published_price_to_beat(notice.slug)
+    if level is None:
+        return False
+    await asyncio.to_thread(
+        quotes.record_reference,
+        venue="polymarket", asset=notice.asset, contract_id=notice.slug,
+        window_open=notice.issued, window_close=notice.expires,
+        reference_level=level, resolved_at=now)
+    return True
+
+
 def llm_background_enabled(settings) -> bool:
     """Automatic LLM loops run only with an explicit operator opt-in.
 
@@ -229,6 +259,10 @@ class RivalDiscordClient(discord.Client):
         self._records_task: asyncio.Task[None] | None = None
         self._kalshi_updown_task: asyncio.Task[None] | None = None
         self.kalshi_updown = None
+        # Convergence collector: the latest 15m Polymarket notice per
+        # contract, kept past its close so the loop can resolve the
+        # price-to-beat Gamma publishes only after the window ends.
+        self._convergence_pm_windows: dict[str, object] = {}
         self.liquidity_last_bucket: str | None = None
         self.tree = app_commands.CommandTree(self)
         self.tree.on_error = self._on_app_command_error
@@ -2359,6 +2393,36 @@ class RivalDiscordClient(discord.Client):
             except Exception as exc:  # noqa: BLE001 - isolate each contract
                 _LOG.info("Convergence quotes: PM book unavailable asset=%s error=%s",
                           notice.asset, type(exc).__name__)
+        # Track the open 15m contracts so the pass below can resolve
+        # each one's price-to-beat once its window has closed.
+        for notice in notices:
+            if notice.horizon == 15:
+                self._convergence_pm_windows[notice.slug] = notice
+        # Polymarket publishes a window's price-to-beat only after the
+        # window closes (see _resolve_closed_pm_reference), so no
+        # in-window snapshot can carry it. Resolve each tracked
+        # just-closed contract once, bounded to the minutes after
+        # close; a contract Gamma never publishes for keeps an unknown
+        # reference (excluded as strike_unavailable), never a proxy.
+        for slug, tracked in list(self._convergence_pm_windows.items()):
+            if tracked.expires > clock:
+                continue
+            if clock - tracked.expires > timedelta(minutes=10):
+                self._convergence_pm_windows.pop(slug, None)
+                continue
+            if not quotes.due("polymarket_reference", slug, clock,
+                              cooldown_seconds=cooldown):
+                continue
+            try:
+                resolved = await _resolve_closed_pm_reference(
+                    quotes, self.auto_hunt.polymarket, tracked, now=clock)
+            except Exception as exc:  # noqa: BLE001 - isolate each contract
+                _LOG.info(
+                    "Convergence quotes: PM reference unavailable slug=%s error=%s",
+                    slug, type(exc).__name__)
+                resolved = False
+            if resolved:
+                self._convergence_pm_windows.pop(slug, None)
         # Kalshi: list each series' open markets and snapshot the book of
         # the contract whose 15-minute window contains now.
         for asset, series in _KALSHI_SERIES.items():

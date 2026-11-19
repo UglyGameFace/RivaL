@@ -32,16 +32,31 @@ def canonical(value):
 FINGERPRINT_HEX = 16
 
 
-def _copy_state(state: dict) -> dict:
-    """Independent copy for the cache. fit() mutates only ``weights`` in place;
-    ``recent`` and ``cursor`` are always replaced, never edited, so a shallow
-    copy of those is enough (deepcopy of the 2,000-entry map was measurable)."""
-    copied = dict(state)
-    copied["weights"] = list(state["weights"])
-    copied["recent"] = dict(state["recent"])
-    if state.get("cursor") is not None:
-        copied["cursor"] = list(state["cursor"])
-    return copied
+# Correction fingerprints depend only on a sample's content (label time,
+# features, label) and the target contract that produced the label — never on
+# the feature contract or learning rate. The incumbent, both regime families
+# and the historical challengers therefore compute identical digests for the
+# same stream, so one memo is shared process-wide instead of one per
+# LiveModelCheckpoints instance (measured Nov 18: ~25-50 MB per instance at
+# production window sizes). Entries are content-validated before use, so a
+# shared or stale entry can only ever return the digest of identical content.
+_FINGERPRINT_MEMO: dict = {}
+_FINGERPRINT_MEMO_LOCK = threading.Lock()
+# Streams are (venue, contract, quote, horizon, target contract): ~108 live
+# streams on each of two target contracts, with headroom for both.
+_FINGERPRINT_MEMO_STREAM_LIMIT = 288
+# A stream's entry holds its presented window (~1,000-2,000 samples); the
+# merge of an incumbent window with a family's trending subset stays within
+# the window, and the cap only trims issuances that have left every window.
+_FINGERPRINT_MEMO_ENTRY_LIMIT = 4000
+_CONTENT_MASK = (1 << 64) - 1
+
+
+def _pack_fingerprint(content: int, digest: str) -> int:
+    """One int per memo entry: the content hash in the low 64 bits and the
+    64-bit fingerprint (16 hex chars) above them. Both halves round-trip
+    exactly, so a packed hit is indistinguishable from the stored pair."""
+    return (content & _CONTENT_MASK) | (int(digest, 16) << 64)
 
 
 def _apply_warm_start(state, warm_start):
@@ -103,12 +118,17 @@ class LiveModelCheckpoints:
         # trusted when a different process has changed the durable checkpoint.
         self._checkpoint_cache = {}
         self._cache_hits = 0
-        self._fingerprint_memo: dict = {}
 
-    def _cache_checkpoint(self, identity, row, state):
+    def _cache_checkpoint(self, identity, row, state_json: str):
+        # The cache holds the persisted JSON text, not the parsed state: a
+        # parsed copy costs ~286 KB per stream (the 2,000-entry correction
+        # map as Python objects) against ~92 KB of text, and json.loads on a
+        # cache hit returns the same fresh, mutable state the copy provided.
+        # The digest probe in fit() still vouches that this exact text is
+        # what the durable row holds under the cached digest.
         if identity not in self._checkpoint_cache and len(self._checkpoint_cache) >= 144:
             self._checkpoint_cache.pop(next(iter(self._checkpoint_cache)))
-        self._checkpoint_cache[identity] = (row, _copy_state(state))
+        self._checkpoint_cache[identity] = (row, state_json)
 
     def _fingerprints(self, identity, ordered, now) -> dict[str, str]:
         """Correction fingerprint per matured issuance, hashed once per process.
@@ -117,30 +137,45 @@ class LiveModelCheckpoints:
         them was most of fit()'s own CPU. A memo hit requires the identical
         (label time, inputs, label), so any source correction is re-hashed.
         """
-        previous = self._fingerprint_memo.get(identity, {})
-        current: dict = {}
-        result: dict[str, str] = {}
-        for s in ordered:
-            known = utc(s.label_known_at)
-            if known > now:
-                continue
-            issued = utc(s.issued_at).isoformat()
-            # A hash of the content, not the content: holding every sample's
-            # features again for ~108 streams cost ~30 MB (Nov 5 measurement).
-            content = hash((known, tuple(s.features), s.label_up))
-            hit = previous.get(issued)
-            if hit is not None and hit[0] == content:
-                digest = hit[1]
-            else:
-                digest = hashlib.sha256(canonical([
-                    known.isoformat(), s.features, s.label_up,
-                ]).encode()).hexdigest()[:FINGERPRINT_HEX]
-            current[issued] = (content, digest)
-            result[issued] = digest
-        if identity not in self._fingerprint_memo and len(self._fingerprint_memo) >= 144:
-            self._fingerprint_memo.pop(next(iter(self._fingerprint_memo)))
-        self._fingerprint_memo[identity] = current
-        return result
+        # The memo partition is the sample scope plus the target contract:
+        # feature contract and learning rate do not affect a sample's
+        # fingerprint, so instances fitting the same stream share one entry
+        # set instead of duplicating it per instance.
+        scope = (identity[0], identity[1], identity[2], identity[3], identity[5])
+        with _FINGERPRINT_MEMO_LOCK:
+            previous = _FINGERPRINT_MEMO.get(scope, {})
+            current: dict = {}
+            result: dict[str, str] = {}
+            for s in ordered:
+                known = utc(s.label_known_at)
+                if known > now:
+                    continue
+                issued = utc(s.issued_at).isoformat()
+                # A hash of the content, not the content: holding every sample's
+                # features again for ~108 streams cost ~30 MB (Nov 5 measurement).
+                content = hash((known, tuple(s.features), s.label_up))
+                hit = previous.get(issued)
+                if hit is not None and (hit & _CONTENT_MASK) == (content & _CONTENT_MASK):
+                    digest = format(hit >> 64, f"0{FINGERPRINT_HEX}x")
+                else:
+                    digest = hashlib.sha256(canonical([
+                        known.isoformat(), s.features, s.label_up,
+                    ]).encode()).hexdigest()[:FINGERPRINT_HEX]
+                current[issued] = _pack_fingerprint(content, digest)
+                result[issued] = digest
+            # Merge rather than replace: a regime family presents a trending
+            # subset of the incumbent's window, and replacing would evict the
+            # incumbent's remaining entries every cycle, re-imposing the
+            # re-hash cost this memo exists to avoid. Extra entries are
+            # harmless (content-validated on use) and the cap trims the
+            # oldest issuances once a partition outgrows any live window.
+            merged = {**previous, **current}
+            if len(merged) > _FINGERPRINT_MEMO_ENTRY_LIMIT:
+                merged = dict(sorted(merged.items())[-_FINGERPRINT_MEMO_ENTRY_LIMIT:])
+            if scope not in _FINGERPRINT_MEMO and len(_FINGERPRINT_MEMO) >= _FINGERPRINT_MEMO_STREAM_LIMIT:
+                _FINGERPRINT_MEMO.pop(next(iter(_FINGERPRINT_MEMO)))
+            _FINGERPRINT_MEMO[scope] = merged
+            return result
 
     def initialize(self):
         if self._initialized:
@@ -274,7 +309,7 @@ class LiveModelCheckpoints:
                     ).fetchone()
             # An earlier as_of must never reuse weights from the future.
             if cached_read and utc(datetime.fromisoformat(row["trained_at"])) <= now:
-                state = _copy_state(cached[1])
+                state = json.loads(cached[1])
                 self._cache_hits += 1
             else:
                 state = self._restore(row, now)
@@ -340,7 +375,7 @@ class LiveModelCheckpoints:
                         identity,
                         {"training_digest": digest, "trained_at": now.isoformat(),
                          "weights_sha256": weights_sha},
-                        state,
+                        encoded,
                     )
                 elif row is None or utc(datetime.fromisoformat(row["trained_at"])) <= now:
                     # Another writer won the race. Refuse to issue a forecast
@@ -357,7 +392,7 @@ class LiveModelCheckpoints:
                     {"training_digest": row["training_digest"],
                      "trained_at": row["trained_at"],
                      "weights_sha256": row["weights_sha256"]},
-                    state,
+                    row["state_json"],
                 )
             self._fitted += int(trained > 0)
             labels = state["updates"] + state["historical_training_labels"]

@@ -604,6 +604,41 @@ function appendAttempt(history,entry){
   return entries.slice(-72);
 }
 
+/* Bookkeeping consolidation (2026-11-19): the free KV tier allows 1,000
+   writes/day and this worker outgrew it — one accepted receipt cost 9
+   puts, and the daily counter died mid-morning ('KV put() limit exceeded
+   for the day' at the first ingest put; every ingest then 500'd and the
+   board froze on stale data). The five small bookkeeping records — last
+   attempt, last publication, last schedule attempt, source health,
+   attempt history — now live in ONE value written once per ingest or
+   attempt post. Reads fall back to the legacy keys so state written
+   before this deploy carries over; the legacy keys are never written
+   again. The per-run full-receipt archive (run:<id>) was write-only —
+   nothing ever read it — and is gone. */
+const BOOKKEEPING_KEY='bookkeeping';
+async function readBookkeeping(env){
+  const stored=await env.EVIDENCE_KV.get(BOOKKEEPING_KEY,'json');
+  if(stored&&typeof stored==='object')return{
+    last_attempt:stored.last_attempt||null,
+    last_publication:stored.last_publication||null,
+    last_schedule_attempt:stored.last_schedule_attempt||null,
+    source_health:(stored.source_health&&typeof stored.source_health==='object')?stored.source_health:{},
+    attempt_history:Array.isArray(stored.attempt_history)?stored.attempt_history:[]};
+  const [lastAttempt,lastPublication,lastSchedule,health,history]=await Promise.all([
+    env.EVIDENCE_KV.get('last-attempt','json'),
+    env.EVIDENCE_KV.get('last-publication','json'),
+    env.EVIDENCE_KV.get('last-schedule-attempt','json'),
+    env.EVIDENCE_KV.get('source-health','json'),
+    env.EVIDENCE_KV.get('attempt-history','json')]);
+  return{last_attempt:lastAttempt||null,last_publication:lastPublication||null,
+    last_schedule_attempt:lastSchedule||null,
+    source_health:(health&&typeof health==='object')?health:{},
+    attempt_history:Array.isArray(history)?history:[]};
+}
+function writeBookkeeping(env,book){
+  return env.EVIDENCE_KV.put(BOOKKEEPING_KEY,JSON.stringify(book));
+}
+
 function build(payload,identity){
   if(!payload||payload.schema_version!==1||typeof payload!=='object')throw Error('invalid_schema');
   const received=new Date().toISOString(),at=isoOrNull(payload.captured_at);
@@ -760,23 +795,12 @@ export default {
     const prev=await env.EVIDENCE_KV.get('alert-throttle:'+key,'json');
     const send=!(prev&&Number.isFinite(prev.at)&&now-prev.at<3600000);
     if(send)await env.EVIDENCE_KV.put('alert-throttle:'+key,JSON.stringify({at:now}),{expirationTtl:7200});
-    // Consult telemetry (2026-11-19): posts continued after the dedupe
-    // shipped while the KV record stayed frozen, which means either the
-    // board never consults or every consult fails open. Record each
-    // decision so the next incident is readable instead of guessable.
-    // Telemetry must never break the throttle: fully guarded.
-    try{
-      const log=await env.EVIDENCE_KV.get('alert-throttle-consults','json');
-      const entries=Array.isArray(log)?log:[];
-      entries.push({at:new Date(now).toISOString(),key,send});
-      await env.EVIDENCE_KV.put('alert-throttle-consults',JSON.stringify(entries.slice(-50)),{expirationTtl:3600});
-    }catch(_){}
+    // No per-consult logging: an earlier diagnostic build recorded every
+    // decision to KV, which cost one write per consult on a 1,000/day
+    // free-tier budget and helped exhaust it (2026-11-19). A suppressed
+    // consult now costs zero writes; an allowed one costs exactly one.
     if(!send)return reply({send:false,last_sent_at:new Date(prev.at).toISOString()},200,'no-store');
     return reply({send:true},200,'no-store');
-  }
-  if(req.method==='GET'&&u.pathname==='/alert-throttle-consults'){
-    const log=await env.EVIDENCE_KV.get('alert-throttle-consults','json');
-    return reply({consults:Array.isArray(log)?log:[]},200,'no-store');
   }
   if(req.method==='GET'&&u.pathname==='/latest'){
     const data=await env.EVIDENCE_KV.get('latest','json');
@@ -825,28 +849,24 @@ export default {
     await env.EVIDENCE_KV.put('metrics-series',JSON.stringify(entries));
 
     if(clean.github){await env.EVIDENCE_KV.put('github-snapshot',JSON.stringify(clean.github));}
-    await env.EVIDENCE_KV.put('run:'+identity.runId,JSON.stringify(clean),{expirationTtl:60*60*24*90});
     // Reliability bookkeeping (Delivery 1): the last successful signed
     // publication, per-source last-success / last-error, and the attempt
     // history are kept apart from the snapshot so a failed run can still
     // be explained after the fact. An attempt never overwrites 'latest'.
+    // Stored as ONE consolidated value (see readBookkeeping): this whole
+    // block used to cost five puts plus a write-only per-run archive.
     const attemptEntry={run_id:identity.runId,
       event:clean.collection?clean.collection.event:'unknown',
       attempted_at:clean.collection?clean.collection.attempted_at:clean.captured_at,
       received_at:clean.received_at,outcome:'accepted',reason:null};
-    await env.EVIDENCE_KV.put('last-publication',JSON.stringify({
-      run_id:identity.runId,captured_at:clean.captured_at,
-      received_at:clean.received_at,event:attemptEntry.event}));
-    await env.EVIDENCE_KV.put('last-attempt',JSON.stringify(attemptEntry));
-    if(attemptEntry.event==='schedule'){
-      await env.EVIDENCE_KV.put('last-schedule-attempt',JSON.stringify(attemptEntry));
-    }
-    const previousHealth=await env.EVIDENCE_KV.get('source-health','json');
-    await env.EVIDENCE_KV.put('source-health',JSON.stringify(
-      rollupSourceHealth(previousHealth,clean.sources,clean.received_at)));
-    const previousAttempts=await env.EVIDENCE_KV.get('attempt-history','json');
-    await env.EVIDENCE_KV.put('attempt-history',JSON.stringify(
-      appendAttempt(previousAttempts,attemptEntry)));
+    const book=await readBookkeeping(env);
+    book.source_health=rollupSourceHealth(book.source_health,clean.sources,clean.received_at);
+    book.attempt_history=appendAttempt(book.attempt_history,attemptEntry);
+    book.last_publication={run_id:identity.runId,captured_at:clean.captured_at,
+      received_at:clean.received_at,event:attemptEntry.event};
+    book.last_attempt=attemptEntry;
+    if(attemptEntry.event==='schedule')book.last_schedule_attempt=attemptEntry;
+    await writeBookkeeping(env,book);
     return reply({status:'accepted',run_id:identity.runId,captured_at:clean.captured_at},202);
   }
   if(req.method==='POST'&&u.pathname==='/ingest-attempt'){
@@ -864,22 +884,18 @@ export default {
     const entry={run_id:identity.runId,event:attempt.event,
       attempted_at:attempt.attempted_at,received_at:new Date().toISOString(),
       outcome:attempt.outcome,reason:attempt.reason};
-    await env.EVIDENCE_KV.put('last-attempt',JSON.stringify(entry));
-    if(entry.event==='schedule'){
-      await env.EVIDENCE_KV.put('last-schedule-attempt',JSON.stringify(entry));
-    }
-    const previousAttempts=await env.EVIDENCE_KV.get('attempt-history','json');
-    await env.EVIDENCE_KV.put('attempt-history',JSON.stringify(
-      appendAttempt(previousAttempts,entry)));
+    const book=await readBookkeeping(env);
+    book.last_attempt=entry;
+    if(entry.event==='schedule')book.last_schedule_attempt=entry;
+    book.attempt_history=appendAttempt(book.attempt_history,entry);
+    await writeBookkeeping(env,book);
     return reply({status:'accepted',run_id:identity.runId,outcome:entry.outcome},202);
   }
   if(req.method==='GET'&&u.pathname==='/diagnostics'){
-    const [lastAttempt,lastPublication,lastSchedule,health,history]=await Promise.all([
-      env.EVIDENCE_KV.get('last-attempt','json'),
-      env.EVIDENCE_KV.get('last-publication','json'),
-      env.EVIDENCE_KV.get('last-schedule-attempt','json'),
-      env.EVIDENCE_KV.get('source-health','json'),
-      env.EVIDENCE_KV.get('attempt-history','json')]);
+    const book=await readBookkeeping(env);
+    const lastAttempt=book.last_attempt,lastPublication=book.last_publication,
+      lastSchedule=book.last_schedule_attempt,health=book.source_health,
+      history=book.attempt_history;
     const attempts=Array.isArray(history)?history.slice(-20):[];
     const sources=(health&&typeof health==='object')?health:{};
     const counters={total_attempts:attempts.length,

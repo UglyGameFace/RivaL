@@ -112,8 +112,9 @@ async function main(){
    tokens_per_second:12.5,latency_ms_p95:800,
    token:'PRIVATE',prompt:'PRIVATE',endpoint:'PRIVATE'}};
  const records=new Map();
+ let putCount=0;
  const env={EVIDENCE_KV:{get:async key=>records.has(key)?JSON.parse(records.get(key)):null,
-  put:async(key,value)=>{records.set(key,value);}}};
+  put:async(key,value)=>{putCount++;records.set(key,value);}}};
  const make=(token,body=payload)=>new Request(claims.aud+'/ingest',{method:'POST',
   headers:token?{Authorization:'Bearer '+token}:{},body:JSON.stringify(body)});
  assert.equal((await cx.worker.fetch(make(null),env)).status,401);
@@ -131,7 +132,10 @@ async function main(){
  const corrupted=Buffer.from(parts[2],'base64url');corrupted[0]^=1;parts[2]=corrupted.toString('base64url');
  assert.equal((await cx.worker.fetch(make(parts.join('.')),env)).status,403);
  assert.equal(records.size,0,'Unverified callers must never change receipts');
+ const putsBeforeIngest=putCount;
  assert.equal((await cx.worker.fetch(make(valid),env)).status,202);
+ assert.equal(putCount-putsBeforeIngest,3,
+  'one accepted receipt costs 3 KV writes (latest, metrics-series, bookkeeping) plus a 4th (github-snapshot) when the receipt carries a github section — the free tier allows 1,000/day');
  const receipt=JSON.parse(records.get('latest'));
  assert.equal(receipt.provenance.verified,true);
  assert.equal(receipt.host.recent_forward_calls.status,'observed');
@@ -308,7 +312,8 @@ async function main(){
  assert.equal(noMetrics.intelligence_metrics.inference_verified,false);
  assert.equal(noMetrics.intelligence_metrics.memory_pressure_pct,null);
  assert.ok(!records.get('latest').includes('PRIVATE'));
- assert.equal(records.get('run:'+claims.run_id),records.get('latest'));
+ assert.equal(records.get('run:'+claims.run_id),undefined,
+  'the write-only per-run receipt archive is gone (KV write budget)');
  assert.equal(receipt.collection.event,'schedule');
  assert.equal(receipt.collection.run_id,'123456789');
  assert.equal(receipt.collection.run_attempt,1);
@@ -325,7 +330,7 @@ async function main(){
  // with allowlisted source names.
  assert.ok(!Object.hasOwn(receipt.sources,'bad_reason'));
  assert.ok(!records.get('latest').includes('PRIVATE'));
- const health=JSON.parse(records.get('source-health'));
+ const health=JSON.parse(records.get('bookkeeping')).source_health;
  assert.equal(health.discloud_forecast.status,'stale');
  assert.equal(health.discloud_forecast.last_error_at,now);
  assert.equal(health.discloud_forecast.last_success_at,null);
@@ -334,11 +339,11 @@ async function main(){
  assert.equal(health.discloud_learning.last_success_at,now);
  assert.equal(health.discloud_learning.consecutive_failures,0);
  assert.equal(health.drive.consecutive_failures,1);
- const lastPublication=JSON.parse(records.get('last-publication'));
+ const lastPublication=JSON.parse(records.get('bookkeeping')).last_publication;
  assert.equal(lastPublication.run_id,'123456789');
  assert.equal(lastPublication.event,'schedule');
- assert.equal(JSON.parse(records.get('last-schedule-attempt')).outcome,'accepted');
- const attemptsBefore=JSON.parse(records.get('attempt-history'));
+ assert.equal(JSON.parse(records.get('bookkeeping')).last_schedule_attempt.outcome,'accepted');
+ const attemptsBefore=JSON.parse(records.get('bookkeeping')).attempt_history;
  assert.equal(attemptsBefore.length,1);
  assert.equal(attemptsBefore[0].outcome,'accepted');
  // A failed run reports itself through the same OIDC gate. The attempt is
@@ -350,14 +355,17 @@ async function main(){
  const failedAttempt={kind:'collection-attempt',event:'schedule',
   run_id:'123456792',run_attempt:1,attempted_at:new Date().toISOString(),
   outcome:'failed',reason:'receiver_http_403_authorization_required'};
+ const putsBeforeAttempt=putCount;
  assert.equal((await cx.worker.fetch(makeAttempt(await sign({...claims,event_name:'schedule',run_id:'123456792'}),failedAttempt),env)).status,202);
+ assert.equal(putCount-putsBeforeAttempt,1,
+  'one attempt report costs exactly 1 KV write (the consolidated bookkeeping value)');
  assert.equal(JSON.parse(records.get('latest')).provenance.run_id,'123456789',
   'A failed attempt must never overwrite the last good snapshot');
- const lastAttempt=JSON.parse(records.get('last-attempt'));
+ const lastAttempt=JSON.parse(records.get('bookkeeping')).last_attempt;
  assert.equal(lastAttempt.outcome,'failed');
  assert.equal(lastAttempt.reason,'receiver_http_403_authorization_required');
  assert.equal(lastAttempt.run_id,'123456792');
- const attemptsAfter=JSON.parse(records.get('attempt-history'));
+ const attemptsAfter=JSON.parse(records.get('bookkeeping')).attempt_history;
  assert.equal(attemptsAfter.length,2);
  assert.equal(attemptsAfter[1].outcome,'failed');
  const badReason={...failedAttempt,reason:'DROP TABLE; evil'};
@@ -378,7 +386,7 @@ async function main(){
   drive:{status:'ok',reason:null,checked_at:now,freshness_seconds:86400}},
   captured_at:new Date(Date.now()+60000).toISOString()};
  assert.equal((await cx.worker.fetch(make(valid, recovered),env)).status,202);
- const healthAfter=JSON.parse(records.get('source-health'));
+ const healthAfter=JSON.parse(records.get('bookkeeping')).source_health;
  assert.equal(healthAfter.drive.status,'ok');
  assert.equal(healthAfter.drive.consecutive_failures,0);
  assert.equal(healthAfter.drive.last_success_at,now);
@@ -513,8 +521,11 @@ async function main(){
  let throttleRes=await cx.worker.fetch(throttleReq(driveIdentity),env);
  assert.equal(throttleRes.status,200);
  assert.equal((await throttleRes.json()).send,true,'first sight of an identity may send');
+ const putsBeforeSuppressed=putCount;
  throttleRes=await cx.worker.fetch(throttleReq(driveIdentity),env);
  assert.equal((await throttleRes.json()).send,false,'the same identity within the hour is suppressed');
+ assert.equal(putCount-putsBeforeSuppressed,0,
+  'a suppressed consult costs zero KV writes');
  throttleRes=await cx.worker.fetch(throttleReq('warning|source_failed:github'),env);
  assert.equal((await throttleRes.json()).send,true,'the endpoint treats keys opaquely: a different key is a different identity');
  records.set('alert-throttle:warning|old-identity',JSON.stringify({at:Date.now()-2*3600000}));
@@ -522,16 +533,14 @@ async function main(){
  assert.equal((await throttleRes.json()).send,true,'a record older than the window no longer suppresses');
  throttleRes=await cx.worker.fetch(throttleReq('bad key with spaces'),env);
  assert.equal(throttleRes.status,400,'a malformed key is rejected');
- // Every throttle decision is recorded in the consult log, readable for
- // diagnosis: who was told what, when. (The malformed key above must NOT
- // appear — it was rejected before any decision.)
+ // Consults are NOT logged: the 2026-11-19 diagnostic log cost one KV
+ // write per consult and helped exhaust the free tier's 1,000 writes/day.
+ // The endpoint is gone and no consult record is written; a suppressed
+ // consult costs zero writes, an allowed one exactly the throttle record.
  const consultsRes=await cx.worker.fetch(new Request(claims.aud+'/alert-throttle-consults'),env);
- assert.equal(consultsRes.status,200);
- const consults=(await consultsRes.json()).consults;
- assert.ok(Array.isArray(consults)&&consults.length>=4,'decisions are recorded in the consult log');
- assert.ok(consults.some(c=>c.key===driveIdentity&&c.send===true),'the first-sight send is logged');
- assert.ok(consults.some(c=>c.key===driveIdentity&&c.send===false),'the suppression is logged');
- assert.ok(!consults.some(c=>String(c.key).includes('bad key')),'rejected keys are not logged as consults');
+ assert.equal(consultsRes.status,404,'the consult-log endpoint was removed with the logging');
+ assert.equal(records.get('alert-throttle-consults'),undefined,
+  'no consult log is written');
  console.log('Evidence collector signed round-trip, redaction and rejection regressions passed');
 }
 main().catch(error=>{console.error(error);process.exitCode=1});

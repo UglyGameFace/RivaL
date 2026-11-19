@@ -2354,6 +2354,7 @@ class RivalDiscordClient(discord.Client):
                     asset=notice.asset, slug=notice.slug,
                     window_open=notice.issued, window_close=notice.expires,
                     fee_rate=notice.fee_rate, book=book,
+                    reference_level=notice.price_to_beat,
                     received_at=datetime.now(UTC))
             except Exception as exc:  # noqa: BLE001 - isolate each contract
                 _LOG.info("Convergence quotes: PM book unavailable asset=%s error=%s",
@@ -2393,6 +2394,7 @@ class RivalDiscordClient(discord.Client):
                         quotes.record_kalshi,
                         asset=asset, ticker=ticker, window_open=opens,
                         window_close=closes, payload=payload,
+                        reference_level=row.get("floor_strike"),
                         received_at=datetime.now(UTC))
                 except Exception as exc:  # noqa: BLE001 - isolate each contract
                     _LOG.info("Convergence quotes: Kalshi book unavailable ticker=%s error=%s",

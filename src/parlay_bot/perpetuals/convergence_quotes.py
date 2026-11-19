@@ -23,6 +23,20 @@ time is closest to window open + 300s within +/-45s, exit likewise for
 +600s; the traded size is CLIP_SHARES contracts, priced at the
 depth-walked average bid/ask, so a snapshot whose book cannot fill the
 clip cannot price that leg.
+
+The evaluator also needs each venue's reference level for the window --
+Polymarket's price-to-beat and Kalshi's strike -- to prove the two
+contracts price the same level before their books are compared. The
+first accrual readout (2026-11-19) found every window excluded as
+``strike_unavailable``: the watch loop computes Polymarket's
+price-to-beat live from Gamma metadata but persisted it nowhere the
+evaluator can read, and the oracle/AI-call evidence tables it fell back
+to are empty in production. So each snapshot now carries the reference
+level its venue had already resolved when the book was fetched
+(``reference_level``, nullable): the notice's price-to-beat for
+Polymarket, the market payload's ``floor_strike`` for Kalshi. Rows
+recorded before this repair keep NULL -- unknown, never backfilled or
+approximated from a spot proxy.
 """
 from __future__ import annotations
 
@@ -49,12 +63,45 @@ CREATE TABLE IF NOT EXISTS rival_convergence_book_snapshots (
     best_bid DOUBLE PRECISION, best_ask DOUBLE PRECISION,
     bid_size DOUBLE PRECISION, ask_size DOUBLE PRECISION,
     avg_bid DOUBLE PRECISION, avg_ask DOUBLE PRECISION,
-    fee_rate DOUBLE PRECISION, book_sha256 TEXT NOT NULL,
+    fee_rate DOUBLE PRECISION, reference_level DOUBLE PRECISION,
+    book_sha256 TEXT NOT NULL,
     PRIMARY KEY (venue, contract_id, source_at)
 );
 CREATE INDEX IF NOT EXISTS idx_convergence_quotes_window
     ON rival_convergence_book_snapshots (venue, asset, window_open);
 """
+
+
+def _ensure_reference_level_column(conn, store) -> None:
+    """Idempotently add reference_level to pre-repair snapshot tables.
+
+    CREATE TABLE IF NOT EXISTS cannot extend a table created before the
+    reference-level repair, so extend it after the shared DDL runs --
+    introspect first, the same additive pattern as history_recovery's
+    gap-repair columns (SQLite has no ADD COLUMN IF NOT EXISTS). The
+    column stays nullable: rows recorded before the repair keep an
+    unknown reference instead of a fabricated one.
+    """
+    present = store.database.column_names(
+        conn, "rival_convergence_book_snapshots")
+    if "reference_level" not in present:
+        conn.execute(
+            "ALTER TABLE rival_convergence_book_snapshots"
+            " ADD COLUMN reference_level DOUBLE PRECISION"
+        )
+
+
+def _valid_reference(value) -> float | None:
+    """A venue reference level, or None when the value is not evidence.
+
+    Only a finite, positive int/float counts (the shape both venues
+    publish); anything else -- missing, a string, a bool, NaN -- leaves
+    the snapshot's reference unknown rather than guessed.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    level = float(value)
+    return level if math.isfinite(level) and level > 0 else None
 
 
 def _canonical(value) -> str:
@@ -228,6 +275,12 @@ class ConvergenceQuotes:
         self._lock = threading.RLock()
         self._ready = False
         self._attempts: dict[tuple[str, str], datetime] = {}
+        # Reference levels are static per contract; cache the last valid
+        # one seen so a snapshot whose fetch lost the metadata still
+        # carries the level an earlier snapshot of the same contract
+        # resolved. Bounded by the same 20-minute horizon as _attempts.
+        self._reference_levels: dict[
+            tuple[str, str], tuple[float, datetime]] = {}
 
     def initialize(self) -> None:
         if self._ready:
@@ -237,7 +290,23 @@ class ConvergenceQuotes:
                 return
             with self.store.connect() as conn:
                 conn.executescript(_SCHEMA)
+                _ensure_reference_level_column(conn, self.store)
             self._ready = True
+
+    def _reference_for(self, venue: str, contract_id: str,
+                       value, at: datetime) -> float | None:
+        """The contract's reference level: fresh value, else the cache."""
+        clock = at.astimezone(UTC)
+        self._reference_levels = {
+            k: v for k, v in self._reference_levels.items()
+            if clock - v[1] < timedelta(minutes=20)}
+        key = (venue, contract_id)
+        level = _valid_reference(value)
+        if level is not None:
+            self._reference_levels[key] = (level, clock)
+            return level
+        cached = self._reference_levels.get(key)
+        return cached[0] if cached is not None else None
 
     def due(self, venue: str, contract_id: str, now: datetime, *,
             cooldown_seconds: int = 30) -> bool:
@@ -259,8 +328,9 @@ class ConvergenceQuotes:
                 """INSERT INTO rival_convergence_book_snapshots
                    (venue, asset, contract_id, window_open, window_close,
                     source_at, received_at, best_bid, best_ask, bid_size,
-                    ask_size, avg_bid, avg_ask, fee_rate, book_sha256)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ask_size, avg_bid, avg_ask, fee_rate, reference_level,
+                    book_sha256)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT DO NOTHING""",
                 (row["venue"], row["asset"], row["contract_id"],
                  _iso(row["window_open"]), _iso(row["window_close"]),
@@ -268,32 +338,41 @@ class ConvergenceQuotes:
                  row.get("best_bid"), row.get("best_ask"),
                  row.get("bid_size"), row.get("ask_size"),
                  row.get("avg_bid"), row.get("avg_ask"),
-                 row.get("fee_rate"), row["book_sha256"]),
+                 row.get("fee_rate"), row.get("reference_level"),
+                 row["book_sha256"]),
             )
             return cursor.rowcount > 0
 
     def record_polymarket(self, *, asset: str, slug: str, window_open: datetime,
                           window_close: datetime, fee_rate: float | None,
-                          book, received_at: datetime) -> bool:
+                          book, received_at: datetime,
+                          reference_level=None) -> bool:
         snap = clob_snapshot(book, received_at=received_at)
         if snap is None:
             return False
         return self.record({
             "venue": "polymarket", "asset": asset, "contract_id": slug,
             "window_open": window_open, "window_close": window_close,
-            "received_at": received_at, "fee_rate": fee_rate, **snap,
+            "received_at": received_at, "fee_rate": fee_rate,
+            "reference_level": self._reference_for(
+                "polymarket", slug, reference_level, received_at),
+            **snap,
         })
 
     def record_kalshi(self, *, asset: str, ticker: str, window_open: datetime,
                       window_close: datetime, payload,
-                      received_at: datetime) -> bool:
+                      received_at: datetime,
+                      reference_level=None) -> bool:
         snap = kalshi_snapshot(payload, received_at=received_at)
         if snap is None:
             return False
         return self.record({
             "venue": "kalshi", "asset": asset, "contract_id": ticker,
             "window_open": window_open, "window_close": window_close,
-            "received_at": received_at, "fee_rate": None, **snap,
+            "received_at": received_at, "fee_rate": None,
+            "reference_level": self._reference_for(
+                "kalshi", ticker, reference_level, received_at),
+            **snap,
         })
 
     def snapshots(self, *, venue: str, contract_id: str) -> list[dict]:

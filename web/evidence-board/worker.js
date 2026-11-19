@@ -235,13 +235,19 @@ let alertMemory={level:null,at:0};
    apart). The durable layer asks the collector — the only component here
    with storage — to check-and-set the alert set's identity in KV: the
    same identity sends at most once per hour across ALL isolates, while a
-   changed set (a source joins or leaves, or a failure's start moves) is a
-   new identity and sends immediately. If the collector cannot be reached
-   the send fails open: a possibly duplicated alert beats a lost one. */
+   changed set (a source joins or leaves) is a new identity and sends
+   immediately. If the collector cannot be reached the send fails open: a
+   possibly duplicated alert beats a lost one. */
+/* The identity is the alert SET (level + codes) and deliberately carries
+   no timestamps: a source alert's `since` is its latest failed check,
+   which the collector advances on every failing receipt, so keying on it
+   would mint a fresh identity each receipt and re-send at receipt
+   cadence forever. A persisting set therefore re-sends at most once per
+   hour (when its record ages out) — a bounded reminder, not silence —
+   and any change to the set posts immediately. */
 function alertIdentity(level,alerts){
- const parts=alerts.map(a=>a.code+'@'+(a.since||'')).sort();
- const identity=(level+'|'+parts.join('|')).replace(/[^A-Za-z0-9:._@|-]/g,'_');
- return identity.length<=512?identity:(level+'|'+alerts.map(a=>a.code).sort().join('|'));
+ const identity=level+'|'+alerts.map(a=>a.code).sort().join('|');
+ return identity.replace(/[^A-Za-z0-9:._@|-]/g,'_').slice(0,512);
 }
 async function alertAlreadySent(identity){
  try{

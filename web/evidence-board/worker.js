@@ -249,15 +249,24 @@ function alertIdentity(level,alerts){
  const identity=level+'|'+alerts.map(a=>a.code).sort().join('|');
  return identity.replace(/[^A-Za-z0-9:._@|-]/g,'_').slice(0,512);
 }
+/* Delivery diagnostics, surfaced on /api/status as alert_delivery: after
+   the 2026-11-19 dedupe shipped, posts continued while the collector's
+   consult log stayed empty — from outside there was no way to tell a
+   board that never deployed from a board whose consult throws. The
+   marker names the build; last_consult is this isolate's most recent
+   consult outcome ('not-run' until one settles; read a later poll). */
+const BOARD_BUILD='2026-11-19-dedupe-diag-1';
+let alertDiag={consult:'not-run',at:null};
 async function alertAlreadySent(identity){
  try{
-  if(typeof RIVAL_EVIDENCE_RECEIPTS==='undefined'||!RIVAL_EVIDENCE_RECEIPTS||typeof RIVAL_EVIDENCE_RECEIPTS.fetch!=='function')return false;
+  if(typeof RIVAL_EVIDENCE_RECEIPTS==='undefined'||!RIVAL_EVIDENCE_RECEIPTS||typeof RIVAL_EVIDENCE_RECEIPTS.fetch!=='function'){alertDiag={consult:'no-binding',at:new Date().toISOString()};return false}
   const r=await RIVAL_EVIDENCE_RECEIPTS.fetch('https://rival-evidence-collector.staytrippynlw.workers.dev/alert-throttle',
    {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:identity})});
-  if(!r.ok)return false;
+  if(!r.ok){alertDiag={consult:'http-'+r.status,at:new Date().toISOString()};return false}
   const j=await r.json();
+  alertDiag={consult:j&&j.send===false?'suppressed':'allowed',at:new Date().toISOString()};
   return !!(j&&j.send===false);
- }catch(_){return false}
+ }catch(e){alertDiag={consult:'error:'+String(e&&e.message||e).slice(0,80),at:new Date().toISOString()};return false}
 }
 async function maybeSendAlert(alerts){
  try{
@@ -393,6 +402,7 @@ if(url.pathname==='/api/status'){try{
   intelligence_inference_verified:d.intelligence_metrics?.inference_verified===true,
   after_cost_qualified_not_inferred:true,
   collection:rel.collection,sources:rel.sources,alerts:rel.alerts,bindings:rel.bindings,
+  alert_delivery:{board_build:BOARD_BUILD,last_consult:alertDiag},
   incidents:rel.counters,snapshot_is_latest_only:true},checked?200:503,'no-store');
  }catch(_){return response({site:'serving',source:'unavailable',data_health:'unavailable',evidence_recent:false,age_seconds:null,target_cadence_seconds:600},503,'no-store')}}
 if(url.pathname==='/api/diagnostics'){try{

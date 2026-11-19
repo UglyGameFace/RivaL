@@ -87,7 +87,7 @@ def test_the_lesson_is_the_majority_outcome(graded, ups, label):
 
 def test_family_names_are_registered_everywhere_they_must_be():
     assert "cross_" in CHALLENGER_PREFIXES
-    assert forward_audit.ISSUE_CROSS_V1_CHALLENGERS is True
+    assert forward_audit.ISSUE_CROSS_V1_CHALLENGERS is False  # pivot stop
     assert rename_text("cross_v1 beat cross_all_v1") == (
         "all-exchanges test beat all-coins test")
 

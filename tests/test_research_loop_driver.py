@@ -379,16 +379,22 @@ async def test_async_tick_drives_the_full_chain(tmp_path):
             models=[("f1", _candidate_payload(proposal_sha=digest))],
             reports=[("f2", _trial_report(trials=[_passing_trial(sha=digest)]))],
         )
-        out = await drive_research_loop_tick(store, drive=drive, now=NOW)
+        # Opening scheduled variants is opt-in since the price-first
+        # pivot; this test exercises the full chain including an open.
+        out = await drive_research_loop_tick(
+            store, drive=drive, now=NOW, scheduled_variants_enabled=True)
         assert out["status"] == "advanced" and out["to"] == "ablating", out
-        out = await drive_research_loop_tick(store, drive=drive, now=NOW)
+        out = await drive_research_loop_tick(
+            store, drive=drive, now=NOW, scheduled_variants_enabled=True)
         assert out["status"] == "advanced" and out["to"] == "screened", out
-        out = await drive_research_loop_tick(store, drive=drive, now=NOW)
+        out = await drive_research_loop_tick(
+            store, drive=drive, now=NOW, scheduled_variants_enabled=True)
         assert out["status"] == "advanced" and out["to"] == "shadow", out
         # No evaluation row yet: the shadow tick waits, it does not invent
         # an outcome — but the tick's one action is then opening the
         # next scheduled variant (Phase 3: advance OR open per tick).
-        out = await drive_research_loop_tick(store, drive=drive, now=NOW)
+        out = await drive_research_loop_tick(
+            store, drive=drive, now=NOW, scheduled_variants_enabled=True)
         assert out["status"] == "opened", out
         assert out["variant_id"] == "archive-premium-off", out
     finally:

@@ -262,7 +262,7 @@ def test_model_lab_ignores_early_stop_on_unrelated_exchange():
 
 
 def test_review_fills_slots_closes_a_loser_and_replaces_it(store):
-    lab = ModelLab(store)
+    lab = ModelLab(store, refill_enabled=True)
     opened = lab.review(NOW - timedelta(days=4))["opened"]
     assert len(opened) == SLOTS_PER_HORIZON * 3            # 3 timeframes
     five = sorted(lab.active(5))
@@ -287,8 +287,29 @@ def test_review_fills_slots_closes_a_loser_and_replaces_it(store):
     assert summary["best"] is None        # a closed design is never named "best"
 
 
+def test_review_closes_without_refill_at_the_default(store):
+    """Price-first pivot invariant: with refill off (the shipped default),
+    review() opens nothing — not even into a completely empty lab — while
+    scoring and closing keep working exactly as before."""
+    lab = ModelLab(store)  # refill_enabled defaults to False
+    assert lab.review(NOW - timedelta(days=4))["opened"] == []
+    assert lab.active(5) == {}
+
+    lab_on = ModelLab(store, refill_enabled=True)
+    opened = lab_on.review(NOW - timedelta(days=4))["opened"]
+    assert len(opened) == SLOTS_PER_HORIZON * 3  # 3 timeframes
+    five = sorted(lab_on.active(5))
+    loser = five[0]
+    _shadow_rows(store, loser, gain=-0.02)
+    changed = lab.review(NOW)
+    assert (loser, "clearly losing to the main model") in changed["closed"]
+    assert changed["opened"] == []
+    assert loser not in lab.active(5)
+    assert len(lab.active(5)) == SLOTS_PER_HORIZON - 1
+
+
 def test_a_design_that_passes_route_b_keeps_running_without_a_slot(store):
-    lab = ModelLab(store)
+    lab = ModelLab(store, refill_enabled=True)
     lab.review(NOW - timedelta(days=1))
     winner = min(lab.active(15))
     from parlay_bot.perpetuals.family_governance import FAMILY_PROMOTION_SCHEMA
@@ -318,16 +339,22 @@ def test_lab_designs_never_raise_regression_incidents():
     assert list(faults) == ["regression:okx:BTC:flow_v3"]
 
 
-def test_the_forecast_cycle_issues_lab_calls_beside_the_incumbent(tmp_path):
+def test_the_forecast_cycle_issues_lab_calls_beside_the_incumbent(tmp_path, monkeypatch):
     """End to end: the lab opens designs, the real cycle trains them on the
     stream's graded labels and stores their calls in the shared ledger."""
+    from parlay_bot.perpetuals import forward_audit
     from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
     from parlay_bot.perpetuals.market_store import PerpetualMarketStore
     from tests.test_regime_live import _cycle_counts, _seed_shape_candles
 
+    # Lab issuance is off by default since the price-first pivot; this test
+    # exercises the on-path, so it opts in explicitly (house pattern).
+    monkeypatch.setattr(forward_audit, "ISSUE_LAB_CHALLENGERS", True)
+    monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", True)
     now = datetime.now(UTC)
     store = SQLiteHotStore(tmp_path / "lab-cycle.sqlite")
     market = PerpetualMarketStore(store)
+    market.model_lab = ModelLab(store, refill_enabled=True)
     try:
         _seed_shape_candles(market, now=now, shape="trend")
         monitor = ForwardAccuracyMonitor(market)

@@ -95,6 +95,10 @@ def test_actual_cycle_kill_switch_and_missing_artifact(learning_store, monkeypat
         row["observed_at"] = boundary.isoformat()
     XmarketInputs(learning_store).record(rows)
     monkeypatch.setattr(forward_audit, "ISSUE_XMARKET_V1_CHALLENGERS", enabled)
+    # XMarket rows enter through the competition funnel, whose issuance
+    # gate is also off by default since the price-first pivot; this test
+    # isolates the xmarket kill switch, so it opens the funnel explicitly.
+    monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", True)
     monitor.run_once(now=now)
     with learning_store.connect() as conn:
         count = conn.execute("SELECT COUNT(*) AS n FROM rival_model_shadow_forecasts WHERE family='xmarket_v1'").fetchone()["n"]

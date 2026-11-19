@@ -987,17 +987,23 @@ def _apply_scheduled_result(store, experiment: dict, result: tuple, *, now: date
 
 async def drive_research_loop_tick(store, *, drive=None,
                                    now: datetime | None = None,
-                                   memory_pressure: bool = False) -> dict:
+                                   memory_pressure: bool = False,
+                                   scheduled_variants_enabled: bool = False) -> dict:
     from parlay_bot.research.scheduled_variants import scheduling_status
     from parlay_bot.storage.diagnostics import record_component
 
     stamp = _stamp(now)
     try:
         result = await _drive_research_loop_tick(
-            store, drive=drive, now=stamp, memory_pressure=memory_pressure)
+            store, drive=drive, now=stamp, memory_pressure=memory_pressure,
+            scheduled_variants_enabled=scheduled_variants_enabled)
         diagnostic = dict(result)
         if result['status'] == 'nothing_to_advance':
-            diagnostic.update(await asyncio.to_thread(scheduling_status, store, now=stamp))
+            if scheduled_variants_enabled:
+                diagnostic.update(
+                    await asyncio.to_thread(scheduling_status, store, now=stamp))
+            else:
+                diagnostic.update({'reason': 'scheduled_variants_disabled'})
     except Exception as exc:
         try:
             await asyncio.to_thread(record_component, store, 'research_loop',
@@ -1011,7 +1017,8 @@ async def drive_research_loop_tick(store, *, drive=None,
 
 async def _drive_research_loop_tick(store, *, drive=None,
                                    now: datetime | None = None,
-                                   memory_pressure: bool = False) -> dict:
+                                   memory_pressure: bool = False,
+                                   scheduled_variants_enabled: bool = False) -> dict:
     """One driver tick: advance at most one experiment one stage, or open one.
 
     Async orchestrator for the bot task. Drive reads happen here (the
@@ -1022,7 +1029,8 @@ async def _drive_research_loop_tick(store, *, drive=None,
     Drive failure skips the Drive-dependent stages for this tick — the
     experiments wait, nothing is invented. When nothing advances, the
     tick tries opening the next scheduled variant (spec D9/D10/D16):
-    one action per tick, an advance OR an open.
+    one action per tick, an advance OR an open. Opening requires
+    scheduled_variants_enabled; advancing never does.
     """
     stamp = _stamp(now)
     if memory_pressure:
@@ -1088,7 +1096,13 @@ async def _drive_research_loop_tick(store, *, drive=None,
     # Nothing advanced this tick: try opening the next scheduled variant
     # (spec D9/D10/D16). An exhausted grid, a full offline pool, or a
     # spent weekly budget is a normal nothing-to-do, not an error.
-    opened = await asyncio.to_thread(open_scheduled_variant, store, now=stamp)
+    # Opening is gated separately from advancing (price-first pivot,
+    # 2026-11-19): with scheduled variants disabled the driver still
+    # advances and closes the experiments already open, it just never
+    # opens new ones.
+    opened = None
+    if scheduled_variants_enabled:
+        opened = await asyncio.to_thread(open_scheduled_variant, store, now=stamp)
     if opened is not None:
         return {"status": "opened", "opened": opened["experiment_id"],
                 "variant_id": (opened.get("design_json") or {}).get("variant_id"),

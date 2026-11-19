@@ -629,8 +629,12 @@ def tried_count(horizon: int, store=None) -> int:
 class ModelLab:
     """Owns the design table, the live learners and the review/refill step."""
 
-    def __init__(self, store) -> None:
+    def __init__(self, store, *, refill_enabled: bool = False) -> None:
         self.store = store
+        # Price-first pivot (2026-11-19): review() scores and closes but
+        # opens no replacement designs unless refill is explicitly enabled
+        # (Settings.rival_lab_refill_enabled, threaded in by the bot).
+        self._refill_enabled = refill_enabled
         self.learners = LabLearners(store)
         self._ready = False
         self._active: dict[int, dict[str, dict]] = {}
@@ -866,7 +870,9 @@ class ModelLab:
         return None
 
     def review(self, now: datetime | None = None) -> dict:
-        """Score, close and refill. Safe to call often; returns what changed."""
+        """Score and close; refill only when refill_enabled.
+
+        Safe to call often; returns what changed."""
         stamp = utc(now or datetime.now(UTC))
         rows = self._rows()
         changed = {"closed": [], "opened": [], "passed": []}
@@ -900,28 +906,29 @@ class ModelLab:
                          reason or r.get("reason"), int(score.get("results", 0)),
                          int(score.get("days", 0)), score.get("gain"), r["fitness"],
                          stamp.isoformat(), r["family"]))
-            open_slots = SLOTS_PER_HORIZON - sum(r["status"] == "active" for r in here)
-            rng = random.Random(f"rival-lab:{horizon}:{len(here)}")
-            for _ in range(max(0, open_slots)):
-                tried = [{"family": r["family"], "genome": r["genome"],
-                          "fitness": r.get("fitness")} for r in here]
-                pick = propose(horizon, tried, rng)
-                if pick is None:
-                    break
-                genome, parent = pick
-                family = family_of(genome, horizon)
-                doc = canonical(genome, horizon)
-                with self.store.connect() as conn:
-                    conn.execute(
-                        """INSERT INTO rival_lab_genomes (family,horizon_minutes,genome_json,
-                             parent,status,opened_at) VALUES (?,?,?,?,?,?)
-                           ON CONFLICT (family) DO NOTHING""",
-                        (family, horizon, json.dumps(doc, sort_keys=True), parent,
-                         "active", stamp.isoformat()))
-                here.append({"family": family, "horizon_minutes": horizon, "genome": doc,
-                             "status": "active", "opened_at": stamp.isoformat(),
-                             "fitness": None})
-                changed["opened"].append(family)
+            if self._refill_enabled:
+                open_slots = SLOTS_PER_HORIZON - sum(r["status"] == "active" for r in here)
+                rng = random.Random(f"rival-lab:{horizon}:{len(here)}")
+                for _ in range(max(0, open_slots)):
+                    tried = [{"family": r["family"], "genome": r["genome"],
+                              "fitness": r.get("fitness")} for r in here]
+                    pick = propose(horizon, tried, rng)
+                    if pick is None:
+                        break
+                    genome, parent = pick
+                    family = family_of(genome, horizon)
+                    doc = canonical(genome, horizon)
+                    with self.store.connect() as conn:
+                        conn.execute(
+                            """INSERT INTO rival_lab_genomes (family,horizon_minutes,genome_json,
+                                 parent,status,opened_at) VALUES (?,?,?,?,?,?)
+                               ON CONFLICT (family) DO NOTHING""",
+                            (family, horizon, json.dumps(doc, sort_keys=True), parent,
+                             "active", stamp.isoformat()))
+                    here.append({"family": family, "horizon_minutes": horizon, "genome": doc,
+                                 "status": "active", "opened_at": stamp.isoformat(),
+                                 "fitness": None})
+                    changed["opened"].append(family)
         closed = [f for f, _ in changed["closed"]]
         if closed:
             self.learners.forget(closed)

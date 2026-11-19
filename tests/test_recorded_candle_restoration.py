@@ -122,6 +122,41 @@ async def test_unverified_or_conflicting_originals_fail_before_partition_creatio
     assert not list(tmp_path.rglob("*.manifest.json"))
 
 
+@pytest.mark.parametrize(("defect", "reason"), [
+    ("missing_sha", "sha256"),
+    ("invalid_sha", "sha256"),
+    ("wrong_kind", "kind"),
+    ("missing_id", "file_identity"),
+    ("missing_size", "size"),
+    ("malformed_size", "size"),
+    ("oversized", "size"),
+])
+@pytest.mark.asyncio
+async def test_rejected_original_reports_only_bounded_metadata_field(tmp_path, defect, reason):
+    drive = Drive([candle(datetime(2026, 11, 8, tzinfo=UTC))])
+    original = drive.files[0]
+    if defect == "missing_sha":
+        original["appProperties"].pop("rival_sha256")
+    elif defect == "invalid_sha":
+        original["appProperties"]["rival_sha256"] = "PRIVATE_BAD_SHA"
+    elif defect == "wrong_kind":
+        original["appProperties"]["rival_kind"] = "PRIVATE_BAD_KIND"
+    elif defect == "missing_id":
+        original.pop("id")
+    elif defect == "missing_size":
+        original.pop("size")
+    elif defect == "malformed_size":
+        original["size"] = "PRIVATE_BAD_SIZE"
+    else:
+        original["size"] = 64 * 1024 * 1024 + 1
+    with pytest.raises(ValueError, match="records original lacks verified SHA-256/size metadata") as err:
+        await restore(drive, tmp_path)
+    assert reason in str(err.value).split(": ", 1)[1].split(",")
+    assert "PRIVATE_" not in str(err.value)
+    assert "day-2026" not in str(err.value)
+    assert not list(tmp_path.rglob("*.manifest.json"))
+
+
 @pytest.mark.parametrize("defect", [
     "off_grid", "early_observed", "wrong_day", "bad_price", "bad_volume",
     "invalid_trade_count", "fractional_trade_count", "conflict",

@@ -682,6 +682,7 @@ class RivalDiscordClient(discord.Client):
         self.spot_reference = SpotReference()
         self.polymarket_board.formula = self.formula_test
         self._formula_task: asyncio.Task[None] | None = None
+        self._convergence_task: asyncio.Task[None] | None = None
 
         self._register_commands()
 
@@ -938,6 +939,7 @@ class RivalDiscordClient(discord.Client):
                 ("LFM3 feature lab", self._hypothesis_task),
                 ("Polymarket oracle", self._polybolt_task),
                 ("Kalshi learning", self._kalshi_research_task),
+                ("Convergence quotes", self._convergence_task),
                 ("Personal alerts", self._target_task),
             )
             embed = discord.Embed(
@@ -1558,6 +1560,10 @@ class RivalDiscordClient(discord.Client):
         if self._kalshi_research_task is None:
             self._kalshi_research_task = asyncio.create_task(
                 self._kalshi_research_loop(), name="rival-silent-kalshi-research",
+            )
+        if self.settings.rival_convergence_quotes_enabled and self._convergence_task is None:
+            self._convergence_task = asyncio.create_task(
+                self._convergence_quote_loop(), name="rival-convergence-quote-collection",
             )
         if (self.current_collector is not None or self.oddspapi_collector is not None or self.the_odds_api_collector is not None) and self._sports_task is None:
             self._sports_task = asyncio.create_task(
@@ -2276,6 +2282,121 @@ class RivalDiscordClient(discord.Client):
                     _LOG.warning("XMarket PM history unavailable asset=%s error=%s",
                                  notice.asset, type(exc).__name__)
         await asyncio.gather(*(capture(n) for n in native))
+
+    async def _convergence_quote_loop(self) -> None:
+        """Read-only executable book snapshots for the PM-lag re-measurement.
+
+        The pre-test's one surviving slice (Polymarket lagging Kalshi) was
+        measured at last/mid prices with no depth. This loop stores real
+        best bid/ask + depth snapshots for the open 15-minute contracts on
+        both venues so the effect can be re-measured at executable prices.
+        Collection only: nothing reads these rows to forecast or alert,
+        and a failure here can never touch the bot's other work.
+        """
+        await self.wait_until_ready()
+        from parlay_bot.perpetuals.convergence_quotes import ConvergenceQuotes
+
+        quotes = ConvergenceQuotes(self.store)
+        await asyncio.to_thread(quotes.initialize)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
+            while not self.is_closed():
+                started = time.monotonic()
+                try:
+                    await self._capture_convergence_quotes(quotes, client)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - research collection only
+                    _LOG.exception("RivaL convergence quote cycle failed")
+                # Wake on the configured cadence: recordings are throttled
+                # to it per contract anyway, and every wake runs a full
+                # active() scan -- polling faster would only multiply the
+                # public REST bursts without adding a single snapshot.
+                await asyncio.sleep(max(
+                    1, self.settings.rival_convergence_quotes_seconds
+                    - (time.monotonic() - started)))
+
+    async def _capture_convergence_quotes(self, quotes, client) -> None:
+        import re as _re
+
+        from parlay_bot.discord_app.kalshi_public import _ROOT as _KALSHI_ROOT
+        from parlay_bot.discord_app.polymarket_watch import CLOB as _CLOB
+        from parlay_bot.perpetuals.kalshi_updown import SERIES as _KALSHI_SERIES
+
+        cooldown = self.settings.rival_convergence_quotes_seconds
+        clock = datetime.now(UTC)
+        # Polymarket: the shared reader already enumerates the active
+        # contracts; only the Up book is fetched, for the traded side.
+        try:
+            notices = await asyncio.wait_for(
+                self.auto_hunt.polymarket.active(), timeout=16)
+        except Exception as exc:  # noqa: BLE001 - isolate the PM source
+            _LOG.info("Convergence quotes: PM listing unavailable error=%s",
+                      type(exc).__name__)
+            notices = []
+        http = self.auto_hunt.polymarket._http()
+        for notice in notices:
+            if notice.horizon != 15:
+                continue
+            if not quotes.due("polymarket", notice.slug, clock,
+                              cooldown_seconds=cooldown):
+                continue
+            try:
+                res = await http.get(f"{_CLOB}/book",
+                                     params={"token_id": notice.up_token_id})
+                res.raise_for_status()
+                book = res.json()
+                if (not isinstance(book, dict)
+                        or book.get("asset_id") != notice.up_token_id
+                        or book.get("market") != notice.condition_id):
+                    continue
+                await asyncio.to_thread(
+                    quotes.record_polymarket,
+                    asset=notice.asset, slug=notice.slug,
+                    window_open=notice.issued, window_close=notice.expires,
+                    fee_rate=notice.fee_rate, book=book,
+                    received_at=datetime.now(UTC))
+            except Exception as exc:  # noqa: BLE001 - isolate each contract
+                _LOG.info("Convergence quotes: PM book unavailable asset=%s error=%s",
+                          notice.asset, type(exc).__name__)
+        # Kalshi: list each series' open markets and snapshot the book of
+        # the contract whose 15-minute window contains now.
+        for asset, series in _KALSHI_SERIES.items():
+            try:
+                rows = (await client.get(
+                    _KALSHI_ROOT + "/markets",
+                    params={"series_ticker": series, "status": "open",
+                            "limit": 5})).json()["markets"]
+            except Exception as exc:  # noqa: BLE001 - isolate each series
+                _LOG.info("Convergence quotes: Kalshi listing unavailable series=%s error=%s",
+                          series, type(exc).__name__)
+                continue
+            for row in rows:
+                try:
+                    opens = datetime.fromisoformat(str(row.get("open_time")))
+                    closes = datetime.fromisoformat(str(row.get("close_time")))
+                    ticker = str(row.get("ticker") or "")
+                except (TypeError, ValueError):
+                    continue
+                if (opens.utcoffset() is None or closes.utcoffset() is None
+                        or not opens <= clock < closes
+                        or closes - opens != timedelta(minutes=15)
+                        or _re.fullmatch(r"[A-Z0-9-]{5,80}", ticker) is None
+                        or not ticker.startswith(series + "-")):
+                    continue
+                if not quotes.due("kalshi", ticker, clock,
+                                  cooldown_seconds=cooldown):
+                    continue
+                try:
+                    payload = (await client.get(
+                        _KALSHI_ROOT + f"/markets/{ticker}/orderbook")).json()
+                    await asyncio.to_thread(
+                        quotes.record_kalshi,
+                        asset=asset, ticker=ticker, window_open=opens,
+                        window_close=closes, payload=payload,
+                        received_at=datetime.now(UTC))
+                except Exception as exc:  # noqa: BLE001 - isolate each contract
+                    _LOG.info("Convergence quotes: Kalshi book unavailable ticker=%s error=%s",
+                              ticker, type(exc).__name__)
 
     async def _poly_research_loop(self) -> None:
         """Study genuine listed contracts silently, without consuming AI quota.

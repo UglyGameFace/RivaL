@@ -758,9 +758,25 @@ export default {
     if(!/^[A-Za-z0-9:._@|-]{1,512}$/.test(key))return reply({error:'invalid_key'},400,'no-store');
     const now=Date.now();
     const prev=await env.EVIDENCE_KV.get('alert-throttle:'+key,'json');
-    if(prev&&Number.isFinite(prev.at)&&now-prev.at<3600000)return reply({send:false,last_sent_at:new Date(prev.at).toISOString()},200,'no-store');
-    await env.EVIDENCE_KV.put('alert-throttle:'+key,JSON.stringify({at:now}),{expirationTtl:7200});
+    const send=!(prev&&Number.isFinite(prev.at)&&now-prev.at<3600000);
+    if(send)await env.EVIDENCE_KV.put('alert-throttle:'+key,JSON.stringify({at:now}),{expirationTtl:7200});
+    // Consult telemetry (2026-11-19): posts continued after the dedupe
+    // shipped while the KV record stayed frozen, which means either the
+    // board never consults or every consult fails open. Record each
+    // decision so the next incident is readable instead of guessable.
+    // Telemetry must never break the throttle: fully guarded.
+    try{
+      const log=await env.EVIDENCE_KV.get('alert-throttle-consults','json');
+      const entries=Array.isArray(log)?log:[];
+      entries.push({at:new Date(now).toISOString(),key,send});
+      await env.EVIDENCE_KV.put('alert-throttle-consults',JSON.stringify(entries.slice(-50)),{expirationTtl:3600});
+    }catch(_){}
+    if(!send)return reply({send:false,last_sent_at:new Date(prev.at).toISOString()},200,'no-store');
     return reply({send:true},200,'no-store');
+  }
+  if(req.method==='GET'&&u.pathname==='/alert-throttle-consults'){
+    const log=await env.EVIDENCE_KV.get('alert-throttle-consults','json');
+    return reply({consults:Array.isArray(log)?log:[]},200,'no-store');
   }
   if(req.method==='GET'&&u.pathname==='/latest'){
     const data=await env.EVIDENCE_KV.get('latest','json');

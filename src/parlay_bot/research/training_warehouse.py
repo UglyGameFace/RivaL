@@ -243,7 +243,14 @@ class TrainingWarehouse:
                             raise ValueError("records original lacks verified integrity metadata")
                         continue
                     sha = props.get("rival_sha256")
-                    size = int(row["size"]) if row.get("size") is not None else None
+                    try:
+                        size = int(row["size"]) if row.get("size") is not None else None
+                    except (TypeError, ValueError, OverflowError):
+                        if require_sha256:
+                            raise ValueError(
+                                "records original lacks verified SHA-256/size metadata: size"
+                            ) from None
+                        size = None
                     if require_sha256:
                         # A failed source original must remain excluded, but
                         # identify the failing metadata field without logging

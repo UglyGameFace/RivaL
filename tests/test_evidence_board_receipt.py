@@ -786,19 +786,19 @@ class ReceiptTests(unittest.TestCase):
         body = json.dumps(
             {"captured_at": fresh_at, "padding": "x" * 51_700},
             separators=(",", ":")).encode()
-        # Bigger than the old 20,000-byte limit, smaller than the 80,000
+        # Bigger than the old 20,000-byte limit, smaller than the 128,000
         # receipt cap: this body would have failed the old check.
         self.assertGreater(len(body), 20_000)
-        self.assertLess(len(body), 80_000)
+        self.assertLess(len(body), 128_000)
         with patch.object(receipt_module.request, "urlopen",
                           return_value=_FakeLatestResponse(body)):
             self.assertTrue(_recent_receipt_is_fresh())
         # A body over the cap cannot be a legal stored receipt: the check
         # still fails open to a full collection instead of crashing.
         oversized = json.dumps(
-            {"captured_at": fresh_at, "padding": "x" * 81_000},
+            {"captured_at": fresh_at, "padding": "x" * 129_000},
             separators=(",", ":")).encode()
-        self.assertGreater(len(oversized), 80_000)
+        self.assertGreater(len(oversized), 128_000)
         with patch.object(receipt_module.request, "urlopen",
                           return_value=_FakeLatestResponse(oversized)):
             self.assertFalse(_recent_receipt_is_fresh())
@@ -1306,13 +1306,16 @@ class LlmGenerationProbeTests(unittest.TestCase):
 
 class CombinedPayloadBudgetTests(unittest.TestCase):
     """Delivery 4: the D1+D2+D3 sections together must fit the collector's
-    80,000-byte cap. Before the Delivery 4 budget (40 PRs / 45 runs) a
+    byte cap. Before the Delivery 4 budget (40 PRs / 45 runs) a
     worst-case realistic receipt measured 106,820 bytes and even a live-like
     one 82,629 bytes -- both rejected with 413, losing that publication.
     The budget trims counts, not evidence: 20 RivaL PRs (every pinned PR
     plus the newest others), 12 runs, 8 Intelligence PRs / runs, and
-    80-char gate failures. The ceiling here is 76,000 bytes so a worst-case
-    run keeps >=4KB headroom."""
+    80-char gate failures. The cap was raised 80,000 -> 128,000 on
+    2026-11-19 after the live receipt reached 80,034 bytes and full
+    publications stopped; the ceiling here is the publisher's 96,000-byte
+    warning line, so a worst-case run keeps >=32KB headroom and trips the
+    warning long before the cap."""
 
     NOW = "2026-11-17T03:00:00+00:00"
     ASSETS = ("BTC", "ETH", "SOL", "XRP")
@@ -1563,31 +1566,32 @@ class CombinedPayloadBudgetTests(unittest.TestCase):
         self.assertEqual(len(intelligence["runs"]), 8)
         body = json.dumps(payload, separators=(",", ":")).encode()
         self.assertLessEqual(
-            len(body), 76000,
+            len(body), 96000,
             f"worst-case combined receipt is {len(body)} bytes; "
-            "the collector rejects anything over 80000")
+            "the collector rejects anything over 128000 and the "
+            "publisher warns past 96000")
         # F16b: the worst-case body must also pass the publisher's own
         # pre-send size guard, not just the collector's 413.
         _check_receipt_size(body)
 
     def test_oversized_receipt_is_refused_before_send(self) -> None:
-        # F16b: the publisher refuses a receipt over the 80,000-byte cap
+        # F16b: the publisher refuses a receipt over the 128,000-byte cap
         # with a clear error instead of sending it for a collector 413.
         import evidence_board_receipt as receipt_module
 
-        oversized = {"schema_version": 1, "padding": "x" * 80_001}
+        oversized = {"schema_version": 1, "padding": "x" * 128_001}
         with patch.object(receipt_module, "_url_json",
                           side_effect=AssertionError("must not send")), \
                 self.assertRaises(ValueError) as caught:
             _submit_signed_receipt(oversized, "jwt")
-        self.assertEqual(str(caught.exception), "receipt_over_80kb_cap")
-        # At exactly the cap it sends (the collector accepts <= 80,000).
+        self.assertEqual(str(caught.exception), "receipt_over_cap")
+        # At exactly the cap it sends (the collector accepts <= 128,000).
         at_cap = {"schema_version": 1,
-                  "padding": "x" * (80_000 - len(json.dumps(
+                  "padding": "x" * (128_000 - len(json.dumps(
                       {"schema_version": 1, "padding": ""},
                       separators=(",", ":")).encode()))}
         self.assertEqual(len(json.dumps(
-            at_cap, separators=(",", ":")).encode()), 80_000)
+            at_cap, separators=(",", ":")).encode()), 128_000)
         with patch.object(receipt_module, "_url_json",
                           return_value={"status": "accepted"}) as sender:
             self.assertEqual(

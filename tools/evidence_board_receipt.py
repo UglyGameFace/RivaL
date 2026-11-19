@@ -41,11 +41,20 @@ AUDIENCE = "https://rival-evidence-collector.staytrippynlw.workers.dev"
 # runs are the cadence backbone and never coalesce.
 COALESCE_FRESH_SECONDS = 300
 COLLECTION_EVENTS = ("schedule", "workflow_dispatch", "push", "workflow_run")
-# The collector rejects any receipt body over 80,000 bytes (413). The
+# The collector rejects any receipt body over 128,000 bytes (413). The
 # freshness check must be able to read any legal stored receipt, so its
 # limit is this cap, not a smaller guess; the publisher also refuses to
 # send a body over it instead of relying only on the receiver's 413.
-RECEIPT_MAX_BYTES = 80_000
+# History: the cap was 80,000 until 2026-11-19, when the live receipt —
+# every section individually allowlisted and capped, but all of them
+# filling as the bot scaled (105 streams, 12 scopes, full PR/run
+# budgets) — reached 80,034 bytes and every full publication was
+# refused, leaving only failure receipts (run 44563097960). 128,000
+# restores ~48 KB of headroom while keeping the ingest payload tightly
+# bounded; the publisher warns in the run summary past 96,000 so the
+# approach of the cap is visible before it can bite again.
+RECEIPT_MAX_BYTES = 128_000
+RECEIPT_WARN_BYTES = 96_000
 # Per-source reliability reporting (Delivery 1): every upstream is tracked
 # independently, with its own freshness bar. A failed read is unavailable,
 # never zero; a genuinely measured zero stays a zero with status ok (or
@@ -1572,7 +1581,7 @@ def _oidc_contract_summary(jwt: str) -> str:
 
 
 def _check_receipt_size(body: bytes) -> None:
-    """Refuse to send a receipt over the collector's 80,000-byte cap.
+    """Refuse to send a receipt over the collector's byte cap.
 
     The cap was previously enforced only receiver-side (413); a receipt
     that grew past it would burn a full collection and an OIDC token on a
@@ -1582,7 +1591,11 @@ def _check_receipt_size(body: bytes) -> None:
     if len(body) > RECEIPT_MAX_BYTES:
         print(f"Evidence-board receipt refused: {len(body)} bytes exceeds "
               f"the {RECEIPT_MAX_BYTES}-byte collector cap")
-        raise ValueError("receipt_over_80kb_cap")
+        raise ValueError("receipt_over_cap")
+    if len(body) > RECEIPT_WARN_BYTES:
+        print(f"Evidence-board receipt size warning: {len(body)} bytes is "
+              f"past {RECEIPT_WARN_BYTES} of the {RECEIPT_MAX_BYTES}-byte "
+              f"collector cap — trim a section before it reaches the cap")
 
 
 def _submit_signed_receipt(payload: dict, jwt: str) -> dict:

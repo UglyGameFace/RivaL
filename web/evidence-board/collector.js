@@ -788,9 +788,9 @@ export default {
     let identity;
     try{identity=await verifyGithubOIDC(auth.slice(7))}catch(e){return reply({error:'unverified_github_identity',reason:e.message},403)}
     const length=Number(req.headers.get('content-length')||0);
-    if(length>80000)return reply({error:'payload_too_large'},413);
+    if(length>128000)return reply({error:'payload_too_large'},413);
     const raw=await req.text();
-    if(raw.length>80000)return reply({error:'payload_too_large'},413);
+    if(raw.length>128000)return reply({error:'payload_too_large'},413);
     let clean;
     try{clean=build(JSON.parse(raw),identity)}catch(e){return reply({error:'invalid_receipt',reason:e.message},400)}
     const latest=await env.EVIDENCE_KV.get('latest','json');

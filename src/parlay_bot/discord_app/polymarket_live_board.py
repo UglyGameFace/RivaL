@@ -318,7 +318,7 @@ def live_polymarket_embed(
             f"<t:{int(next_window.opens.timestamp())}:R>\n"
             + pending + " This contract's current call is never reused."
         ), inline=False)
-    embed.set_footer(text="Live prices • RivaL's first call is locked • No orders placed")
+    embed.set_footer(text="Research only. No real trades. · Live prices · RivaL's first call is locked")
     return embed
 
 

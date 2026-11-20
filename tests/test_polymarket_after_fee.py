@@ -180,7 +180,7 @@ def _overview_field(polymarket_changes):
 def test_rendered_line_full_coverage():
     value = _overview_field({"after_fee_calls": 2001,
                              "after_fee_mean_net_cents": -2.23})
-    assert ("After-fee money result: -2.2¢ per call over 2,001 settled calls "
+    assert ("After-fee money result: -2.2¢ per call over 2,001 graded calls "
             "(last 7 days)") in value
 
 
@@ -188,7 +188,7 @@ def test_rendered_line_partial_coverage_states_both_counts():
     value = _overview_field({"after_fee_calls": 1900,
                              "after_fee_mean_net_cents": 0.44})
     assert ("After-fee money result: +0.4¢ per call over 1,900 of 2,001 "
-            "settled calls (last 7 days)") in value
+            "graded calls (last 7 days)") in value
 
 
 def test_rendered_line_falls_back_to_the_plain_gap():

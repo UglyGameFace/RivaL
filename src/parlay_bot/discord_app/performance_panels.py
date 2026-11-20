@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import discord
 
+from parlay_bot.discord_app.answer_cards import RESEARCH_FOOTER
 from parlay_bot.perpetuals.markets import ASSET_NAMES
 
 SECTIONS = {
@@ -35,8 +36,8 @@ def exchange_summary(reports, horizon):
     if model is None or baseline is None:
         return "Exchange baseline comparison unavailable", calls + "\nNo paired error score available."
     state = "ahead of" if model < baseline else "behind" if model > baseline else "level with"
-    return f"Main exchange model: {state} baseline", (
-        calls + f"\nProbability error **{model:.3f}** vs **{baseline:.3f}** baseline; lower is better.")
+    return f"Main model: {state} the base-rate forecast", (
+        calls + f"\nProbability error **{model:.3f}** vs **{baseline:.3f}** base-rate forecast; lower is better.")
 
 
 def poly_summary(reports):
@@ -46,9 +47,9 @@ def poly_summary(reports):
     count = int(record.get("settled_forward_contracts") or 0)
     model, market = _number(record.get("forward_brier")), _number(record.get("market_baseline_brier"))
     if not count or model is None or market is None:
-        return f"{count:,} settled contracts · no odds comparison available."
+        return f"{count:,} graded contracts · no odds comparison available."
     state = "ahead of" if model < market else "behind" if model > market else "level with"
-    return (f"{state.capitalize()} market odds · {count:,} settled contracts\n"
+    return (f"{state.capitalize()} market odds · {count:,} graded contracts\n"
             f"Probability error **{model:.3f}** vs market **{market:.3f}**.")
 
 
@@ -69,8 +70,8 @@ def after_fee_line(reports):
     mean = _number(record.get("after_fee_mean_net_cents"))
     if not covered or mean is None:
         return "After-fee money result: not measured yet"
-    scope = (f"over {covered:,} settled calls" if covered >= total
-             else f"over {covered:,} of {total:,} settled calls")
+    scope = (f"over {covered:,} graded calls" if covered >= total
+             else f"over {covered:,} of {total:,} graded calls")
     return f"After-fee money result: {mean:+.1f}¢ per call {scope} (last 7 days)"
 
 
@@ -87,12 +88,12 @@ def xmarket_summary(record, *, horizon):
                 "imported_no_shadows": "imported; waiting for first shadow",
                 "shadow_stale": "no recent issuance", "shadowing": "shadowing"}[status]
         if scope["issued_24h"]:
-            text += f" · {scope['issued_24h']:,} issued / {scope['settled_24h']:,} settled"
+            text += f" · {scope['issued_24h']:,} issued / {scope['settled_24h']:,} graded"
         lines.append(f"**{h}m** — {text}")
     if horizon not in available and available:
         lines.append("Qualified imports are on **" + "/".join(f"{h}m" for h in available)
                      + "**; this selected timeframe has no usable fit.")
-    lines.append("Last 24h. Shadow forecasts change the main model only after promotion checks pass.")
+    lines.append("Last 24h. Test-model forecasts change the main model only after promotion checks pass.")
     return "\n".join(lines)
 
 
@@ -166,7 +167,7 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
         # falling back to stating the gap plainly when it is not measured.
         verdict, _scoreboard = _scoreboard_text(coin, horizon, reports, now,
                                                 polymarket_only=True)
-        embed.description = f"{verdict}\nModels in shadow are evaluated separately."
+        embed.description = f"{verdict}\nTest models are evaluated separately."
         field("Exchange model · last 7 days", f"{headline}\n{main}", "exchange")
         field("Polymarket · last 7 days",
               poly_summary(reports) + "\n" + after_fee_line(reports),
@@ -177,11 +178,11 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
             rows = board.get("rows") or []
             ahead = sum(r.status in ("ahead", "PASSED") for r in rows)
             passed = sum(r.passed for r in rows)
-            text = (f"{len(rows)} scored families · {ahead} ahead of main · {passed} passed.\n"
+            text = (f"{len(rows)} test models scored · {ahead} ahead of the main model · {passed} passed.\n"
                     "Open Models for the comparisons and import status.")
         else:
-            text = "Trial comparisons unavailable. Open Models to check again."
-        field(f"Challengers · {horizon}m", text, "trials")
+            text = "Test model comparisons unavailable. Open Models to check again."
+        field(f"Test models · {horizon}m", text, "trials")
         field("Activity", activity_summary(reports, now))
     elif section == "models":
         trials = _trials_sections(reports)
@@ -204,7 +205,7 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
         if lab:
             field("Model Lab", lab, "best")
     elif section == "exchanges":
-        embed.description = f"**{headline}.**\nMain exchange model only · last 7 days."
+        embed.description = f"**{headline}.**\nMain model only · last 7 days."
         field("Measured performance", main, "exchange")
         confidence, conditions = _calibration_sections(reports)
         field("Confidence calibration", confidence, "calibration")
@@ -213,7 +214,7 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
     elif section == "polymarket":
         headline, scores = _scoreboard_text(coin, horizon, reports, now, polymarket_only=True)
         embed.description = headline + "\nPolymarket contracts only · last 7 days."
-        field("Against the market's own odds", scores.replace("Its bets", "Paper bets"), "polymarket")
+        field("Against the market's own odds", scores.replace("Its bets", "Practice bets"), "polymarket")
         contest = _contest_text(reports)
         if contest:
             field("Polymarket contest", contest)
@@ -224,5 +225,5 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
     if stale:
         embed.description = "⚠️ Sections marked OLD COPY are cached after a failed read.\n" + embed.description
     embed.timestamp = now.astimezone(UTC)
-    embed.set_footer(text="Research only · Snapshot; Refresh checks again · Full evidence keeps the detailed tables")
+    embed.set_footer(text=f"{RESEARCH_FOOTER} · Snapshot — Refresh checks again · Full evidence keeps the detailed tables")
     return [embed]

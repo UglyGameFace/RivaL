@@ -132,7 +132,7 @@ def test_three_embeds_carry_every_number_from_the_old_card():
     embeds = _embeds()
     assert len(embeds) == 3
     assert embeds[0].title == "📊 Bitcoin · 5-min · Bot performance"
-    assert embeds[1].title == "🧪 Models on trial here (8) — Bitcoin · 5-min"
+    assert embeds[1].title == "🧪 Test models here (8) — Bitcoin · 5-min"
     assert embeds[2].title == "🎲 Polymarket contest"
     assert "Research only" in embeds[2].footer.text
     assert "Per-model detail: Detailed Research" in embeds[2].footer.text
@@ -164,7 +164,7 @@ def test_three_embeds_carry_every_number_from_the_old_card():
     assert "Best in **turbulent** markets" in conditions
 
     # Embed 2: every trial row, grouped under plain headings.
-    trials = fields["🧪 Models on trial here (8)"]
+    trials = fields["🧪 Test models here (8)"]
     for name in ("6-year", "Calibrated", "Fast trend", "Trend learn", "Trend-only",
                  "Cross-all", "Naive Bayes", "Nearest-21"):
         assert name in trials
@@ -231,7 +231,7 @@ def test_a_stale_trials_read_marks_only_the_trials_embed():
     assert embeds[0].description.startswith("**⚠️ NOT ALL LIVE")
     assert not any(f.name.endswith("⏳ OLD COPY") for f in embeds[0].fields)
     trials_field = next(f for f in embeds[1].fields
-                        if f.name.startswith("🧪 Models on trial here"))
+                        if f.name.startswith("🧪 Test models here"))
     assert trials_field.name.endswith("⏳ OLD COPY")
     assert trials_field.value.startswith("**⏳ Old copy from 30 min ago, not live.**")
     assert not any(f.name.endswith("OLD COPY") for f in embeds[2].fields)

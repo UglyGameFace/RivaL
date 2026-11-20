@@ -71,11 +71,21 @@ DISPLAY_NAMES: dict[str, str] = {
     "quiet regime": "calm market",
     "turbulent regime": "wild market",
     "normal regime": "normal market",
-    "simple guess": "coin flip",
-    "basic forecast": "coin flip",
+    # Product pass PR-4 (2026-11-20): the baseline is a base-rate
+    # forecast; its error score is 0.250 only when the base rate is
+    # 50/50, so the old flattening of baseline words to "coin flip"
+    # was sometimes factually wrong. Only the explicit 0.250 value
+    # keeps the coin-flip name (there the two are the same number).
+    "simple guess": "base-rate forecast",
+    "basic forecast": "base-rate forecast",
     "guess 0.250": "coin flip 0.250",
     "mathematical model": "main model",
+    "main exchange model": "main model",
+    "current model": "main model",
     "live model": "main model",
+    "6-year history model": "6-year model",
+    "models on trial": "test models",
+    "challengers": "test models",
     # Nov 11: the boosted models built from history and the pooled 6-year
     # model on trial are different things; both used to be renamed
     # "6-year history model", so two pages contradicted each other.
@@ -92,8 +102,8 @@ DISPLAY_NAMES: dict[str, str] = {
     # Bare words.
     "challenger": "test model",
     "incumbent": "main model",
-    "baseline": "coin flip",
-    "guess": "coin flip",
+    "baseline": "base-rate forecast",
+    "guess": "base-rate forecast",
     "brier": "error score",
     "pooled": "6-year model",
     "advanced": "boosted history model",
@@ -400,7 +410,7 @@ def boosted_card(live_proof: dict, *, raw: str) -> AnswerCard:
     else:
         answer = "Not yet — none of the boosted history models passed screening."
         reason = (f"{screened} of {imported} passed screening. (The separate 6-year model "
-                  "is a different test, shown in Models on trial.)")
+                  "is a different test, shown in Test models.)")
         details = (
             f"Holding them back: {blocker_text}.",
             f"{int(live_proof.get('issued') or 0):,} forecasts logged in 30 days.",

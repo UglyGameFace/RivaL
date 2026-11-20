@@ -39,11 +39,11 @@ def test_mobile_overview_is_compact_and_shows_xmarket_outside_the_selected_scope
     embeds = _build()
     assert len(embeds) == 1 and len(embeds[0]) < 2200
     text = _text(embeds)
-    assert "Main exchange model: behind baseline" in text
+    assert "Main model: behind the base-rate forecast" in text
     assert "Polymarket · last 7 days" in text
     assert "5m** — no qualifying fit" in text
-    assert "15m** — shadowing · 26 issued / 12 settled" in text
-    assert "60m** — shadowing · 10 issued / 0 settled" in text
+    assert "15m** — shadowing · 26 issued / 12 graded" in text
+    assert "60m** — shadowing · 10 issued / 0 graded" in text
     assert "Qualified imports are on **15m/60m**" in text
     assert "```" not in text and "Model Lab" not in text
     assert "Getting more accurate?" not in text
@@ -55,7 +55,7 @@ def test_market_tabs_keep_baselines_and_data_separate():
     assert "0.251" in exchanges and "0.250" in exchanges
     assert "Polymarket" not in exchanges
     assert "0.233" in poly and "0.231" in poly
-    assert "Up/down calls" not in poly and "main exchange model" not in poly.lower()
+    assert "Up/down calls" not in poly and "main model" not in poly.lower()
     assert "Kalshi" not in _text(_build("polymarket", polymarket={
         **_reports()["polymarket"], "kalshi": {"contracts": 12}}))
 
@@ -68,7 +68,7 @@ def test_overview_leads_with_the_polymarket_verdict():
     embeds = _build()
     assert embeds[0].description.startswith(
         "**No edge yet: Polymarket's odds are still more accurate.**")
-    assert "Main exchange model" not in embeds[0].description
+    assert "Main model" not in embeds[0].description
 
 
 def test_overview_leads_with_the_ahead_verdict_when_polymarket_is_ahead():
@@ -81,7 +81,7 @@ def test_overview_leads_with_the_ahead_verdict_when_polymarket_is_ahead():
 def test_overview_demotes_the_exchange_line_to_its_field():
     embeds = _build()
     value = _field(embeds, "Exchange model · last 7 days")
-    assert value.startswith("Main exchange model: behind baseline")
+    assert value.startswith("Main model: behind the base-rate forecast")
     assert "graded calls" in value and "Probability error" in value
 
 
@@ -94,13 +94,13 @@ def test_overview_polymarket_field_states_the_after_fee_gap_plainly():
 
 def test_exchanges_section_still_leads_with_the_exchange_headline():
     embeds = _build("exchanges")
-    assert embeds[0].description.startswith("**Main exchange model: behind baseline.**")
+    assert embeds[0].description.startswith("**Main model: behind the base-rate forecast.**")
 
 
 def test_models_show_a_new_xmarket_before_hourly_comparison_catches_up():
     text = _text(_build("models", horizon=15))
     assert "XMarket comparison pending" in text
-    assert "Forecasts are recorded" in text and "26 issued / 12 settled" in text
+    assert "Forecasts are recorded" in text and "26 issued / 12 graded" in text
 
 
 def test_full_evidence_remains_available_and_keeps_discord_limits():

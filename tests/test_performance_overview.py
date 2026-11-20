@@ -104,7 +104,7 @@ async def test_page_is_verdict_first_then_scoreboard_trials_and_health(tmp_path,
         embeds = await home.render_embeds()
         assert len(embeds) == 3
         assert embeds[0].title == "📊 Bitcoin · 5-min · Bot performance"
-        assert embeds[1].title == "🧪 Models on trial here (0) — Bitcoin · 5-min"
+        assert embeds[1].title == "🧪 Test models here (0) — Bitcoin · 5-min"
         assert embeds[2].title == "⚙️ Running and learning"   # no contest in this fixture
         fields = _all_fields(embeds)
         assert list(fields) == [SCORE, "🎚️ Can you trust its confidence?", HEALTH]
@@ -236,8 +236,8 @@ async def test_every_model_on_trial_is_one_row_from_the_hourly_check(tmp_path, m
         embeds = await home.render_embeds()
         fields = _all_fields(embeds)
         name, value = next((k, v) for k, v in fields.items()
-                           if k.startswith("🧪 Models on trial here"))
-        assert name == "🧪 Models on trial here (3)"
+                           if k.startswith("🧪 Test models here"))
+        assert name == "🧪 Test models here (3)"
         from tests.test_trial_board import _grouped
 
         rows = _grouped(value)

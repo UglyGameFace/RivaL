@@ -51,9 +51,9 @@ from tests.test_performance_overview import (
 
 # Every old term the audit lists, in a sentence where it actually appears.
 OLD_TO_NEW = [
-    ("simple guess", "coin flip"),
-    ("baseline", "coin flip"),
-    ("basic forecast", "coin flip"),
+    ("simple guess", "base-rate forecast"),
+    ("baseline", "base-rate forecast"),
+    ("basic forecast", "base-rate forecast"),
     ("guess 0.250", "coin flip 0.250"),
     ("incumbent", "main model"),
     ("live model", "main model"),

@@ -73,7 +73,7 @@ def test_accuracy_menu_lists_five_sections_plus_technical():
     order = ["better", "money", "accuracy", "running", "technical"]
     assert [key for key, _ in _SECTIONS["accuracy"]] == order
     assert dict(_SECTIONS["accuracy"]) == {
-        "better": "Models on trial",
+        "better": "Test models",
         "money": "Would it make money?",
         "accuracy": "Accuracy details",
         "running": "Running details",

@@ -187,7 +187,7 @@ async def test_trial_detail_field_carries_the_cut_metrics(tmp_path, monkeypatch)
         progress = await view.render()
         fields = {x.name: x.value for x in progress.fields}
         detail = fields["Test-model detail (5-minute)"]
-        assert "**6-year history model:** vs coin flip 0.250" in detail
+        assert "**6-year model:** vs coin flip 0.250" in detail
         assert ("**trend-only test:** vs coin flip 0.250 · selection +0.001 "
                 "(harder subset) · coverage 6%") in detail
         assert ("**trend learner:** vs coin flip 0.250 · vs trend-only test -0.004 · "

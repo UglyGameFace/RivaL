@@ -89,7 +89,7 @@ def test_call_board_shows_unqualified_up_down_and_only_issued_next(monkeypatch):
     # only the three horizon fields remain.
     assert len(card.fields) == 3
     assert all("Entry" not in field.name for field in card.fields)
-    assert "No real orders" in card.footer.text
+    assert "Research only. No real trades." in card.footer.text
 
 
 def test_call_board_labels_calibrated_confidence_separately(monkeypatch):

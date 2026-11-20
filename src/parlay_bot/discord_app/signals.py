@@ -577,10 +577,10 @@ async def signal_embed(
         return _no_signal(asset, horizon_minutes, "Screening completed.")
 
     if venue_beats is False:
-        verdict = "⛔ No call: doing worse than a simple guess"
+        verdict = "⛔ No call: doing worse than the base-rate forecast"
         message = (
-            f"On {chosen['venue']}, its recent predictions haven't beaten a simple "
-            "guess, so RivaL won't make a call."
+            f"On {chosen['venue']}, its recent predictions haven't beaten the "
+            "base-rate forecast, so RivaL won't make a call."
         )
     elif book is None:
         verdict = "⏳ No call: can't get a live price"
@@ -593,7 +593,7 @@ async def signal_embed(
         message = (
             "The model expects the price to go "
             + ("higher" if direction == "UP" else "lower")
-            + ". It has done better than a simple guess on this exchange, but "
+            + ". It has done better than the base-rate forecast on this exchange, but "
               "that doesn't prove it makes money. This is not advice to trade."
         )
     elif (strength == "directional watch" and venue_beats is True
@@ -601,7 +601,7 @@ async def signal_embed(
             and direction != "FLAT"):
         verdict = "⏳ No call: not enough proof yet"
         message = (
-            "On average it beats a simple guess, but not on enough separate "
+            "On average it beats the base-rate forecast, but not on enough separate "
             "days to trust it yet."
         )
     elif (strength == "directional watch" and venue_beats is None
@@ -744,8 +744,8 @@ async def signal_embed(
             f"{venue_label}: {venue_count:,} finished predictions"
             + (f" • right {venue_hit:.1%}"
                if venue_hit is not None else " • not enough scored yet")
-            + (" • better than a simple guess" if venue_beats is True else
-               " • worse than a simple guess" if venue_beats is False else
+            + (" • better than the base-rate forecast" if venue_beats is True else
+               " • worse than the base-rate forecast" if venue_beats is False else
                " • too few to judge (needs 50)")
         )
         reason = str(venue_evidence.get("watch_reason", "unavailable")).replace("_", " ")
@@ -766,12 +766,12 @@ async def signal_embed(
         incumbent_brier = evidence.get("incumbent_brier")
         if challenger_brier is not None and incumbent_brier is not None:
             track_lines.append(
-                f"Vs the current model on the same candles: error score "
+                f"Vs the main model on the same candles: error score "
                 f"{incumbent_brier:.4f} (current) vs {challenger_brier:.4f} (combined); "
                 "lower is better."
             )
         else:
-            track_lines.append("Couldn't compare with the current model.")
+            track_lines.append("Couldn't compare with the main model.")
     else:
         track_lines.append(
             f"All exchanges: {global_count:,} finished"
@@ -799,7 +799,7 @@ async def signal_embed(
             if alt_beats is True
             and venue_proofs[venue].get("watch_evidence_passes") is True
             and model_strength(alt_prob) == "directional watch"
-            else "worse than a simple guess" if alt_beats is False
+            else "worse than the base-rate forecast" if alt_beats is False
             else "not enough record"
         )
         alt_lean = await asyncio.to_thread(

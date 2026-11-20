@@ -877,14 +877,27 @@ def _best_sections(reports: dict) -> tuple[str | None, str | None]:
         closed = sum(v["closed"] for v in lab.values())
         tops = [(h, v["best"]) for h, v in lab.items()
                 if v["best"] and v["best"]["fitness"] > 0]
+        lab_off = trial_board.lab_issuance_off()
         lead = ""
         if tops:
             h, top = max(tops, key=lambda t: t[1]["fitness"])
-            lead = (f" Leading so far (all coins): **{trial_board.short_name(top['family'])}** "
+            label = "Frozen record — leading so far" if lab_off else "Leading so far"
+            lead = (f" {label} (all coins): **{trial_board.short_name(top['family'])}** "
                     f"on {h}-min (early, not proven).")
-        lab_text = (f"🧬 Model Lab: {testing} designs testing, {closed} closed so far; "
-                    f"new designs are paused, so open designs only finish and "
-                    f"close.{lead}\n{footnote}")
+        if lab_off:
+            # Lab issuance is off (price-first stop, PR #704): the open
+            # designs are frozen mid-trial — nothing accrues and nothing
+            # can finish or close on new evidence — so the copy states
+            # the freeze instead of implying live testing.
+            frozen = (f"its {testing} open designs are frozen"
+                      if testing else "no designs are open")
+            lab_text = (f"🧬 Model Lab: paused — issuance is off, so {frozen} and no new "
+                        f"evidence is accruing; {closed} closed so far.{lead} "
+                        f"Full record in Full evidence.\n{footnote}")
+        else:
+            lab_text = (f"🧬 Model Lab: {testing} designs testing, {closed} closed so far; "
+                        f"new designs are paused, so open designs only finish and "
+                        f"close.{lead}\n{footnote}")
         return ("\n".join(leaders) if leaders else None), lab_text
     return ("\n".join(leaders + [footnote]) if leaders else None), None
 

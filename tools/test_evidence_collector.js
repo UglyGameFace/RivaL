@@ -17,7 +17,9 @@ async function main(){
    return Response.json({keys:[jwk]});
   }};
  vm.createContext(cx);
- vm.runInContext(source.replace('export default {','globalThis.worker = {'),cx);
+ vm.runInContext(source
+  .replace('export class AlertThrottleDO','globalThis.AlertThrottleDO = class AlertThrottleDO')
+  .replace('export default {','globalThis.worker = {'),cx);
  const now=new Date().toISOString(),epoch=Math.floor(Date.now()/1000);
  const claims={iss:'https://token.actions.githubusercontent.com',
   aud:'https://rival-evidence-collector.staytrippynlw.workers.dev',repository:'UglyGameFace/RivaL',
@@ -541,6 +543,61 @@ async function main(){
  assert.equal(consultsRes.status,404,'the consult-log endpoint was removed with the logging');
  assert.equal(records.get('alert-throttle-consults'),undefined,
   'no consult log is written');
+ // Alert throttle, Durable Object path: when the ALERT_THROTTLE binding
+ // exists, consults are answered by AlertThrottleDO — one serialized
+ // instance, so check-and-record is atomic and two simultaneous
+ // consults for a new identity cannot both send. The fake namespace
+ // serializes calls through a promise chain, modelling the platform's
+ // one-at-a-time delivery; the class under test is the real one. (The
+ // platform's serialization itself is proven live after deploy, not
+ // here.)
+ const doData=new Map();
+ const doInstance=new cx.AlertThrottleDO({storage:{
+  get:async key=>doData.get(key),
+  put:async(key,value)=>{doData.set(key,value);}}});
+ let doChain=Promise.resolve();
+ const doFetch=req=>{const run=doChain.then(()=>doInstance.fetch(req));
+  doChain=run.catch(()=>{});return run;};
+ const doEnv={...env,ALERT_THROTTLE:{idFromName:name=>name,
+  get:()=>({fetch:doFetch})}};
+ const doIdentity='warning|source_failed:do-fixture';
+ const putsBeforeDo=putCount;
+ throttleRes=await cx.worker.fetch(throttleReq(doIdentity),doEnv);
+ assert.equal((await throttleRes.json()).send,true,
+  'DO path: first sight of an identity may send');
+ throttleRes=await cx.worker.fetch(throttleReq(doIdentity),doEnv);
+ assert.equal((await throttleRes.json()).send,false,
+  'DO path: the same identity within the hour is suppressed');
+ assert.equal(putCount-putsBeforeDo,0,
+  'DO path consults cost zero KV writes');
+ assert.equal(records.has('alert-throttle:'+doIdentity),false,
+  'DO path writes no KV throttle record');
+ const raceAnswers=await Promise.all([
+  cx.worker.fetch(throttleReq('critical|source_failed:do-race'),doEnv).then(r=>r.json()),
+  cx.worker.fetch(throttleReq('critical|source_failed:do-race'),doEnv).then(r=>r.json())]);
+ assert.equal(raceAnswers.filter(a=>a.send).length,1,
+  'simultaneous consults for one identity yield exactly one send');
+ doData.set('sent:warning|do-old',{at:Date.now()-2*3600000});
+ throttleRes=await cx.worker.fetch(throttleReq('warning|do-old'),doEnv);
+ assert.equal((await throttleRes.json()).send,true,
+  'DO path: a record older than the window no longer suppresses');
+ throttleRes=await cx.worker.fetch(throttleReq('bad key with spaces'),doEnv);
+ assert.equal(throttleRes.status,400,'DO path: a malformed key is rejected');
+ // An object failure falls back to the KV check-and-set, unchanged:
+ // the consult is answered, an allowed send writes exactly the KV
+ // throttle record, and suppression still applies within the hour.
+ const brokenEnv={...env,ALERT_THROTTLE:{idFromName:name=>name,
+  get:()=>({fetch:async()=>{throw new Error('object unavailable');}})}};
+ const fallbackIdentity='warning|source_failed:do-fallback';
+ const putsBeforeFallback=putCount;
+ throttleRes=await cx.worker.fetch(throttleReq(fallbackIdentity),brokenEnv);
+ assert.equal((await throttleRes.json()).send,true,
+  'a failed object consult falls back to the KV path');
+ assert.equal(putCount-putsBeforeFallback,1,
+  'the KV fallback writes exactly the throttle record');
+ throttleRes=await cx.worker.fetch(throttleReq(fallbackIdentity),brokenEnv);
+ assert.equal((await throttleRes.json()).send,false,
+  'the KV fallback still suppresses within the hour');
  console.log('Evidence collector signed round-trip, redaction and rejection regressions passed');
 }
 main().catch(error=>{console.error(error);process.exitCode=1});

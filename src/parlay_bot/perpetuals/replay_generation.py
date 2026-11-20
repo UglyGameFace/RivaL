@@ -689,6 +689,22 @@ def record_results(store, entries: list[dict]) -> int:
     return len(entries)
 
 
+def _results_table_exists(store) -> bool:
+    """SELECT-only existence check: the board renders through
+    read-only connections that reject any other statement class (the
+    performance probe enforces SELECT/WITH only), so the PRAGMA /
+    information_schema column probe other readers use is not safe
+    here."""
+    if store.database.backend == "sqlite":
+        sql = ("SELECT name FROM sqlite_master"
+               " WHERE type='table' AND name=?")
+    else:
+        sql = ("SELECT table_name AS name FROM information_schema.tables"
+               " WHERE table_schema = current_schema() AND table_name=?")
+    with store.connect() as conn:
+        return conn.execute(sql, (RESULTS_TABLE,)).fetchone() is not None
+
+
 def read_results_for_board(store) -> dict:
     """Latest recorded result per candidate, newest first.
 
@@ -696,14 +712,13 @@ def read_results_for_board(store) -> dict:
     has not recorded a run); any other read failure raises, so the
     board shows "couldn't load" rather than a false zero.
     """
-    with store.connect() as conn:
-        if not store.database.column_names(conn, RESULTS_TABLE):
-            return {"candidates": []}
-        rows = list(wb._stream(
-            store,
-            f"SELECT candidate_id, screen, factory, display, status,"
-            f" verdict, graded_rows, calls, days, evaluated_at"
-            f" FROM {RESULTS_TABLE} ORDER BY evaluated_at DESC", ()))
+    if not _results_table_exists(store):
+        return {"candidates": []}
+    rows = list(wb._stream(
+        store,
+        f"SELECT candidate_id, screen, factory, display, status,"
+        f" verdict, graded_rows, calls, days, evaluated_at"
+        f" FROM {RESULTS_TABLE} ORDER BY evaluated_at DESC", ()))
     latest: dict[str, dict] = {}
     for raw in rows:
         item = dict(raw)

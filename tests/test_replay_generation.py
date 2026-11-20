@@ -287,6 +287,40 @@ def test_results_roundtrip_and_missing_table(tmp_path):
     assert board["candidates"][0]["verdict"] == "PASS"
 
 
+def test_board_read_is_select_only(tmp_path):
+    """The performance probe renders every view through connections
+    that reject any statement not starting with SELECT/WITH; the
+    board read must honour that (no PRAGMA existence probe)."""
+    from contextlib import contextmanager
+
+    inner = SQLiteHotStore(tmp_path / "guarded.sqlite")
+
+    class Connection:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def execute(self, sql, params=()):
+            assert sql.strip().split()[0].upper() in ("SELECT", "WITH")
+            return self.conn.execute(sql, params)
+
+    class Guarded:
+        database = inner.database
+
+        @contextmanager
+        def connect(self):
+            with inner.connect() as conn:
+                yield Connection(conn)
+
+    assert gen.read_results_for_board(Guarded()) == {"candidates": []}
+    gen.record_results(inner, [{
+        "candidate_id": "gen-book-all", "screen": "G-A", "factory": "lab",
+        "display": "Book model · all book signals", "status": "EVALUATED",
+        "verdict": "KILL", "graded_rows": 10, "calls": 9, "days": 7,
+        "evaluated_at": "2026-11-20T17:00:00+00:00", "detail": {}}])
+    board = gen.read_results_for_board(Guarded())
+    assert board["candidates"][0]["verdict"] == "KILL"
+
+
 def test_workbench_text_states():
     assert "Couldn't load" in workbench_text(None)
     assert "No graded candidates yet" in workbench_text({"candidates": []})

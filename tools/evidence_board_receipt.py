@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import UTC, datetime
 from urllib import error, parse, request
 
@@ -40,6 +41,7 @@ AUDIENCE = "https://rival-evidence-collector.staytrippynlw.workers.dev"
 # Drive and the receiver while a receipt younger than this stands. Schedule
 # runs are the cadence backbone and never coalesce.
 COALESCE_FRESH_SECONDS = 300
+HOST_READ_RETRY_DELAY_SECONDS = 60
 COLLECTION_EVENTS = ("schedule", "workflow_dispatch", "push", "workflow_run")
 # The collector rejects any receipt body over 128,000 bytes (413). The
 # freshness check must be able to read any legal stored receipt, so its
@@ -1917,10 +1919,27 @@ def publish() -> int:
         return 0
     errors: dict[str, BaseException] = {}
     host_report: dict | None = None
+    host_unconfigured = False
     try:
         host_report = read_host()
+        host_unconfigured = host_report is None
     except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
         errors["host"] = exc
+        # One retry after a pause. The common transient is the bot
+        # mid-restart during a deploy: the console read misses the host
+        # receipt entirely and the same read succeeds a minute later.
+        # A returned None (credentials absent or malformed) is never
+        # retried — it cannot fix itself — and a second failure keeps
+        # its own exception so the receipt reports the real failure.
+        time.sleep(HOST_READ_RETRY_DELAY_SECONDS)
+        try:
+            host_report = read_host()
+            host_unconfigured = host_report is None
+            if not host_unconfigured:
+                errors.pop("host", None)
+        except (error.URLError, OSError, TimeoutError, ValueError,
+                KeyError, TypeError) as retry_exc:
+            errors["host"] = retry_exc
     try:
         host, db = summarize_host(host_report)
     except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
@@ -1957,9 +1976,12 @@ def publish() -> int:
     except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
         errors["performance"] = exc
         performance = {"status": "unavailable", "scopes": []}
-    if host_report is None:
-        # read_host returns None only when Discloud credentials are absent
-        # or malformed; keep that distinct from a network/auth failure.
+    if host_unconfigured:
+        # read_host returned None (never raised): Discloud credentials
+        # are absent or malformed. A raised read failure keeps its own
+        # error above and must never be relabeled as this — until
+        # 2026-11-20 every transient host-read miss (e.g. the bot
+        # mid-restart) was published as credentials_not_configured.
         errors["host"] = ValueError("host_credentials_not_configured")
     now = datetime.now(UTC).isoformat()
     sources = build_source_details(

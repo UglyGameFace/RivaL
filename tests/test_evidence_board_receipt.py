@@ -907,6 +907,122 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(payload["sources"]["performance"]["status"],
                          "failed_read")
 
+    def test_host_read_failure_is_not_mislabeled_as_credentials(self) -> None:
+        # Regression (2026-11-20): a raised host read — e.g. the bot
+        # mid-restart during a deploy, so the console reply carries no
+        # receipt — used to be overwritten with
+        # host_credentials_not_configured because host_report stayed
+        # None, and the board posted a bogus credentials warning. The
+        # receipt must carry the real failure, after exactly one retry.
+        import evidence_board_receipt as receipt_module
+
+        seen: dict = {}
+
+        def _capture(payload: dict, jwt: str) -> dict:
+            seen["payload"] = payload
+            return {"status": "accepted"}
+
+        with patch.dict(os.environ, {
+            "GITHUB_EVENT_NAME": "schedule", "GITHUB_RUN_ID": "44002956865",
+            "GITHUB_RUN_ATTEMPT": "1", "GITHUB_TOKEN": "",
+            "DISCLOUD_TOKEN": "", "DISCLOUD_LLM_APP_ID": "",
+            "RIVAL_DRIVE_REPORTS_FOLDER_ID": "",
+        }), patch.object(receipt_module, "HOST_READ_RETRY_DELAY_SECONDS", 0), \
+                patch.object(receipt_module, "read_host",
+                             side_effect=ValueError(
+                                 "missing host learning receipt")) as host_read, \
+                patch.object(receipt_module, "_github_oidc",
+                             return_value="jwt"), \
+                patch.object(receipt_module, "_submit_signed_receipt",
+                             side_effect=_capture), \
+                patch.object(receipt_module, "_recent_receipt_is_fresh",
+                             return_value=False):
+            self.assertEqual(publish(), 0)
+        self.assertEqual(host_read.call_count, 2)
+        sources = seen["payload"]["sources"]
+        self.assertEqual(sources["discloud_forecast"]["status"], "failed_read")
+        self.assertEqual(sources["discloud_forecast"]["reason"],
+                         "invalid_response")
+        self.assertEqual(sources["discloud_learning"]["status"], "failed_read")
+        self.assertEqual(sources["postgres"]["status"], "no_records")
+
+    def test_host_read_retry_recovers_from_a_transient_failure(self) -> None:
+        import evidence_board_receipt as receipt_module
+
+        report = {
+            "outcome": "verified",
+            "forecast": {"status": "fresh", "issued": 105},
+            "learning": {"status": "fresh", "settled": 101,
+                         "math_ok": True, "model_review_ok": True},
+            "forward_proof": {"status": "recorded",
+                              "qualified_paper_scopes": 0,
+                              "evaluated_scopes": 12},
+            "actual_learning": {
+                "status": "weight_updates_observed",
+                "streams_with_verified_weight_updates": 102,
+                "streams_with_before_after": 102,
+            },
+        }
+        seen: dict = {}
+
+        def _capture(payload: dict, jwt: str) -> dict:
+            seen["payload"] = payload
+            return {"status": "accepted"}
+
+        with patch.dict(os.environ, {
+            "GITHUB_EVENT_NAME": "schedule", "GITHUB_RUN_ID": "44002956865",
+            "GITHUB_RUN_ATTEMPT": "1", "GITHUB_TOKEN": "",
+            "DISCLOUD_TOKEN": "", "DISCLOUD_LLM_APP_ID": "",
+            "RIVAL_DRIVE_REPORTS_FOLDER_ID": "",
+        }), patch.object(receipt_module, "HOST_READ_RETRY_DELAY_SECONDS", 0), \
+                patch.object(receipt_module, "read_host",
+                             side_effect=[ValueError(
+                                 "missing host learning receipt"),
+                                 report]) as host_read, \
+                patch.object(receipt_module, "_github_oidc",
+                             return_value="jwt"), \
+                patch.object(receipt_module, "_submit_signed_receipt",
+                             side_effect=_capture), \
+                patch.object(receipt_module, "_recent_receipt_is_fresh",
+                             return_value=False):
+            self.assertEqual(publish(), 0)
+        self.assertEqual(host_read.call_count, 2)
+        sources = seen["payload"]["sources"]
+        self.assertEqual(sources["discloud_forecast"]["status"], "ok")
+        self.assertEqual(sources["discloud_learning"]["status"], "ok")
+        self.assertEqual(sources["postgres"]["status"], "ok")
+
+    def test_host_read_returning_none_is_not_retried(self) -> None:
+        # None means the credentials are absent or malformed; retrying
+        # cannot change that, and the label stays credentials_not_configured.
+        import evidence_board_receipt as receipt_module
+
+        seen: dict = {}
+
+        def _capture(payload: dict, jwt: str) -> dict:
+            seen["payload"] = payload
+            return {"status": "accepted"}
+
+        with patch.dict(os.environ, {
+            "GITHUB_EVENT_NAME": "schedule", "GITHUB_RUN_ID": "44002956865",
+            "GITHUB_RUN_ATTEMPT": "1", "GITHUB_TOKEN": "",
+            "DISCLOUD_TOKEN": "", "DISCLOUD_LLM_APP_ID": "",
+            "RIVAL_DRIVE_REPORTS_FOLDER_ID": "",
+        }), patch.object(receipt_module, "HOST_READ_RETRY_DELAY_SECONDS", 0), \
+                patch.object(receipt_module, "read_host",
+                             return_value=None) as host_read, \
+                patch.object(receipt_module, "_github_oidc",
+                             return_value="jwt"), \
+                patch.object(receipt_module, "_submit_signed_receipt",
+                             side_effect=_capture), \
+                patch.object(receipt_module, "_recent_receipt_is_fresh",
+                             return_value=False):
+            self.assertEqual(publish(), 0)
+        self.assertEqual(host_read.call_count, 1)
+        self.assertEqual(
+            seen["payload"]["sources"]["discloud_forecast"]["status"],
+            "not_configured")
+
 
 class LlmMetricsTests(unittest.TestCase):
     def _valid_raw(self) -> dict:

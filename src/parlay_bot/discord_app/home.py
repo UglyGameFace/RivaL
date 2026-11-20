@@ -842,6 +842,94 @@ def _best_record(market: object, asset: str, horizon: int) -> dict:
     return out
 
 
+def _workbench_record(market: object, asset: str, _horizon: int) -> dict:
+    """Replay workbench standings (latest recorded result per candidate).
+
+    Read-only against the workbench's own results table; the table is
+    written only by the workbench CLI, never by the bot.
+    """
+    from parlay_bot.perpetuals.replay_generation import read_results_for_board
+
+    with statement_timeout(PERFORMANCE_STATEMENT_TIMEOUT_MS):
+        return read_results_for_board(market.store)
+
+
+def workbench_text(record: object, *, full: bool = False) -> str:
+    """Replay workbench standings in plain words.
+
+    What the factory made, what it scored, what died. A candidate PASS
+    licenses only a written prospective-test proposal -- it is not a
+    qualification and it places no trades (RivaL is indicator-only).
+    """
+    if not isinstance(record, dict):
+        return (
+            "⚠️ Couldn't load the replay results right now. Press Refresh; "
+            "this is a slow read, not missing results."
+        )
+    candidates = record.get("candidates") or []
+    if not candidates:
+        return (
+            "No graded candidates yet. The factory grades new designs "
+            "offline against the market's own prices; results land here "
+            "after each workbench run."
+        )
+
+    def _state(cand: dict) -> str:
+        if cand.get("verdict") == "PASS":
+            return "✅ PASSED the screen"
+        if cand.get("verdict") == "KILL":
+            return "❌ killed"
+        return {
+            "NOT_MEASURABLE": "⏳ not measurable yet",
+            "DATA-BLOCKED": "⛔ data-blocked",
+        }.get(cand.get("status") or "", cand.get("status") or "")
+
+    passed = sum(1 for c in candidates if c.get("verdict") == "PASS")
+    killed = sum(1 for c in candidates if c.get("verdict") == "KILL")
+    pending = sum(1 for c in candidates if c.get("status") == "NOT_MEASURABLE")
+    blocked = sum(1 for c in candidates if c.get("status") == "DATA-BLOCKED")
+    summary = (
+        f"Graded {len(candidates)} candidates: {passed} passed · "
+        f"{killed} killed · {pending} not measurable yet · "
+        f"{blocked} data-blocked."
+    )
+    if full:
+        def _names(verdict: str | None = None,
+                   status: str | None = None) -> list[str]:
+            return [
+                str(c.get("display") or c.get("candidate_id"))
+                for c in candidates
+                if (c.get("verdict") == verdict if verdict
+                    else c.get("status") == status)
+            ]
+
+        parts = [summary]
+        if passed:
+            parts.append("Passed: " + "; ".join(_names(verdict="PASS")) + ".")
+        if pending:
+            parts.append("Not measurable yet: "
+                         + "; ".join(_names(status="NOT_MEASURABLE")) + ".")
+        if blocked:
+            parts.append("Data-blocked: "
+                         + "; ".join(_names(status="DATA-BLOCKED")) + ".")
+        if killed:
+            parts.append("Killed: " + "; ".join(_names(verdict="KILL")) + ".")
+        text = "\n".join(parts)
+        if len(text) > 1024:
+            text = text[:1000].rsplit(" ", 1)[0] + " …"
+        return text
+    lines = [summary]
+    for cand in candidates[:6]:
+        line = f"• {cand.get('display') or cand.get('candidate_id')} — {_state(cand)}"
+        if cand.get("graded_rows"):
+            line += (f" · {int(cand['graded_rows']):,} graded"
+                     f" · {int(cand.get('calls') or 0):,} calls")
+        lines.append(line)
+    if len(candidates) > 6:
+        lines.append(f"+{len(candidates) - 6} more in Full evidence.")
+    return "\n".join(lines)
+
+
 def _best_sections(reports: dict) -> tuple[str | None, str | None]:
     """(timeframe leaders, Model Lab): each None when it has nothing to say.
 
@@ -1424,6 +1512,10 @@ def performance_embeds(coin: str, horizon: int, reports: dict, *, now: datetime,
                    ("best",))
     if lab:
         _add_field(second, stale, "🧬 Model Lab", lab, ("best",))
+    if "workbench" in reports:
+        _add_field(second, stale, "🔁 Replay workbench",
+                   workbench_text(reports.get("workbench"), full=True),
+                   ("workbench",))
 
     contest = _contest_text(reports)
     third = discord.Embed(
@@ -1442,7 +1534,8 @@ def performance_embeds(coin: str, horizon: int, reports: dict, *, now: datetime,
     # Discord caps a message's embeds at 6,000 characters combined: drop
     # the optional sections, least important first, as the single-embed
     # page did.
-    for embed, optional in ((third, "🎲 Polymarket contest"),
+    for embed, optional in ((second, "🔁 Replay workbench"),
+                            (third, "🎲 Polymarket contest"),
                             (second, f"🏆 Best model per timeframe ({coin})"),
                             (second, "🧬 Model Lab")):
         if sum(len(e) for e in embeds) <= 5900:
@@ -2648,7 +2741,7 @@ class GuidedHome(discord.ui.View):
         """Read only the selected panel's evidence; failed reads stay explicit."""
         required = {
             "overview": {"exchange", "polymarket", "xmarket", "trials", "cycles"},
-            "models": {"trials", "best", "xmarket"},
+            "models": {"trials", "best", "xmarket", "workbench"},
             "accuracy": {"exchange", "calibration"},
             "polymarket": {"polymarket", "contest"},
             "health": {"benefit", "cycles", "coverage", "feeds", "intelligence", "xmarket"},
@@ -2665,6 +2758,8 @@ class GuidedHome(discord.ui.View):
                 "trials": (_cached_page_read,
                     (_trial_board_record, self.market, self.coin, self.horizon), refresh),
                 "best": (_cached_page_read, (_best_record, self.market, self.coin, 0), refresh),
+                "workbench": (_cached_page_read,
+                    (_workbench_record, self.market, self.coin, 0), refresh),
                 "xmarket": (_cached_page_read, (_xmarket_record, self.market, self.coin, 0),
                     {**refresh, "max_age_seconds": 60}),
                 "intelligence": (_intelligence_status,

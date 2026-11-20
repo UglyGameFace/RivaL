@@ -145,6 +145,7 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
         _health_text,
         _scoreboard_text,
         _trials_sections,
+        workbench_text,
     )
 
     section = LEGACY_SECTIONS.get(section, section)
@@ -222,6 +223,9 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
             field(f"Leaders · {coin}", leaders, "best")
         if lab:
             field("Model Lab", lab, "best")
+        if "workbench" in reports:
+            field("Replay workbench", workbench_text(reports.get("workbench")),
+                  "workbench")
     elif section == "accuracy":
         embed.description = f"**{headline}.**\nMain model only · last 7 days."
         field("Measured performance", main, "exchange")

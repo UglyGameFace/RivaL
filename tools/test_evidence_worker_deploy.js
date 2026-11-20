@@ -91,6 +91,30 @@ checkBindings([...collector.bindings,
 assert.throws(() => checkBindings([...collector.bindings,
   { type: 'durable_object_namespace', name: 'ALERT_THROTTLE' }],
   collector.bindings, collector.optionalBindings), /bindings differ/);
+// Production read-back shape (build 8f231a66, 2026-11-20): once the
+// object exists, the settings API returns its binding carrying the
+// Cloudflare-assigned namespace id and the owning script's name.
+// That shape must satisfy the contract — the first Durable Object
+// deploy landed and served, then this check refused it — while the
+// same shape under another class name is still refused.
+const storedCollector = [...collector.bindings,
+  { type: 'durable_object_namespace', name: 'ALERT_THROTTLE',
+    class_name: 'AlertThrottleDO', script_name: 'rival-evidence-collector',
+    namespace_id: 'b3b0c1a2d4e5f60718293a4b5c6d7e8f' }];
+checkBindings(storedCollector, collector.bindings, collector.optionalBindings);
+assert.throws(() => checkBindings([...collector.bindings,
+  { type: 'durable_object_namespace', name: 'ALERT_THROTTLE', class_name: 'OtherClass',
+    script_name: 'rival-evidence-collector', namespace_id: 'b3b0c1a2d4e5f60718293a4b5c6d7e8f' }],
+  collector.bindings, collector.optionalBindings), /bindings differ/);
+// The steady-state plan for the stored shape: the binding is
+// recognised as the declared one (no duplicate append, no repeated
+// migration) and rides in the upload in its declared shape.
+const storedPlan = planUpload(storedCollector, collector);
+assert.deepEqual(storedPlan.bindings,
+  [...collector.bindings, ...collector.optionalBindings],
+  'a stored Durable Object binding uploads in its declared shape');
+assert.equal(storedPlan.migrations, null,
+  'no migration is sent for the stored Durable Object binding');
 
 const bootstrapPlan = planUpload(collector.bindings, collector);
 assert.deepEqual(bootstrapPlan.bindings,

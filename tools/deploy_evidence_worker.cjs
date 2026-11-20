@@ -60,6 +60,18 @@ const EXPECTED = Object.freeze({
 });
 
 function bindingKey(binding) {
+  if (binding.type === 'durable_object_namespace') {
+    // A Durable Object binding's identity is the class it points at.
+    // The settings API reports Cloudflare-assigned facts about the
+    // namespace alongside it (its namespace id, the owning script's
+    // name); those are read-back state, not part of the contract the
+    // upload declares, so they never enter the key. (First DO deploy,
+    // build 8f231a66 on 2026-11-20: the upload landed and the object
+    // served live, but this check then refused the deployment because
+    // the returned binding's key carried the assigned namespace id
+    // and could not match the declared spec.)
+    return [binding.type, binding.name, binding.class_name || ''].join(':');
+  }
   return [binding.type, binding.name, binding.service || '',
     binding.environment || '', binding.namespace_id || '',
     binding.class_name || ''].join(':');
@@ -114,7 +126,15 @@ function uploadBindings(bindings) {
    carried forward like every other binding and no migration is sent
    again. */
 function planUpload(settingsBindings, target) {
-  const bindings = uploadBindings(settingsBindings);
+  // A stored Durable Object binding comes back from the settings API
+  // carrying Cloudflare-assigned fields (namespace id, script name);
+  // the upload declares the binding in its contract shape — type,
+  // name and class — exactly as the first, migration-carrying upload
+  // did. Every other binding passes through uploadBindings unchanged.
+  const bindings = uploadBindings(settingsBindings).map(binding =>
+    binding && binding.type === 'durable_object_namespace'
+      ? { type: binding.type, name: binding.name, class_name: binding.class_name }
+      : binding);
   const newClasses = [];
   for (const spec of target.optionalBindings || []) {
     if (spec.type !== 'durable_object_namespace') continue;

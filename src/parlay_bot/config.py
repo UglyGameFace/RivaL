@@ -61,6 +61,15 @@ class Settings(BaseSettings):
     rival_polybolt_recorder_enabled: bool = Field(default=True)
     rival_kalshi_brti_enabled: bool = Field(default=True)
     rival_settlement_index_seconds: int = Field(default=10, ge=5, le=30)
+    # Forward collection for the N1 options-implied pre-test (design +
+    # amendment 2026-11-19): the historical Deribit surface archive the
+    # design wanted is paid-only (step 0), so Felix chose the free route
+    # -- record the live Deribit options surface and the Polymarket
+    # threshold/barrier markets hourly and let the sample accrue.
+    # Collection only; no model input, no evaluation, no issuance.
+    rival_n1_surface_enabled: bool = Field(default=True)
+    rival_n1_threshold_enabled: bool = Field(default=True)
+    rival_n1_collection_seconds: int = Field(default=3600, ge=600, le=21600)
     # Shared, read-only websocket feeds; offload only verified quote samples
     # into forward shadow research. Never persist a database row per tick.
     rival_stream_enabled: bool = Field(default=True)

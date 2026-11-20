@@ -119,7 +119,7 @@ async function main() {
   assert.equal(bindingCalls.length, 2, 'an allowed send also records the identity first');
   assert.equal(vm.runInContext('alertDiag.consult', context), 'allowed',
     'the approval must be visible in the delivery diagnostics');
-  assert.equal(vm.runInContext('BOARD_BUILD', context), '2026-11-19-dedupe-fallback-1',
+  assert.equal(vm.runInContext('BOARD_BUILD', context), '2026-11-19-attempt-gap-1',
     'the build marker must name this build');
 
   // Consult-failure fallback: when the collector itself is failing (its

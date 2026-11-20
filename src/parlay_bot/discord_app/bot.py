@@ -75,6 +75,7 @@ from parlay_bot.perpetuals.hyperliquid_history_recovery import (
 )
 from parlay_bot.perpetuals.kalshi_brti import KalshiBRTI
 from parlay_bot.perpetuals.kalshi_forward import KalshiForwardResearch
+from parlay_bot.perpetuals.kalshi_thresholds import KalshiThresholdsRecorder
 from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
 from parlay_bot.perpetuals.lighter_history_recovery import LighterHistoryRecovery
 from parlay_bot.perpetuals.liquidity_record import LiquidityRecorder, LiquidityStore
@@ -715,10 +716,13 @@ class RivalDiscordClient(discord.Client):
         # (amendment 2026-11-19): hourly Deribit surface + Polymarket
         # threshold-market snapshots from public APIs, so the test's
         # sample accrues live -- the historical surface archive is
-        # paid-only. Collection only; each recorder stays inert while
-        # its gate is off.
+        # paid-only. The Kalshi threshold recorder joins them: the
+        # exploratory arm's historical-archive fallback has a moving
+        # coverage cutoff, so its markets accrue live too. Collection
+        # only; each recorder stays inert while its gate is off.
         self.options_surface = OptionsSurfaceRecorder(self.store)
         self.threshold_markets = ThresholdMarketsRecorder(self.store)
+        self.kalshi_thresholds = KalshiThresholdsRecorder(self.store)
         self._n1_collection_task: asyncio.Task[None] | None = None
         self.kalshi_forward = KalshiForwardResearch(self.store)
         self.kalshi_browser = KalshiCryptoBrowser(forward=self.kalshi_forward)
@@ -1659,7 +1663,8 @@ class RivalDiscordClient(discord.Client):
                     "the fair-value Kalshi sample does not accrue until they are set"
                 )
         if (self.settings.rival_n1_surface_enabled
-                or self.settings.rival_n1_threshold_enabled) \
+                or self.settings.rival_n1_threshold_enabled
+                or self.settings.rival_n1_kalshi_threshold_enabled) \
                 and self._n1_collection_task is None:
             self._n1_collection_task = asyncio.create_task(
                 self._n1_collection_loop(), name="rival-n1-forward-collection",
@@ -1674,6 +1679,12 @@ class RivalDiscordClient(discord.Client):
                 _LOG.info(
                     "RivaL N1 Polymarket threshold-market recorder started "
                     "(hourly Gamma snapshots; forward sample accrues "
+                    "from today)"
+                )
+            if self.settings.rival_n1_kalshi_threshold_enabled:
+                _LOG.info(
+                    "RivaL N1 Kalshi threshold-market recorder started "
+                    "(hourly public-API snapshots; forward sample accrues "
                     "from today)"
                 )
         if (self.current_collector is not None or self.oddspapi_collector is not None or self.the_odds_api_collector is not None) and self._sports_task is None:
@@ -2421,16 +2432,21 @@ class RivalDiscordClient(discord.Client):
         under the 2026-11-19 amendment the sample accrues live instead:
         the full Deribit BTC/ETH options surface and the open
         Polymarket threshold/barrier markets, snapshotted hourly from
-        public APIs. Collection only: no wedge is computed, nothing
-        reads these rows yet, and each source is failure-isolated -- a
-        Deribit or Gamma outage leaves a gap in that hour's record and
-        can never touch the bot's other work.
+        public APIs. The Kalshi threshold markets join the same cycle:
+        the exploratory arm's venue archive has a moving coverage
+        cutoff, so its sample accrues live too. Collection only: no
+        wedge is computed, nothing reads these rows yet, and each
+        source is failure-isolated -- a Deribit, Gamma or Kalshi
+        outage leaves a gap in that hour's record and can never touch
+        the bot's other work.
         """
         await self.wait_until_ready()
         if self.settings.rival_n1_surface_enabled:
             await asyncio.to_thread(self.options_surface.initialize)
         if self.settings.rival_n1_threshold_enabled:
             await asyncio.to_thread(self.threshold_markets.initialize)
+        if self.settings.rival_n1_kalshi_threshold_enabled:
+            await asyncio.to_thread(self.kalshi_thresholds.initialize)
         async with httpx.AsyncClient(
                 timeout=httpx.Timeout(30.0)) as client:
             while not self.is_closed():
@@ -2482,6 +2498,23 @@ class RivalDiscordClient(discord.Client):
                     else:
                         total += result["rows"]
                 _LOG.info("RivaL N1 threshold snapshot rows=%d", total)
+        if self.settings.rival_n1_kalshi_threshold_enabled:
+            try:
+                receipt = await self.kalshi_thresholds.capture(client, now=now)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - isolate the Kalshi source
+                _LOG.exception("RivaL N1 Kalshi threshold snapshot cycle failed")
+            else:
+                total = 0
+                for ticker, result in receipt.items():
+                    if "error" in result:
+                        _LOG.warning(
+                            "RivaL N1 Kalshi threshold snapshot failed "
+                            "series=%s error=%s", ticker, result["error"])
+                    else:
+                        total += result["rows"]
+                _LOG.info("RivaL N1 Kalshi threshold snapshot rows=%d", total)
 
     async def _convergence_quote_loop(self) -> None:
         """Read-only executable book snapshots for the PM-lag re-measurement.
@@ -3988,7 +4021,8 @@ class RivalDiscordClient(discord.Client):
                     continue
                 if (attr == "_n1_collection_task"
                         and not (self.settings.rival_n1_surface_enabled
-                                 or self.settings.rival_n1_threshold_enabled)):
+                                 or self.settings.rival_n1_threshold_enabled
+                                 or self.settings.rival_n1_kalshi_threshold_enabled)):
                     continue
                 faults[f"worker:{name}"] = "background worker exited unexpectedly"
                 # Three restarts per rolling hour, at most one per minute.

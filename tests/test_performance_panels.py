@@ -50,10 +50,10 @@ def test_mobile_overview_is_compact_and_shows_xmarket_outside_the_selected_scope
 
 
 def test_market_tabs_keep_baselines_and_data_separate():
-    exchanges = _text(_build("exchanges"))
+    accuracy = _text(_build("accuracy"))
     poly = _text(_build("polymarket"))
-    assert "0.251" in exchanges and "0.250" in exchanges
-    assert "Polymarket" not in exchanges
+    assert "0.251" in accuracy and "0.250" in accuracy
+    assert "Polymarket" not in accuracy
     assert "0.233" in poly and "0.231" in poly
     assert "Up/down calls" not in poly and "main model" not in poly.lower()
     assert "Kalshi" not in _text(_build("polymarket", polymarket={
@@ -92,9 +92,23 @@ def test_overview_polymarket_field_states_the_after_fee_gap_plainly():
     assert "After-fee money result: not measured yet" in value
 
 
-def test_exchanges_section_still_leads_with_the_exchange_headline():
-    embeds = _build("exchanges")
+def test_accuracy_section_still_leads_with_the_exchange_headline():
+    embeds = _build("accuracy")
     assert embeds[0].description.startswith("**Main model: behind the base-rate forecast.**")
+
+
+def test_selector_holds_exactly_five_sections_and_legacy_keys_resolve():
+    # Product pass PR-5: one results surface, five selector entries.
+    from parlay_bot.discord_app.performance_panels import resolve_section
+
+    assert list(SECTIONS) == ["overview", "models", "polymarket", "accuracy", "health"]
+    assert resolve_section("exchanges") == "accuracy"
+    assert resolve_section("details") == "details"
+    assert resolve_section("overview") == "overview"
+    assert resolve_section("nonsense") is None
+    # A stale menu's old key renders the consolidated section, not a
+    # dead one: identical output to the new key.
+    assert _text(_build("exchanges")) == _text(_build("accuracy"))
 
 
 def test_models_show_a_new_xmarket_before_hourly_comparison_catches_up():
@@ -155,7 +169,9 @@ async def test_default_home_is_one_overview_and_skips_unrelated_slow_readers(tmp
         home.research_factory = lambda _owner: object()
         home._buttons()
         rows = [c.row for c in home.children if isinstance(c, home_module.discord.ui.Button)]
-        assert all(rows.count(row) <= 3 for row in set(rows))
+        # PR-5: the utility row carries four short buttons (After-Cost
+        # Check, Full evidence, Home, Back); every other row stays at 3.
+        assert all(rows.count(row) <= 4 for row in set(rows))
         select = next(c for c in home.children if c.custom_id.endswith("performance-section"))
         assert {o.value for o in select.options} == set(SECTIONS)
         home.performance_section = "models"
@@ -184,6 +200,28 @@ async def test_refresh_reads_new_lifecycle_and_keeps_the_selected_view(tmp_path,
         assert home._performance_refresh and home.performance_section == "models"
         await home._performance_reports()
         assert len(calls) == 2
+    finally:
+        await _close(bot, home)
+
+
+@pytest.mark.asyncio
+async def test_full_evidence_button_opens_the_detailed_tables(tmp_path, monkeypatch):
+    # PR-5: Full evidence is no longer a selector entry; its own button
+    # on the Performance page opens it (one tap from the page).
+    bot, home = _make_home(tmp_path)
+    _patch_live_reads(monkeypatch)
+    try:
+        home.navigate("performance")
+        home._buttons()
+        labels = [c.label for c in home.children
+                  if isinstance(c, home_module.discord.ui.Button)]
+        assert "Full evidence" in labels
+        home.redraw = AsyncMock()
+        interaction = SimpleNamespace(response=SimpleNamespace(defer=AsyncMock()))
+        await home.act(interaction, "full-evidence")
+        assert home.page == "performance" and home.performance_section == "details"
+        embeds = await home.render_embeds()
+        assert len(embeds) == 3 and "Scoreboard" in _text(embeds)
     finally:
         await _close(bot, home)
 

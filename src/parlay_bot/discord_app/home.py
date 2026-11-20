@@ -103,7 +103,7 @@ EXPLAIN = {
     "quote": "Ask is about what you'd pay to buy; bid is about what you'd get to sell. Real orders can fill at a different price.",
     "practice": "Practice uses pretend money only. Buy if you think the price will rise, sell if you think it will fall. Pretend wins never count as real profit.",
     "results": "These are your own pretend trades. They never count toward the bot's prediction record.",
-    "performance": "Choose Models for XMarket imports and forecast activity, Exchange results or Polymarket results for their own scores, and Health for running and baseline checks. Full evidence keeps the detailed tables.",
+    "performance": "One results surface, five views: Overview, Models, Polymarket, Accuracy and Health. Full evidence keeps the detailed tables.",
     "help": "Crypto covers prediction markets and crypto exchanges. Sports covers sportsbook odds. DraftKings sports futures are sports bets, not crypto.",
     "advanced": "Detailed Research, Sports, Help, how much of each data service is being used, and exact-price alerts.",
     "feeds": "This screen moved: Bot Performance now shows whether price feeds and predictions are running.",
@@ -1880,6 +1880,9 @@ class GuidedHome(discord.ui.View):
                 self._add("Detailed Research", "research", 3, "🔬")
                 self._add("Track Next Predictions", "track-forward", 3, "🎯")
             self._add("After-Cost Check", "proof", 4, "💸")
+            # Product pass PR-5: Full evidence left the view selector (the
+            # selector holds exactly five sections) but stays one tap away.
+            self._add("Full evidence", "full-evidence", 4, "📋")
         elif p == "help":
             self._add("Markets", "crypto-desk", 0, "📈", True)
             self._add("Bot Performance", "performance", 0, "📊")
@@ -2612,7 +2615,7 @@ class GuidedHome(discord.ui.View):
         required = {
             "overview": {"exchange", "polymarket", "xmarket", "trials", "cycles"},
             "models": {"trials", "best", "xmarket"},
-            "exchanges": {"exchange", "calibration"},
+            "accuracy": {"exchange", "calibration"},
             "polymarket": {"polymarket", "contest"},
             "health": {"benefit", "cycles", "coverage", "feeds", "intelligence", "xmarket"},
         }.get(self.performance_section)
@@ -3305,6 +3308,11 @@ class GuidedHome(discord.ui.View):
                 "kalshi": "kalshi", "live-dk": None,
             }[action]
             self.navigate("live" if self.live_source is not None else "crypto-desk")
+        elif action == "full-evidence":
+            # Product pass PR-5: the detailed tables behind their own
+            # Performance-page button (no longer a selector entry).
+            self.performance_section = "details"
+            self.navigate("performance")
         elif action in ("home", "discover", "sports", "crypto", "crypto-desk", "hunt", "live", "practice",
                         "results", "performance", "help", "advanced", "feeds", "trust"):
             if action == "performance" and self.page == "performance":
@@ -3677,7 +3685,7 @@ _STALE_BUTTONS_C = (
 )
 # Views A-C are full (Discord's five rows). New buttons go here.
 _STALE_BUTTONS_D = (
-    "watch-models", "call-board",
+    "watch-models", "call-board", "full-evidence",
 )
 
 
@@ -3781,14 +3789,23 @@ class _StaleGuidedMenuBase(discord.ui.View):
             home.coin = coin
         if horizon is not None and horizon in RESEARCH_HORIZONS:
             home.horizon = horizon
-        from parlay_bot.discord_app.performance_panels import SECTIONS
+        from parlay_bot.discord_app.performance_panels import resolve_section
 
-        if performance_section in SECTIONS:
-            home.performance_section = performance_section
+        # Product pass PR-5: legacy section keys from an old menu
+        # ("exchanges", "details") resolve to their consolidated home.
+        resolved_section = (
+            resolve_section(performance_section)
+            if performance_section is not None else None
+        )
+        if resolved_section is not None:
+            home.performance_section = resolved_section
             home.navigate("performance")
         elif market in MARKET_NAMES:
             home.live_source = market
             home.navigate("crypto-desk")
+        elif action == "full-evidence":
+            home.performance_section = "details"
+            home.navigate("performance")
         elif action in _STALE_SAFE_PAGES:
             home.navigate(_STALE_SAFE_PAGES[action])
         elif coin is not None or horizon is not None:

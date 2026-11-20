@@ -282,6 +282,9 @@ _TOPIC_FIELDS = {
     "progress": ("Future model proof",),
     "lineage": ("How is RivaL learning?",),
     "tracker": ("Prediction tracking",),
+    # PR-5: Math's old learning section, folded under Test models; the
+    # static model field renders in every configuration.
+    "shadow": ("Main model",),
     "costs": ("Execution cost verification",),
     "method": ("How accuracy is audited",),
     "technical": ("Model training actually used",

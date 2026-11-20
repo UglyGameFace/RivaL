@@ -92,6 +92,30 @@ def test_overview_shows_useful_verified_summary_without_20_fields():
     assert "Issued 119" in accuracy.fields[2].value
 
 
+@pytest.mark.asyncio
+async def test_math_polymarket_section_is_a_pointer_to_bot_performance():
+    # Product pass PR-5: the settled Polymarket record has one home —
+    # Bot Performance → Polymarket. Math's old section is the pointer a
+    # deep link lands on; the duplicate render is gone, and the removed
+    # "Is RivaL learning?" section no longer appears in the selector.
+    dashboard = ResearchDashboard(
+        owner_id=42, market=None, ai=None, venues=("hyperliquid",),
+    )
+    try:
+        dashboard.screen = "math"
+        dashboard.section = "overview"
+        dashboard._rebuild()
+        select = control(dashboard, "rival:research:section")
+        assert "learning" not in [o.value for o in select.options]
+        result = await dashboard.render()
+        names = [f.name for f in result.fields]
+        assert names[1].startswith("Polymarket results")
+        assert "Bot Performance → Polymarket" in result.fields[1].value
+        assert "settled:" not in result.fields[1].value
+    finally:
+        dashboard.stop()
+
+
 class Response:
     def __init__(self):
         self.deferred = False
@@ -334,7 +358,9 @@ def test_research_accuracy_offers_plain_and_technical_sections():
     assert labels["running"] == "Running details"
     assert labels["money"] == "Would it make money?"
     assert labels["technical"] == "Technical evidence"
-    assert ACCURACY_SECTIONS["better"] == ("progress", "lineage", "tracker")
+    # PR-5: Math's "Is RivaL learning?" folded in as the shadow topic.
+    assert ACCURACY_SECTIONS["better"] == (
+        "progress", "lineage", "tracker", "shadow")
     assert ACCURACY_SECTIONS["running"] == ("engine", "readiness", "venue")
     assert ACCURACY_SECTIONS["accuracy"] == (
         "five", "fifteen", "calibration", "ledger")

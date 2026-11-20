@@ -146,6 +146,28 @@ def test_headline_ok_keeps_lean_format():
     )
 
 
+def test_headline_weak_model_leads_with_no_edge():
+    # Product pass (2026-11-19): below the watch line the preview says
+    # NO EDGE first; the lean is named after it, never as the headline.
+    snap = TargetSnapshot(
+        "BTC", 5, "UP", "detail", probability=0.54, status="weak_model",
+    )
+    assert _crypto_preview_headline(snap) == (
+        "NO EDGE — no qualified call (leans UP 54.0% raw, "
+        "below the watch line)"
+    )
+
+
+def test_headline_unqualified_model_leads_with_no_qualified_call():
+    snap = TargetSnapshot(
+        "BTC", 5, "DOWN", "detail", probability=0.68,
+        status="unqualified_model",
+    )
+    assert _crypto_preview_headline(snap) == (
+        "NO QUALIFIED CALL — model not proven (leans DOWN 68.0% raw)"
+    )
+
+
 def test_headline_each_wait_state():
     cases = {
         "tied": "No directional call — model tied",

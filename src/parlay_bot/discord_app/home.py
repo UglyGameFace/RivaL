@@ -1553,6 +1553,21 @@ def _crypto_preview_headline(snapshot: TargetSnapshot | None) -> str:
     if snapshot is None:
         return "Preview timed out — Get Signal checks live"
     if snapshot.probability is not None:
+        # Product pass (2026-11-19): a lean that is not a qualified call
+        # never leads with its direction. Below the watch line there is
+        # no edge to show; an unproven model has no call to show. The
+        # lean itself stays on the full card, labelled — it just is not
+        # the headline.
+        if snapshot.status == "weak_model":
+            return (
+                f"NO EDGE — no qualified call (leans {snapshot.direction} "
+                f"{snapshot.probability:.1%} raw, below the watch line)"
+            )
+        if snapshot.status == "unqualified_model":
+            return (
+                f"NO QUALIFIED CALL — model not proven (leans "
+                f"{snapshot.direction} {snapshot.probability:.1%} raw)"
+            )
         return (
             f"{snapshot.direction} lean • raw "
             f"{snapshot.probability:.1%} ({model_strength(snapshot.probability)})"
@@ -1591,10 +1606,18 @@ def crypto_snapshot_card(
         and snapshot.issued_at is not None and snapshot.issued_at <= stamp
         and snapshot.direction in ("UP", "DOWN")
     )
-    status = (
-        f"{snapshot.direction} LEAN • RESEARCH ONLY"
-        if current else "WAIT • NO SIGNAL"
-    )
+    # Product pass (2026-11-19): the title leads with the direction only
+    # for an evidence-qualified snapshot. A sub-threshold lean is NO EDGE
+    # and an unproven model's lean is NO QUALIFIED CALL; both leans stay
+    # visible in the Strength tile with their not-a-call labels.
+    if not current:
+        status = "WAIT • NO SIGNAL"
+    elif snapshot.status == "weak_model":
+        status = "NO EDGE • NO CALL"
+    elif snapshot.status == "unqualified_model":
+        status = "NO QUALIFIED CALL"
+    else:
+        status = f"{snapshot.direction} LEAN • RESEARCH ONLY"
     embed = discord.Embed(
         title=f"{ASSET_NAMES.get(asset, asset)} • {horizon} min | {status}",
         description=(

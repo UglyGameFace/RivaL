@@ -729,7 +729,11 @@ def test_home_card_shows_lean_with_below_line_label():
         live_lean_as_of=now - timedelta(seconds=30),
     )
     card = crypto_snapshot_card(snapshot, asset="BTC", horizon=5, checked_at=now)
-    assert "UP LEAN • RESEARCH ONLY" in card.title
+    # Product pass (2026-11-19): a sub-threshold lean no longer leads the
+    # title with its direction — the title says NO EDGE, and the lean
+    # itself stays in the Strength tile with its below-the-line label.
+    assert "NO EDGE • NO CALL" in card.title
+    assert "UP LEAN" not in card.title
     fields = {f.name: f.value for f in card.fields}
     assert "below the 56% watch line, not a qualified call" in fields["⚡ Strength"]
     assert "Live lean: UP 58%" in fields["⚡ Strength"]
@@ -741,6 +745,24 @@ def test_home_card_shows_lean_with_below_line_label():
     stale_card = crypto_snapshot_card(stale, asset="BTC", horizon=5, checked_at=now)
     stale_fields = {f.name: f.value for f in stale_card.fields}
     assert "Live lean unavailable — data stale" in stale_fields["⚡ Strength"]
+
+
+def test_home_card_unqualified_model_title_says_no_qualified_call():
+    now = datetime.now(UTC)
+    snapshot = TargetSnapshot(
+        "BTC", 5, "DOWN", "Lean: DOWN 68% — not a qualified call.",
+        venue="hyperliquid", probability=0.68, price=100.0,
+        issued_at=now - timedelta(minutes=1),
+        ends_at=now + timedelta(minutes=4), status="unqualified_model",
+    )
+    card = crypto_snapshot_card(snapshot, asset="BTC", horizon=5, checked_at=now)
+    # The direction must not lead the title; the not-a-call note and the
+    # raw score stay in the Strength tile.
+    assert "NO QUALIFIED CALL" in card.title
+    assert "DOWN LEAN" not in card.title
+    fields = {f.name: f.value for f in card.fields}
+    assert "Not a qualified call: not enough proof yet" in fields["⚡ Strength"]
+    assert "68.0% raw score" in fields["⚡ Strength"]
 
 
 def test_target_embed_shows_otg_and_lean_fields():

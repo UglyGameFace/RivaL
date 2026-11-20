@@ -50,6 +50,86 @@ def polymarket_fee(price: float, rate: float = POLYMARKET_CRYPTO_FEE_RATE) -> fl
     return rate * price * (1 - price)
 
 
+_FORWARD_FEE_COLUMNS = ("fee_rate", "up_average_ask", "down_average_ask")
+
+
+def _ensure_forward_fee_columns(conn, store) -> None:
+    """Idempotently add per-contract fee evidence to forward rows.
+
+    CREATE TABLE IF NOT EXISTS cannot extend a table created before this
+    change, so extend it after the shared DDL runs -- introspect first, the
+    same additive pattern as convergence_quotes' reference_level repair.
+    The columns stay nullable: rows issued before the change keep unknown
+    fee evidence instead of a fabricated one, and after-fee readers fall
+    back to the published schedule for them.
+    """
+    present = set(store.database.column_names(
+        conn, "rival_polymarket_model_forward"))
+    for name in _FORWARD_FEE_COLUMNS:
+        if name not in present:
+            conn.execute(
+                "ALTER TABLE rival_polymarket_model_forward"
+                f" ADD COLUMN {name} DOUBLE PRECISION"
+            )
+            present.add(name)
+
+
+# Polymarket's published crypto fee schedule changed at this instant:
+# before it, every crypto Up/Down market used the 0.07 coefficient; from
+# it, BTC 5m/15m use 0.05 and all other crypto Up/Down markets use 0.01.
+# Recorded production fee evidence agrees for the pre-change period:
+# every Polymarket snapshot taken by the convergence collector before
+# the change carries fee_rate 0.07 (10,460 of 10,460 checked 2026-11-20).
+FEE_SCHEDULE_CHANGE_AT = datetime(2026, 11, 20, 23, 59, tzinfo=UTC)
+
+
+def polymarket_scheduled_fee_rate(*, asset, horizon, issued_at) -> float:
+    """The venue's published taker-fee coefficient for a crypto contract."""
+    if issued_at < FEE_SCHEDULE_CHANGE_AT:
+        return POLYMARKET_CRYPTO_FEE_RATE
+    if asset == "BTC" and horizon in (5, 15):
+        return 0.05
+    return 0.01
+
+
+def after_fee_call_net(*, probability_up, direction, features, market_baseline,
+                       asset, horizon, issued_at):
+    """Net per 1-share unit for one settled call, or None when unpriceable.
+
+    The model takes the side its probability favoured at the recorded
+    depth-average ask of its issuance book (features[0]/[1] are the best
+    asks, features[4]/[5] the depth-average offsets, as recorded by
+    book_features). The stored observation is only trusted as the
+    issuance book when its implied baseline equals the forward row's
+    frozen market_baseline; anything else is excluded rather than priced
+    from the wrong book. Payout is 1 when the favoured side won, else 0,
+    minus the taker fee at the published schedule rate for the contract.
+    """
+    try:
+        values = [float(v) for v in features]
+        if len(values) < 6:
+            return None
+        up_ask, down_ask = values[0], values[1]
+        if not (math.isfinite(up_ask) and math.isfinite(down_ask)) \
+                or up_ask + down_ask <= 0:
+            return None
+        if abs(up_ask / (up_ask + down_ask) - float(market_baseline)) > 1e-9:
+            return None
+        probability = float(probability_up)
+        if probability == .5:
+            return None
+        up = probability > .5
+        price = (up_ask + values[4]) if up else (down_ask + values[5])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not math.isfinite(price) or not 0 < price < 1:
+        return None
+    rate = polymarket_scheduled_fee_rate(
+        asset=asset, horizon=horizon, issued_at=issued_at)
+    won = (direction == "UP") == up
+    return (1.0 if won else 0.0) - price - polymarket_fee(price, rate)
+
+
 class PolymarketOutcomeLearner:
     def __init__(self, store):
         self.store = store
@@ -91,12 +171,14 @@ class PolymarketOutcomeLearner:
                 CREATE TABLE IF NOT EXISTS rival_polymarket_model_forward (
                     slug TEXT NOT NULL,model_version TEXT NOT NULL,issued_at TEXT NOT NULL,
                     weights_sha256 TEXT NOT NULL,probability_up DOUBLE PRECISION NOT NULL,market_baseline DOUBLE PRECISION NOT NULL,
+                    fee_rate DOUBLE PRECISION,up_average_ask DOUBLE PRECISION,down_average_ask DOUBLE PRECISION,
                     PRIMARY KEY(slug,model_version)
                 );
                 CREATE TABLE IF NOT EXISTS rival_polymarket_pooled_quotes (
                     slug TEXT PRIMARY KEY, up_ask DOUBLE PRECISION NOT NULL,
                     down_ask DOUBLE PRECISION NOT NULL
                 );""")
+                _ensure_forward_fee_columns(conn, self.store)
             self._initialized = True
 
     def contest_forecasts(self, notice) -> dict:
@@ -255,10 +337,12 @@ class PolymarketOutcomeLearner:
             candidate_p = _sigmoid(sum(w*x for w, x in zip(weights, (1., *features))))
             conn.execute(
                 "INSERT INTO rival_polymarket_model_forward "
-                "(slug,model_version,issued_at,weights_sha256,probability_up,market_baseline) "
-                "VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+                "(slug,model_version,issued_at,weights_sha256,probability_up,market_baseline,"
+                "fee_rate,up_average_ask,down_average_ask) "
+                "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
                 (notice.slug, MODEL, issued.isoformat(), weight_sha, candidate_p,
-                 notice.up_ask/(notice.up_ask+notice.down_ask)),
+                 notice.up_ask/(notice.up_ask+notice.down_ask),
+                 notice.fee_rate, notice.up_average_ask, notice.down_average_ask),
             )
             # Always render the first prospectively issued model forecast.
             # The original forward row and observation are immutable even if
@@ -378,7 +462,8 @@ class PolymarketOutcomeLearner:
                 "FROM rival_polymarket_observations" + where, params,
             ).fetchone()
             rows = conn.execute(
-                "SELECT f.probability_up,f.market_baseline,o.direction "
+                "SELECT f.probability_up,f.market_baseline,o.direction,"
+                "f.issued_at,v.asset,v.horizon,v.features_json "
                 "FROM rival_polymarket_model_forward f "
                 "JOIN rival_polymarket_observations v ON v.slug=f.slug "
                 "JOIN rival_polymarket_ai_outcomes o "
@@ -394,10 +479,28 @@ class PolymarketOutcomeLearner:
                 (MODEL, since, clock.isoformat(), clock.isoformat(), *params),
             ).fetchall()
         count = len(rows)
+        nets = []
+        for r in rows:
+            try:
+                issued = datetime.fromisoformat(str(r["issued_at"]))
+                features = json.loads(r["features_json"])
+            except (TypeError, ValueError):
+                continue
+            if issued.tzinfo is None:
+                continue
+            net = after_fee_call_net(
+                probability_up=r["probability_up"], direction=r["direction"],
+                features=features, market_baseline=r["market_baseline"],
+                asset=r["asset"], horizon=int(r["horizon"]), issued_at=issued)
+            if net is not None:
+                nets.append(net)
         return {
             "observed_contracts": int(counts["observed"]),
             "learned_contracts": int(counts["learned"] or 0),
             "settled_forward_contracts": count,
+            "after_fee_calls": len(nets),
+            "after_fee_mean_net_cents": (
+                sum(nets) / len(nets) * 100 if nets else None),
             "score_window_days": 7,
             "model": MODEL,
             "forward_brier": (

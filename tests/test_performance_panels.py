@@ -60,6 +60,43 @@ def test_market_tabs_keep_baselines_and_data_separate():
         **_reports()["polymarket"], "kalshi": {"contracts": 12}}))
 
 
+def _field(embeds, name):
+    return next(f.value for f in embeds[0].fields if f.name == name)
+
+
+def test_overview_leads_with_the_polymarket_verdict():
+    embeds = _build()
+    assert embeds[0].description.startswith(
+        "**No edge yet: Polymarket's odds are still more accurate.**")
+    assert "Main exchange model" not in embeds[0].description
+
+
+def test_overview_leads_with_the_ahead_verdict_when_polymarket_is_ahead():
+    polymarket = {**_reports()["polymarket"], "forward_brier": .229}
+    embeds = _build(polymarket=polymarket)
+    assert embeds[0].description.startswith(
+        "**Ahead of Polymarket's odds so far, but not proven yet.**")
+
+
+def test_overview_demotes_the_exchange_line_to_its_field():
+    embeds = _build()
+    value = _field(embeds, "Exchange model · last 7 days")
+    assert value.startswith("Main exchange model: behind baseline")
+    assert "graded calls" in value and "Probability error" in value
+
+
+def test_overview_polymarket_field_states_the_after_fee_gap_plainly():
+    embeds = _build()
+    value = _field(embeds, "Polymarket · last 7 days")
+    assert "Behind market odds" in value and "Probability error" in value
+    assert "After-fee money result: not measured yet" in value
+
+
+def test_exchanges_section_still_leads_with_the_exchange_headline():
+    embeds = _build("exchanges")
+    assert embeds[0].description.startswith("**Main exchange model: behind baseline.**")
+
+
 def test_models_show_a_new_xmarket_before_hourly_comparison_catches_up():
     text = _text(_build("models", horizon=15))
     assert "XMarket comparison pending" in text

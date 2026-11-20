@@ -52,6 +52,28 @@ def poly_summary(reports):
             f"Probability error **{model:.3f}** vs market **{market:.3f}**.")
 
 
+def after_fee_line(reports):
+    """The live Polymarket model's after-fee money result, or the gap stated.
+
+    The figure comes from polymarket_learning.summary(): per settled call,
+    the favoured side bought at the recorded issuance book's depth-average
+    ask, payout minus price minus the published-schedule taker fee. Calls
+    whose recorded book cannot be verified as the issuance book are not
+    priced, so the covered count is stated whenever it is partial.
+    """
+    record = reports.get("polymarket")
+    if not isinstance(record, dict):
+        return "After-fee money result: not measured yet"
+    covered = int(record.get("after_fee_calls") or 0)
+    total = int(record.get("settled_forward_contracts") or 0)
+    mean = _number(record.get("after_fee_mean_net_cents"))
+    if not covered or mean is None:
+        return "After-fee money result: not measured yet"
+    scope = (f"over {covered:,} settled calls" if covered >= total
+             else f"over {covered:,} of {total:,} settled calls")
+    return f"After-fee money result: {mean:+.1f}¢ per call {scope} (last 7 days)"
+
+
 def xmarket_summary(record, *, horizon):
     if not isinstance(record, dict) or record.get("status") != "recorded":
         return "XMarket lifecycle unavailable; missing data is not zero models. Press Refresh."
@@ -137,9 +159,18 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
         _add_field(embed, stale, name, value, sources)
 
     if section == "overview":
-        embed.description = f"**{headline}.**\nModels in shadow are evaluated separately."
-        field("Exchange model · last 7 days", main, "exchange")
-        field("Polymarket · last 7 days", poly_summary(reports), "polymarket")
+        # Product pass PR-2: the Overview leads with the existing Polymarket
+        # verdict (the same headline the Full evidence scoreboard computes);
+        # the exchange-model line demotes to its field. PR-2b: the Polymarket
+        # field carries the model's after-fee money result (after_fee_line),
+        # falling back to stating the gap plainly when it is not measured.
+        verdict, _scoreboard = _scoreboard_text(coin, horizon, reports, now,
+                                                polymarket_only=True)
+        embed.description = f"{verdict}\nModels in shadow are evaluated separately."
+        field("Exchange model · last 7 days", f"{headline}\n{main}", "exchange")
+        field("Polymarket · last 7 days",
+              poly_summary(reports) + "\n" + after_fee_line(reports),
+              "polymarket")
         field(f"XMarket · {coin}", xmarket_summary(reports.get("xmarket"), horizon=horizon), "xmarket")
         board = reports.get("trials")
         if isinstance(board, dict):

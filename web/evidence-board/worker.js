@@ -215,8 +215,8 @@ function computeAlerts(input){
  if(!input.snapshotOk)alerts.push({code:'snapshot_unavailable',level:'critical',message:'No verified signed snapshot is available from the collector',since:null});
  else if(age===null||age<0||age>COLLECTION_STALE_SECONDS)alerts.push({code:'collection_stale',level:'critical',message:'No successful signed publication in the last hour',since:input.capturedAt||null});
  const gap=collection.schedule_gap_seconds;
- if(gap===null||gap===undefined)alerts.push({code:'schedule_gap',level:'warning',message:'No scheduled collection attempt has been recorded',since:null});
- else if(gap>43200)alerts.push({code:'schedule_gap',level:'warning',message:'No scheduled collection attempt in the last 12 hours',since:collection.last_scheduled_attempt_at||null});
+ if(gap===null||gap===undefined)alerts.push({code:'schedule_gap',level:'warning',message:'No collection attempt has been recorded',since:null});
+ else if(gap>43200)alerts.push({code:'schedule_gap',level:'warning',message:'No collection attempt in the last 12 hours',since:collection.last_attempt_at||null});
  if(collection.last_attempt_outcome==='failed')alerts.push({code:'collection_attempt_failed',level:'warning',message:'Last collection attempt failed: '+(collection.last_attempt_reason||'unknown reason'),since:collection.last_attempt_at||null});
  for(const s of input.sources||[]){
   if(RELIABILITY_FAILING.includes(s.status))alerts.push({code:'source_failed:'+s.name,level:'warning',message:'Source '+s.name+' is '+s.status+(s.reason?' ('+s.reason+')':''),since:s.last_error_at||null});
@@ -255,7 +255,7 @@ function alertIdentity(level,alerts){
    board that never deployed from a board whose consult throws. The
    marker names the build; last_consult is this isolate's most recent
    consult outcome ('not-run' until one settles; read a later poll). */
-const BOARD_BUILD='2026-11-19-dedupe-fallback-1';
+const BOARD_BUILD='2026-11-19-attempt-gap-1';
 let alertDiag={consult:'not-run',at:null};
 /* The consult's verdict is tri-state: 'suppressed' / 'allowed' are the
    collector's definitive answers; 'unknown' means the consult itself
@@ -385,12 +385,21 @@ async function buildReliability(snapshot,diag,probeMarket){
  // snapshot is itself an accepted attempt.
  const scheduleAt=lastSchedule?lastSchedule.attempted_at:
   (snapCollection&&snapCollection.event==='schedule'?snapCollection.attempted_at:null);
- const scheduleGap=scheduleAt?Math.floor((Date.now()-Date.parse(scheduleAt))/1000):null;
+ const attemptAt=lastAttempt?(lastAttempt.attempted_at||lastAttempt.received_at||null):
+  (snapCollection?snapCollection.attempted_at:null);
+ // The gap is measured from the last collection attempt of ANY trigger,
+ // not from the last GitHub-schedule attempt: the schedule fires only
+ // sporadically (15 schedule runs in 99 h, measured 2026-11-17) while
+ // the keepalive's dispatches carry the 10-minute cadence, so a
+ // schedule-only gap warned near-permanently over a healthy pipeline
+ // (2026-11-19: the warning outlived the outage it belonged to). The
+ // field keeps its historical name; last_scheduled_attempt_at above
+ // still reports the raw schedule figure for Diagnostics.
+ const scheduleGap=attemptAt?Math.floor((Date.now()-Date.parse(attemptAt))/1000):null;
  const collection={
   last_scheduled_attempt_at:scheduleAt,
   last_successful_publication_at:lastPublication?lastPublication.captured_at:(snapshot&&snapshot.captured_at)||null,
-  last_attempt_at:lastAttempt?(lastAttempt.attempted_at||lastAttempt.received_at||null):
-   (snapCollection?snapCollection.attempted_at:null),
+  last_attempt_at:attemptAt,
   last_attempt_outcome:lastAttempt?lastAttempt.outcome:(snapCollection?'accepted':null),
   last_attempt_reason:lastAttempt?(lastAttempt.reason||null):null,
   schedule_gap_seconds:scheduleGap,

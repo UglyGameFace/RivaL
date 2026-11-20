@@ -73,6 +73,7 @@ from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery
 from parlay_bot.perpetuals.hyperliquid_history_recovery import (
     HyperliquidHistoryRecovery,
 )
+from parlay_bot.perpetuals.kalshi_brti import KalshiBRTI
 from parlay_bot.perpetuals.kalshi_forward import KalshiForwardResearch
 from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
 from parlay_bot.perpetuals.lighter_history_recovery import LighterHistoryRecovery
@@ -95,6 +96,10 @@ from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
 from parlay_bot.perpetuals.regime2_model import Regime2ModelSet, is_regime2_document
 from parlay_bot.perpetuals.research_hypotheses import FeatureHypothesisLab
 from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor
+from parlay_bot.perpetuals.settlement_index import (
+    IndexTick,
+    SettlementIndexRecorder,
+)
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.spike_watch import SpikeWatch
 from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
@@ -678,6 +683,32 @@ class RivalDiscordClient(discord.Client):
             passphrase=secret_value(settings.polymarket_clob_api_passphrase),
         )
         self._polybolt_task: asyncio.Task[None] | None = None
+        # Settlement-index recording for the fair-value pre-test: persist
+        # the TWAP ticks PolyBolt already receives (and, below, Kalshi's
+        # BRTI stream) so the settlement series exist when the evaluator
+        # runs. Collection only -- each recorder stays inert while its
+        # gate is off, and empty while no ticks arrive.
+        self.settlement_index = SettlementIndexRecorder(
+            self.store,
+            throttle_seconds=settings.rival_settlement_index_seconds,
+        )
+        if settings.rival_polybolt_recorder_enabled:
+            def _record_polybolt_tick(tick) -> None:
+                self.settlement_index.note(IndexTick(
+                    venue="polymarket", asset=tick.asset,
+                    source_at=tick.observed_at, received_at=tick.received_at,
+                    value=tick.price, avg_60s=None,
+                    receipt_sha256=tick.receipt_sha256,
+                ))
+            self.polybolt.tick_sink = _record_polybolt_tick
+        self._settlement_index_task: asyncio.Task[None] | None = None
+        self.kalshi_brti = KalshiBRTI(
+            key_id=secret_value(settings.kalshi_api_key_id),
+            private_key_pem=secret_value(settings.kalshi_api_private_key),
+            tick_sink=(self.settlement_index.note
+                       if settings.rival_kalshi_brti_enabled else None),
+        )
+        self._kalshi_brti_task: asyncio.Task[None] | None = None
         self.kalshi_forward = KalshiForwardResearch(self.store)
         self.kalshi_browser = KalshiCryptoBrowser(forward=self.kalshi_forward)
         # Owner-triggered personal-only reference; never feed to AI,
@@ -974,6 +1005,8 @@ class RivalDiscordClient(discord.Client):
                 ("Polymarket oracle", self._polybolt_task),
                 ("Kalshi learning", self._kalshi_research_task),
                 ("Convergence quotes", self._convergence_task),
+                ("Settlement index recorder", self._settlement_index_task),
+                ("Kalshi BRTI index", self._kalshi_brti_task),
                 ("Personal alerts", self._target_task),
             )
             embed = discord.Embed(
@@ -1599,6 +1632,20 @@ class RivalDiscordClient(discord.Client):
             self._convergence_task = asyncio.create_task(
                 self._convergence_quote_loop(), name="rival-convergence-quote-collection",
             )
+        if self.settings.rival_polybolt_recorder_enabled and self._settlement_index_task is None:
+            self._settlement_index_task = asyncio.create_task(
+                self._settlement_index_loop(), name="rival-settlement-index-recorder",
+            )
+        if self.settings.rival_kalshi_brti_enabled and self._kalshi_brti_task is None:
+            if self.kalshi_brti.configured:
+                self._kalshi_brti_task = asyncio.create_task(
+                    self.kalshi_brti.run(), name="rival-kalshi-brti-index",
+                )
+            else:
+                _LOG.info(
+                    "RivaL Kalshi BRTI index waiting for Kalshi API credentials; "
+                    "the fair-value Kalshi sample does not accrue until they are set"
+                )
         if (self.current_collector is not None or self.oddspapi_collector is not None or self.the_odds_api_collector is not None) and self._sports_task is None:
             self._sports_task = asyncio.create_task(
                 self._sports_loop(), name="rival-sports-current-refresh",
@@ -2316,6 +2363,26 @@ class RivalDiscordClient(discord.Client):
                     _LOG.warning("XMarket PM history unavailable asset=%s error=%s",
                                  notice.asset, type(exc).__name__)
         await asyncio.gather(*(capture(n) for n in native))
+
+    async def _settlement_index_loop(self) -> None:
+        """Flush recorded settlement-index ticks to the store.
+
+        The venue clients hand ticks to the recorder on their receive
+        paths (memory only); this loop persists the thinned series off
+        those paths. Collection only, failure-isolated like every other
+        research collector: a failed flush is logged and retried next
+        cycle, and can never touch the bot's other work.
+        """
+        await self.wait_until_ready()
+        await asyncio.to_thread(self.settlement_index.initialize)
+        while not self.is_closed():
+            try:
+                await asyncio.to_thread(self.settlement_index.flush)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - research collection only
+                _LOG.exception("RivaL settlement index flush failed")
+            await asyncio.sleep(self.settings.rival_settlement_index_seconds)
 
     async def _convergence_quote_loop(self) -> None:
         """Read-only executable book snapshots for the PM-lag re-measurement.
@@ -3786,6 +3853,9 @@ class RivalDiscordClient(discord.Client):
                 ("_formula_task", self._formula_loop,
                  "rival-polymarket-formula-test"),
                 ("_polybolt_task", self.polybolt.run, "rival-read-only-chainlink-twap"),
+                ("_settlement_index_task", self._settlement_index_loop,
+                 "rival-settlement-index-recorder"),
+                ("_kalshi_brti_task", self.kalshi_brti.run, "rival-kalshi-brti-index"),
                 ("_target_task", self._target_loop, "rival-personal-direction-updates"),
                 ("_call_board_task", self._call_board_loop, "rival-requested-channel-calls"),
             )
@@ -3805,6 +3875,15 @@ class RivalDiscordClient(discord.Client):
                     # credentials (and a deploy), so report it, don't restart.
                     faults[f"worker:{name}"] = ("stopped: Polymarket rejected the CLOB "
                                                 "credentials; update them to resume")
+                    continue
+                if attr == "_kalshi_brti_task" and not self.kalshi_brti.configured:
+                    # Inert by design until Kalshi API credentials exist;
+                    # restarting an unconfigured client cannot help.
+                    continue
+                if attr == "_kalshi_brti_task" and not self.settings.rival_kalshi_brti_enabled:
+                    continue
+                if (attr == "_settlement_index_task"
+                        and not self.settings.rival_polybolt_recorder_enabled):
                     continue
                 faults[f"worker:{name}"] = "background worker exited unexpectedly"
                 # Three restarts per rolling hour, at most one per minute.
@@ -4106,6 +4185,7 @@ class RivalDiscordClient(discord.Client):
     # a worker that is being stopped.
     _WORKER_TASK_ATTRS = (
         "_health_task", "_polybolt_task", "_kalshi_research_task",
+        "_settlement_index_task", "_kalshi_brti_task",
         "_poly_board_task", "_poly_research_task", "_formula_task", "_stream_shadow_task",
         "_liquidity_task",
         "_target_task", "_call_board_task", "_sports_results_task", "_sports_task",

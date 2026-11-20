@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     # PM-lag convergence re-measurement. Collection only; no model input.
     rival_convergence_quotes_enabled: bool = Field(default=True)
     rival_convergence_quotes_seconds: int = Field(default=30, ge=20, le=120)
+    # Settlement-index recording for the fair-value pre-test (design
+    # 2026-11-19): persist the settlement series themselves -- the
+    # Chainlink TWAP ticks the PolyBolt client already receives, and
+    # Kalshi's CF Benchmarks BRTI stream -- throttled to one row per
+    # asset per interval. Collection only; no model input, no issuance.
+    rival_polybolt_recorder_enabled: bool = Field(default=True)
+    rival_kalshi_brti_enabled: bool = Field(default=True)
+    rival_settlement_index_seconds: int = Field(default=10, ge=5, le=30)
     # Shared, read-only websocket feeds; offload only verified quote samples
     # into forward shadow research. Never persist a database row per tick.
     rival_stream_enabled: bool = Field(default=True)
@@ -113,6 +121,11 @@ class Settings(BaseSettings):
     polymarket_clob_api_key: SecretStr | None = Field(default=None)
     polymarket_clob_api_secret: SecretStr | None = Field(default=None)
     polymarket_clob_api_passphrase: SecretStr | None = Field(default=None)
+
+    # Kalshi API credentials (key id + RSA private key PEM), used ONLY to
+    # authenticate the read-only BRTI index websocket. No order actions.
+    kalshi_api_key_id: SecretStr | None = Field(default=None)
+    kalshi_api_private_key: SecretStr | None = Field(default=None)
 
     rival_drive_root_folder_id: str | None = Field(default=None)
     rival_drive_history_folder_id: str | None = Field(default=None)

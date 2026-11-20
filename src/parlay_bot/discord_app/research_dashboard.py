@@ -46,7 +46,6 @@ from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.polymarket_history import (
     fairness_text,
     polymarket_history,
-    results_text,
 )
 from parlay_bot.perpetuals.polymarket_tracking import (
     PolymarketTracking,
@@ -71,12 +70,15 @@ _SECTIONS = {
         ("overview", "Current watch"),
         ("proof", "Verified results"),
     ),
+    # Product pass PR-5: "Polymarket results" is now a pointer (the record
+    # has one home — Bot Performance → Polymarket) and "Is RivaL learning?"
+    # moved under Results → Test models as the "shadow" detail topic;
+    # old views landing on it redirect there (see _apply_merged_redirects).
     "math": (
         ("overview", "Polymarket results"),
         ("fair", "Is the price fair?"),
         ("pulse", "Price momentum now"),
         ("spikes", "Spikes & volume"),
-        ("learning", "Is RivaL learning?"),
         ("history", "Data health (technical)"),
         ("recovery", "Backfill progress (technical)"),
         ("ai", "AI Review"),
@@ -108,7 +110,7 @@ ACCURACY_SECTIONS = {
     "overview": ("overview",),
     "running": ("engine", "readiness", "venue"),
     "accuracy": ("five", "fifteen", "calibration", "ledger"),
-    "better": ("progress", "lineage", "tracker"),
+    "better": ("progress", "lineage", "tracker", "shadow"),
     "money": ("costs", "method"),
     "technical": ("technical",),
 }
@@ -131,6 +133,7 @@ ACCURACY_DETAIL_LABELS = {
     "progress": "Is any model proven better?",
     "lineage": "How is RivaL learning?",
     "tracker": "Track next predictions",
+    "shadow": "Is RivaL learning?",
     "costs": "Profit after trading fees",
     "method": "How results are checked",
 }
@@ -155,9 +158,6 @@ _FIELD_GROUPS = {
         "spikes": ("Spike watch analytics", "Recent spike events"),
         "history": ("Source-native training readiness", "Historical gap audit"),
         "recovery": ("Historical recovery progress",),
-        "learning": ("Main model", "Mathematical model",
-                     "Automatic test model evaluation",
-                     "Automatic shadow evaluation", "Automatic learning"),
     },
     "accuracy": {
         "engine": ("Automatic learning engine", "Forward issue audit"),
@@ -179,6 +179,11 @@ _FIELD_GROUPS = {
         "ledger": ("Prediction ledger · prospective",),
         "costs": ("Execution cost verification", "How accuracy is audited"),
         "method": ("How accuracy is audited",),
+        # PR-5: Math's old "Is RivaL learning?" section, now a detail
+        # topic under Test models (same fields, polished names first).
+        "shadow": ("Main model", "Mathematical model",
+                   "Automatic test model evaluation",
+                   "Automatic shadow evaluation", "Automatic learning"),
         # Audit Step 3: the consolidated cards show the headline
         # answer-first card of each absorbed topic (live feed + two);
         # the rest of the topics sit behind detail buttons.
@@ -198,7 +203,8 @@ _FIELD_GROUPS = {
                    "Are advanced models ready?",
                    "Prediction tracking",
                    "Test-model detail (5-minute)",
-                   "Trial detail (5-minute)"),
+                   "Trial detail (5-minute)",
+                   "Automatic shadow evaluation"),
         "money": ("Execution cost verification", "How accuracy is audited"),
     },
     "ai": {
@@ -1090,7 +1096,18 @@ class ResearchDashboard(discord.ui.View):
             return (self.detail,)
         return topics
 
+    def _apply_merged_redirects(self) -> None:
+        """Product pass PR-5: a view still pointing at Math's removed
+        "Is RivaL learning?" section opens its consolidated home —
+        Results → Test models → the "shadow" detail topic — instead of
+        a dead section (the Step 3 pattern, across screens)."""
+        if self.screen == "math" and self.section == "learning":
+            self.screen = "accuracy"
+            self.section = "better"
+            self.detail = "shadow"
+
     def _rebuild(self) -> None:
+        self._apply_merged_redirects()
         self.section = _resolve_section(self.screen, self.section)
         self.clear_items()
         for name in ("opportunities", "math", "accuracy"):
@@ -1444,6 +1461,7 @@ class ResearchDashboard(discord.ui.View):
             )
         # Audit Step 3: an old accuracy key lands on its consolidated
         # card; a detail topic compacts by its own field groups.
+        self._apply_merged_redirects()
         requested = self.section
         self.section = _resolve_section(self.screen, self.section)
         if self._model_picker():
@@ -1525,7 +1543,23 @@ class ResearchDashboard(discord.ui.View):
         embed.timestamp = datetime.now(UTC)
 
         if self.screen == "math" and self.section in ("overview", "fair"):
-            if self.market is None:
+            if self.section == "overview":
+                # Product pass PR-5: the settled Polymarket record has
+                # exactly one home now — Bot Performance → Polymarket.
+                # The duplicate render that lived here is deleted; this
+                # pointer is what the section (and any deep link to it)
+                # lands on, per the Step 3 pattern.
+                embed.add_field(
+                    name=f"Polymarket results · {self.asset} Up/Down",
+                    value=(
+                        "This record moved to **Bot Performance → Polymarket** "
+                        "(Home → Bot Performance, then pick Polymarket in the "
+                        "view selector): the live model against the market's "
+                        "own odds, plus the after-fee money result. "
+                        "This page keeps the live price checks."
+                    ),
+                    inline=False)
+            elif self.market is None:
                 embed.add_field(name="Polymarket results",
                                 value="Database unavailable.", inline=False)
             else:
@@ -1533,12 +1567,8 @@ class ResearchDashboard(discord.ui.View):
                     history = await asyncio.to_thread(
                         polymarket_history, self.market.store, asset=self.asset,
                     )
-                    if self.section == "overview":
-                        embed.add_field(name=f"Polymarket results · {self.asset} Up/Down",
-                                        value=results_text(history), inline=False)
-                    else:
-                        embed.add_field(name=f"Is the Polymarket price fair? · {self.asset}",
-                                        value=fairness_text(history), inline=False)
+                    embed.add_field(name=f"Is the Polymarket price fair? · {self.asset}",
+                                    value=fairness_text(history), inline=False)
                 except Exception:  # noqa: BLE001 - never invent results
                     _LOG.exception("RivaL Polymarket history unavailable")
                     embed.add_field(name="Polymarket results",
@@ -1886,113 +1916,6 @@ class ResearchDashboard(discord.ui.View):
                         value="Verified observation ledger currently unavailable.",
                         inline=False,
                     )
-            if self.section == "learning":
-                embed.add_field(
-                    name="Mathematical model",
-                    value=(
-                        "The live model learns online from new 5-minute candles "
-                        "as each prediction is graded. No model is approved for "
-                        "production trading signals."
-                    ) if self.shadow_enabled else (
-                        "Automatic shadow evaluation is disabled; "
-                        "no production model is approved."
-                    ),
-                    inline=False,
-                )
-            if self.section == "learning" and self.shadow_enabled:
-                try:
-                    snapshots = await asyncio.to_thread(
-                        ShadowLearningMonitor(self.market.store).latest,
-                        asset=self.asset,
-                    )
-                except Exception:  # noqa: BLE001 - view must never crash
-                    _LOG.exception("Stored shadow evaluation read failed")
-                    embed.add_field(
-                        name="Automatic learning",
-                        value="Learning history unavailable; collection can continue.",
-                        inline=False,
-                    )
-                else:
-                    ready = [
-                        row for row in snapshots
-                        if row["evaluated"] >= MIN_EVALUATED
-                        and row["brier"] is not None
-                    ]
-                    if ready:
-                        total = sum(int(x["evaluated"]) for x in ready)
-                        model_score = sum(
-                            float(x["brier"]) * int(x["evaluated"])
-                            for x in ready
-                        ) / total
-                        baseline_score = sum(
-                            float(x["baseline_brier"]) * int(x["evaluated"])
-                            for x in ready
-                        ) / total
-                        shadow_raw = (
-                            "Background replay test on stored candles, separate "
-                            "from live predictions: "
-                            f"**{len(ready)}** exchange/timeframe streams · "
-                            f"**{total:,}** replayed results (windows overlap).\n"
-                            f"Probability error (Brier): **{model_score:.4f}** vs "
-                            f"basic forecast **{baseline_score:.4f}** — "
-                            + ("better" if model_score < baseline_score else "worse")
-                            + " than the basic forecast (lower is better).\n"
-                            "Research only: not a calibrated or deployed signal."
-                        )
-                        # Audit Step 2: the replay card answers first;
-                        # replay is not live evidence, and the card says so.
-                        better = model_score < baseline_score
-                        benchmark = ("coin flip" if baseline_score == 0.25
-                                     else "base-rate forecast")
-                        shadow_card = AnswerCard(
-                            question="Automatic test model evaluation",
-                            verdict="Yes" if better else "No",
-                            answer=(
-                                f"Yes — better than the {benchmark} in replay."
-                                if better else
-                                f"No — worse than the {benchmark} in replay."
-                            ),
-                            reason=(
-                                f"Error score {model_score:.4f} vs {benchmark} "
-                                f"{baseline_score:.4f}."
-                            ),
-                            next_step=(
-                                "Next: check the live graded results, not replay."
-                            ),
-                            details=(
-                                f"{len(ready)} streams, {total:,} replayed results.",
-                            ),
-                            raw=shadow_raw,
-                        )
-                        embed.add_field(
-                            name="Automatic shadow evaluation",
-                            value=fit_embed_field_value(shadow_card.field_value()),
-                            inline=False,
-                        )
-                    else:
-                        shadow_raw = (
-                            f"**{len(snapshots)}** tracked venue/horizon streams. "
-                            f"Waiting for at least {MIN_EVALUATED} causal "
-                            "settled evaluations per stream. Backfilled "
-                            "candles cannot qualify as live predictions."
-                        )
-                        embed.add_field(
-                            name="Automatic shadow evaluation",
-                            value=fit_embed_field_value(AnswerCard(
-                                question="Automatic test model evaluation",
-                                verdict="Not yet",
-                                answer="Not yet — waiting for graded replays.",
-                                reason=(
-                                    f"{len(snapshots)} streams tracked so far."
-                                ),
-                                next_step=(
-                                    f"Needs {MIN_EVALUATED} graded evaluations "
-                                    "per stream."
-                                ),
-                                raw=shadow_raw,
-                            ).field_value()),
-                            inline=False,
-                        )
             embed.set_footer(
                 text="Historical backfills do not count as live forward tests."
             )
@@ -2313,10 +2236,120 @@ class ResearchDashboard(discord.ui.View):
                         costs_card(raw=costs_raw).field_value()),
                     inline=False,
                 )
+            # Product pass PR-5: Math's old "Is RivaL learning?"
+            # section, folded under Test models as a detail topic.
+            # Same reads, same cards — one home for the question.
+            if "shadow" in topics:
+                embed.add_field(
+                    name="Mathematical model",
+                    value=(
+                        "The live model learns online from new 5-minute candles "
+                        "as each prediction is graded. No model is approved for "
+                        "production trading signals."
+                    ) if self.shadow_enabled else (
+                        "Automatic shadow evaluation is disabled; "
+                        "no production model is approved."
+                    ),
+                    inline=False,
+                )
+            if "shadow" in topics and self.shadow_enabled:
+                try:
+                    snapshots = await asyncio.to_thread(
+                        ShadowLearningMonitor(self.market.store).latest,
+                        asset=self.asset,
+                    )
+                except Exception:  # noqa: BLE001 - view must never crash
+                    _LOG.exception("Stored shadow evaluation read failed")
+                    embed.add_field(
+                        name="Automatic learning",
+                        value="Learning history unavailable; collection can continue.",
+                        inline=False,
+                    )
+                else:
+                    ready = [
+                        row for row in snapshots
+                        if row["evaluated"] >= MIN_EVALUATED
+                        and row["brier"] is not None
+                    ]
+                    if ready:
+                        total = sum(int(x["evaluated"]) for x in ready)
+                        model_score = sum(
+                            float(x["brier"]) * int(x["evaluated"])
+                            for x in ready
+                        ) / total
+                        baseline_score = sum(
+                            float(x["baseline_brier"]) * int(x["evaluated"])
+                            for x in ready
+                        ) / total
+                        shadow_raw = (
+                            "Background replay test on stored candles, separate "
+                            "from live predictions: "
+                            f"**{len(ready)}** exchange/timeframe streams · "
+                            f"**{total:,}** replayed results (windows overlap).\n"
+                            f"Probability error (Brier): **{model_score:.4f}** vs "
+                            f"basic forecast **{baseline_score:.4f}** — "
+                            + ("better" if model_score < baseline_score else "worse")
+                            + " than the basic forecast (lower is better).\n"
+                            "Research only: not a calibrated or deployed signal."
+                        )
+                        # Audit Step 2: the replay card answers first;
+                        # replay is not live evidence, and the card says so.
+                        better = model_score < baseline_score
+                        benchmark = ("coin flip" if baseline_score == 0.25
+                                     else "base-rate forecast")
+                        shadow_card = AnswerCard(
+                            question="Automatic test model evaluation",
+                            verdict="Yes" if better else "No",
+                            answer=(
+                                f"Yes — better than the {benchmark} in replay."
+                                if better else
+                                f"No — worse than the {benchmark} in replay."
+                            ),
+                            reason=(
+                                f"Error score {model_score:.4f} vs {benchmark} "
+                                f"{baseline_score:.4f}."
+                            ),
+                            next_step=(
+                                "Next: check the live graded results, not replay."
+                            ),
+                            details=(
+                                f"{len(ready)} streams, {total:,} replayed results.",
+                            ),
+                            raw=shadow_raw,
+                        )
+                        embed.add_field(
+                            name="Automatic shadow evaluation",
+                            value=fit_embed_field_value(shadow_card.field_value()),
+                            inline=False,
+                        )
+                    else:
+                        shadow_raw = (
+                            f"**{len(snapshots)}** tracked venue/horizon streams. "
+                            f"Waiting for at least {MIN_EVALUATED} causal "
+                            "settled evaluations per stream. Backfilled "
+                            "candles cannot qualify as live predictions."
+                        )
+                        embed.add_field(
+                            name="Automatic shadow evaluation",
+                            value=fit_embed_field_value(AnswerCard(
+                                question="Automatic test model evaluation",
+                                verdict="Not yet",
+                                answer="Not yet — waiting for graded replays.",
+                                reason=(
+                                    f"{len(snapshots)} streams tracked so far."
+                                ),
+                                next_step=(
+                                    f"Needs {MIN_EVALUATED} graded evaluations "
+                                    "per stream."
+                                ),
+                                raw=shadow_raw,
+                            ).field_value()),
+                            inline=False,
+                        )
             # A detail topic ends here, exactly as its old section did;
             # a consolidated card keeps going so its other topics' fields
             # are built too.
-            if single and topics[0] in ("lineage", "technical", "ledger", "costs"):
+            if single and topics[0] in ("lineage", "technical", "ledger", "costs", "shadow"):
                 embed.set_footer(text="Read-only database evidence • No trading approval")
                 return embed
 

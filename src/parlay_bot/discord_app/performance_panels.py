@@ -10,9 +10,22 @@ from parlay_bot.discord_app.answer_cards import RESEARCH_FOOTER
 from parlay_bot.perpetuals.markets import ASSET_NAMES
 
 SECTIONS = {
-    "overview": "Overview", "models": "Models", "exchanges": "Exchange results",
-    "polymarket": "Polymarket results", "health": "Health", "details": "Full evidence",
+    "overview": "Overview", "models": "Models", "polymarket": "Polymarket",
+    "accuracy": "Accuracy", "health": "Health",
 }
+# Product pass PR-5: Bot Performance is the single results surface and its
+# selector holds exactly the five sections above. Old keys keep resolving
+# (the Step 3 pattern — a stale menu lands on the consolidated answer,
+# never a dead section): "exchanges" was renamed Accuracy, and Full
+# evidence ("details") left the selector but stays reachable from its own
+# button on the Performance page.
+LEGACY_SECTIONS = {"exchanges": "accuracy", "details": "details"}
+
+
+def resolve_section(section):
+    """The canonical section key for a current or legacy key, else None."""
+    section = LEGACY_SECTIONS.get(section, section)
+    return section if section in SECTIONS or section == "details" else None
 
 
 def _number(value):
@@ -134,6 +147,7 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
         _trials_sections,
     )
 
+    section = LEGACY_SECTIONS.get(section, section)
     if section == "details":
         embeds = details_renderer(coin, horizon, reports, now=now, venues=venues)
         record = reports.get("xmarket")
@@ -204,7 +218,7 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
             field(f"Leaders · {coin}", leaders, "best")
         if lab:
             field("Model Lab", lab, "best")
-    elif section == "exchanges":
+    elif section == "accuracy":
         embed.description = f"**{headline}.**\nMain model only · last 7 days."
         field("Measured performance", main, "exchange")
         confidence, conditions = _calibration_sections(reports)

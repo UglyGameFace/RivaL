@@ -1078,7 +1078,7 @@ def _scoreboard_text(coin: str, horizon: int, reports: dict, now: datetime, *,
     return headline, "\n".join(lines)
 
 
-def _trials_sections(reports: dict) -> dict:
+def _trials_sections(reports: dict, *, full: bool = False) -> dict:
     """Trial table split for the three-embed page.
 
     Keys: name (field name), leader (closest-to-passing line), table (the
@@ -1086,6 +1086,10 @@ def _trials_sections(reports: dict) -> dict:
     table), how_to_read (definitions + all-markets line), count (rows, or
     None when the read itself is unavailable). ``_trials_text`` joins them
     exactly as the single-embed page did.
+
+    The section board (full=False) lists live contenders only and counts
+    the retired/early-stopped rows it hides in one summary line; Full
+    evidence (full=True) shows every row and hides nothing.
     """
     from parlay_bot.discord_app import trial_board
 
@@ -1099,16 +1103,32 @@ def _trials_sections(reports: dict) -> dict:
                 "leader": ("⚠️ Couldn't load the trial table right now. Press Refresh; "
                            "this is a slow read, not missing results."),
                 "table": "", "missing": "", "how_to_read": "", "count": None}
-    rows = board.get("rows") or []
+    if full:
+        rows = board.get("all_rows")
+        if rows is None:
+            rows = board.get("rows") or []
+        trials_n = board.get("trials_all")
+        trials_n = int(board.get("trials") or 0) if trials_n is None else int(trials_n)
+        passed_n = board.get("passed_all")
+        passed_n = int(board.get("passed") or 0) if passed_n is None else int(passed_n)
+    else:
+        rows = board.get("rows") or []
+        trials_n = int(board.get("trials") or 0)
+        passed_n = int(board.get("passed") or 0)
     # A stop is recorded per model/exchange/contract, not necessarily one
     # globally retired model. Distinguish live comparisons from those records.
-    cut_here = int(board.get("cut_here") or 0)
-    all_markets = (f"-# All markets: {int(board.get('trials') or 0)} active trial comparisons · "
-                   f"{int(board.get('passed') or 0)} qualified · "
+    # The section board hides two kinds of dead rows — families cut on every
+    # scope here and families whose issuance switch is off — and counts them
+    # in one summary line; Full evidence hides neither.
+    hidden = (0 if full else int(board.get("cut_here") or 0)
+              + int(board.get("stopped_here") or 0))
+    all_markets = (f"-# All markets: {trials_n} active trial comparisons · "
+                   f"{passed_n} qualified · "
                    f"{int(board.get('stops') or 0)} early-stop records")
     if not rows:
-        inactive = (f" {cut_here} fully stopped comparison(s) hidden from active trials."
-                    if cut_here else "")
+        inactive = (f" {hidden} retired or early-stopped design(s) hidden from "
+                    "active trials — full record in Full evidence."
+                    if hidden else "")
         return {"name": "🧪 Test models here (0)",
                 "leader": "No active scored model comparisons here." + inactive,
                 "table": "", "missing": "", "how_to_read": all_markets, "count": 0}
@@ -1129,8 +1149,9 @@ def _trials_sections(reports: dict) -> dict:
                    "after fees.\n-# Lab: vol = volatility; RSI/MACD includes Bollinger. "
                    "Slow/steady/fast/rapid = learning speed, not accuracy.\n"
                    f"{all_markets}"
-                   + (f"\n-# {cut_here} fully stopped model(s) hidden from this active table."
-                      if cut_here else ""))
+                   + (f"\n-# {hidden} retired or early-stopped design(s) hidden from "
+                      "this active table — full record in Full evidence."
+                      if hidden else ""))
     return {"name": f"🧪 Test models here ({len(rows)})",
             "leader": trial_board.leader_line(rows),
             "table": trial_board.table(rows),
@@ -1367,7 +1388,7 @@ def performance_embeds(coin: str, horizon: int, reports: dict, *, now: datetime,
     if conditions:
         _add_field(first, stale, "📊 Where it's right", conditions, ("calibration",))
 
-    trials = _trials_sections(reports)
+    trials = _trials_sections(reports, full=True)
     asset = ASSET_NAMES.get(coin, coin)
     second = discord.Embed(
         title=(f"🧪 Test models here ({trials['count']}) — {asset} · {horizon}-min"

@@ -129,7 +129,7 @@ def test_the_right_column_is_the_share_of_calls_that_came_true():
     assert few.hit_rate is None          # 9 calls: no rate, never "100%"
 
 
-def test_read_adds_each_models_hit_rate_from_the_ledger(tmp_path):
+def test_read_adds_each_models_hit_rate_from_the_ledger(tmp_path, monkeypatch):
     import json
     from datetime import UTC, datetime, timedelta
 
@@ -175,6 +175,11 @@ def test_read_adds_each_models_hit_rate_from_the_ledger(tmp_path):
             # must not mix into Right (Day, Res and Edge are okx-only).
             for i in range(40):
                 call(200 + i, .7, True, venue="gate")
+        # The hit-rate wiring is what is on trial here; regime_v1's issuance
+        # switch is off since the pivot, so open it to keep it a contender.
+        from parlay_bot.perpetuals import forward_audit
+
+        monkeypatch.setattr(forward_audit, "ISSUE_REGIME_V1_CHALLENGERS", True)
         board = trial_board.read(store, asset="BTC", horizon=5, now=now)
         row = board["rows"][0]
         assert (row.family, row.calls, row.right) == ("regime_v1", 30, 18)
@@ -235,7 +240,7 @@ def test_qualified_generation_precedes_unqualified_older_display_name():
     assert rows[0].status == "PASSED"
 
 
-def test_trial_board_excludes_fully_stopped_rows_from_active_counts(tmp_path):
+def test_trial_board_excludes_fully_stopped_rows_from_active_counts(tmp_path, monkeypatch):
     import json
     from datetime import UTC, datetime
 
@@ -279,6 +284,13 @@ def test_trial_board_excludes_fully_stopped_rows_from_active_counts(tmp_path):
                      now.isoformat(), "paired-loss-z258-v1",
                      800, 17, .28, .22, .06, .04),
                 )
+        # Both families' issuance switches are off since the pivot; open
+        # them so this test exercises the early-stop cut, not the
+        # issuance-off split.
+        from parlay_bot.perpetuals import forward_audit
+
+        monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", True)
+        monkeypatch.setattr(forward_audit, "ISSUE_REGIME_LIVE_V1_CHALLENGERS", True)
         board = trial_board.read(store, asset="BTC", horizon=5, now=now)
         assert board["trials"] == 1
         assert board["passed"] == 0
@@ -290,6 +302,122 @@ def test_trial_board_excludes_fully_stopped_rows_from_active_counts(tmp_path):
         section = _trials_sections({"trials": board})
         assert "1 active trial comparisons" in section["how_to_read"]
         assert "2 early-stop records" in section["how_to_read"]
-        assert "1 fully stopped model" in section["how_to_read"]
+        assert "1 retired or early-stopped design(s) hidden" in section["how_to_read"]
+    finally:
+        store.close()
+
+
+def test_issuance_off_follows_the_forward_audit_switches(monkeypatch):
+    """The board's live-contender test reads the same ISSUE_* switches the
+    issuer obeys, so a family returns to the board if a future decision
+    re-enables it — and an unknown family is never hidden."""
+    from parlay_bot.discord_app.trial_board import issuance_off
+    from parlay_bot.perpetuals import forward_audit
+
+    # Every switch is off on current main (price-first pivot, PR #704).
+    assert issuance_off("gaussian_nb_v1")
+    assert issuance_off("knn21_v1")
+    assert issuance_off("pooled_5m_1273de73aa15")
+    assert issuance_off("lab_5m_24a17f9781")
+    assert issuance_off("cross_all_v1")
+    assert issuance_off("calib_incumbent_v1")
+    assert not issuance_off("some_future_family_v1")
+    monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", True)
+    assert not issuance_off("gaussian_nb_v1")
+    assert issuance_off("pooled_5m_1273de73aa15")   # its own switch still off
+
+
+def _board_with_evidence(tmp_path, evidence, name="board.sqlite"):
+    """A store whose fresh promotion evidence holds exactly ``evidence``."""
+    import json
+    from datetime import UTC, datetime
+
+    from parlay_bot.perpetuals.early_stop import SCHEMA
+    from parlay_bot.perpetuals.family_governance import FAMILY_PROMOTION_SCHEMA
+    from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
+    from parlay_bot.storage.hot import SQLiteHotStore
+
+    now = datetime.now(UTC)
+    store = SQLiteHotStore(tmp_path / name)
+    ShadowModelCompetition(store).initialize()
+    with store.connect() as conn:
+        conn.executescript(FAMILY_PROMOTION_SCHEMA)
+        conn.execute(SCHEMA)
+        conn.execute(
+            """INSERT INTO rival_family_promotion
+               (venue,contract,quote,asset,horizon_minutes,evaluated_at,
+                selected_family,status,reason,evidence_json)
+               VALUES ('okx','BTC-okx','USDT','BTC',5,?,NULL,'held','test',?)""",
+            (now.isoformat(), json.dumps(evidence)),
+        )
+    return store, now
+
+
+def test_switch_off_families_leave_the_board_but_stay_in_the_full_record(tmp_path):
+    """Felix's press-test (2026-11-20): the Models leaderboard paraded
+    families whose issuance PR #704 stopped as if they were live
+    contenders. They must leave the leaderboard, land in ONE summary
+    count, and stay fully visible in Full evidence."""
+    from parlay_bot.discord_app.home import _trials_sections
+
+    store, now = _board_with_evidence(tmp_path, {
+        "gaussian_nb_v1": _info(20, 4938, -.006),
+        "regime_v1": _info(12, 721, .003),
+        "future_v1": _info(9, 300, .001),
+    })
+    try:
+        board = trial_board.read(store, asset="BTC", horizon=5, now=now)
+        assert [r.family for r in board["rows"]] == ["future_v1"]
+        assert {r.family for r in board["all_rows"]} == {
+            "gaussian_nb_v1", "regime_v1", "future_v1"}
+        assert board["stopped_here"] == 2
+        assert board["trials"] == 1 and board["trials_all"] == 3
+
+        section = _trials_sections({"trials": board})
+        assert section["name"] == "🧪 Test models here (1)"
+        assert "Naive Bayes" not in section["table"]
+        assert "Trend-only" not in section["table"]
+        assert ("2 retired or early-stopped design(s) hidden from this "
+                "active table — full record in Full evidence."
+                in section["how_to_read"])
+        assert "1 active trial comparisons" in section["how_to_read"]
+
+        full = _trials_sections({"trials": board}, full=True)
+        assert full["name"] == "🧪 Test models here (3)"
+        assert "Naive Bayes" in full["table"]
+        assert "Trend-only" in full["table"]
+        assert "hidden" not in full["how_to_read"]
+        assert "3 active trial comparisons" in full["how_to_read"]
+    finally:
+        store.close()
+
+
+def test_board_with_no_live_contenders_says_so_and_counts_the_hidden(tmp_path):
+    """The production case after PR #704: every family on the board is
+    retired, so the section says no comparisons are active and counts
+    the hidden record instead of listing dead rows."""
+    from parlay_bot.discord_app.home import _trials_sections
+
+    store, now = _board_with_evidence(tmp_path, {
+        "gaussian_nb_v1": _info(20, 4938, -.006),
+        "pooled_5m_1273de73aa15": _info(16, 4097, .003),
+    }, name="all_stopped.sqlite")
+    try:
+        board = trial_board.read(store, asset="BTC", horizon=5, now=now)
+        assert board["rows"] == []
+        assert board["stopped_here"] == 2
+        assert board["trials"] == 0 and board["trials_all"] == 2
+
+        section = _trials_sections({"trials": board})
+        assert section["count"] == 0
+        assert section["leader"].startswith(
+            "No active scored model comparisons here.")
+        assert ("2 retired or early-stopped design(s) hidden from active "
+                "trials — full record in Full evidence."
+                in section["leader"])
+
+        full = _trials_sections({"trials": board}, full=True)
+        assert full["count"] == 2
+        assert "6-year" in full["table"] and "Naive Bayes" in full["table"]
     finally:
         store.close()

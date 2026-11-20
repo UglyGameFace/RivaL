@@ -335,6 +335,27 @@ def _boosted_families(conn, asset: str, now: datetime) -> list[str] | None:
     return sorted(names)
 
 
+def _ensure_lineage_features_column(conn, store) -> None:
+    """Idempotently add the decision-time feature vector to lineage rows.
+
+    CREATE TABLE IF NOT EXISTS cannot extend a table created before this
+    change, so extend it after the shared DDL runs -- introspect first,
+    the same additive pattern as polymarket_learning's fee columns. The
+    column stays nullable: forecasts issued before the change keep no
+    recorded vector instead of a reconstructed one (the replay
+    workbench's design section 4.1 forbids rebuilding decision-time
+    inputs from later data). New lineage rows store the exact JSON the
+    feature fingerprint already hashes, so a future grading pass can
+    read the exchange feature vector the live model decided on.
+    """
+    present = store.database.column_names(conn, "rival_forward_model_lineage")
+    if "features_json" not in present:
+        conn.execute(
+            "ALTER TABLE rival_forward_model_lineage"
+            " ADD COLUMN features_json TEXT"
+        )
+
+
 class ForwardAccuracyMonitor:
     """Issue, settle and score immutable prospective research only."""
 
@@ -653,6 +674,7 @@ class ForwardAccuracyMonitor:
                     issued_at TEXT NOT NULL,
                     weights_sha256 TEXT NOT NULL,
                     feature_sha256 TEXT NOT NULL,
+                    features_json TEXT,
                     training_labels INTEGER NOT NULL,
                     historical_training_labels INTEGER NOT NULL,
                     online_training_updates INTEGER NOT NULL,
@@ -686,6 +708,7 @@ class ForwardAccuracyMonitor:
                        (asset,venue,contract,quote,model_version,issued_at);
                 """
             )
+            _ensure_lineage_features_column(conn, self.store)
 
     def latest_diagnostics(self) -> dict | None:
         """Actual most recent issuance cycle, uncached and restart-safe."""
@@ -1485,9 +1508,11 @@ class ForwardAccuracyMonitor:
                     # Existing predictions are never retro-tagged using
                     # future outcomes or rewritten during retraining.
                     regime = issue_regime(features)
-                    feature_hash = hashlib.sha256(json.dumps(
+                    features_json = json.dumps(
                         features, separators=(",", ":"), allow_nan=False,
-                    ).encode()).hexdigest()
+                    )
+                    feature_hash = hashlib.sha256(
+                        features_json.encode()).hexdigest()
                     weight_hash = hashlib.sha256(json.dumps(
                         tested.final_weights, separators=(",", ":"),
                         allow_nan=False,
@@ -1681,13 +1706,14 @@ class ForwardAccuracyMonitor:
                                 """INSERT INTO rival_forward_model_lineage (
                                      venue,contract,quote,horizon_minutes,
                                      model_version,reference_opened_at,issued_at,
-                                     weights_sha256,feature_sha256,training_labels,
+                                     weights_sha256,feature_sha256,features_json,
+                                     training_labels,
                                      historical_training_labels,online_training_updates,
                                      historical_seed_sha256
-                                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                                 (venue, contract, quote, horizon, MODEL,
                                  utc(last.opened_at).isoformat(), issued_at.isoformat(),
-                                 weight_hash, feature_hash,
+                                 weight_hash, feature_hash, features_json,
                                  tested.training_labels,
                                  tested.historical_training_labels,
                                  tested.updates,

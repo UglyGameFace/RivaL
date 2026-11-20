@@ -1,6 +1,9 @@
 """Real, point-in-time forward audit: issue first, settle once, never invent skill."""
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -104,6 +107,41 @@ def test_live_predictions_are_immutable_deduped_and_settled_once(tmp_path):
         assert recent["model_beats_baseline"] is None  # N=1 cannot qualify.
         assert summary["last_7d"][15]["settled"] == 0
         assert not summary["independent_trials"]
+    finally:
+        store.close()
+
+
+def test_lineage_records_the_decision_time_feature_vector(tmp_path):
+    store = SQLiteHotStore(tmp_path / "prospective-features.sqlite")
+    market = PerpetualMarketStore(store)
+    monitor = ForwardAccuracyMonitor(market)
+    now = datetime.now(UTC)
+    seed(market, now=now)
+    try:
+        issued, settled = monitor.run_once(now=now)
+        assert issued == 3 and settled == 0
+        with store.connect() as conn:
+            lineage = conn.execute(
+                "SELECT * FROM rival_forward_model_lineage"
+            ).fetchall()
+        assert len(lineage) == 3
+        for row in lineage:
+            raw = row["features_json"]
+            assert raw is not None
+            vector = json.loads(raw)
+            # The exchange feature vector the live model decides on:
+            # ten clamped values, so every index the registered LLM
+            # masks reference (0-9) is present for future grading.
+            assert len(vector) == 10
+            assert all(
+                isinstance(v, float) and math.isfinite(v) for v in vector
+            )
+            # The stored payload is byte-identical to the serialization
+            # the issuance fingerprint hashes: it IS the decision-time
+            # vector, not a later reconstruction.
+            assert hashlib.sha256(raw.encode()).hexdigest() == (
+                row["feature_sha256"]
+            )
     finally:
         store.close()
 

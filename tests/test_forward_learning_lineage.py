@@ -123,8 +123,13 @@ def test_active_policy_benefit_pairs_future_results_and_excludes_old_seeds(learn
                         (venue,'BTC','USDC','BTC',5,MODEL,ref,100.,stamp.isoformat(),
                          stamp.isoformat(),p,.5,100,(stamp+timedelta(minutes=6)).isoformat(),
                          1,(1-p)**2,.25))
-                    conn.execute('''INSERT INTO rival_forward_model_lineage VALUES
-                        (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    conn.execute('''INSERT INTO rival_forward_model_lineage
+                        (venue,contract,quote,horizon_minutes,model_version,
+                         reference_opened_at,issued_at,weights_sha256,
+                         feature_sha256,training_labels,
+                         historical_training_labels,online_training_updates,
+                         historical_seed_sha256)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                         (venue,'BTC','USDC',5,MODEL,ref,stamp.isoformat(),'a'*64,'b'*64,
                          100,0,100,seed))
     result = monitor.active_learning_evidence(asset='BTC', horizon_minutes=5, now=now)
@@ -136,4 +141,52 @@ def test_active_policy_benefit_pairs_future_results_and_excludes_old_seeds(learn
     with hot.connect() as conn:
         conn.execute('UPDATE perp_forward_audit SET baseline_brier=NULL')
     assert monitor.active_learning_evidence(asset='BTC', horizon_minutes=5, now=now)['targets'] == 0
+    hot.close()
+
+
+def test_lineage_features_column_migration_keeps_legacy_rows_vectorless(tmp_path):
+    hot = SQLiteHotStore(tmp_path / "lineage-migration.sqlite")
+    now = datetime(2026, 10, 30, 12, tzinfo=UTC)
+    # The pre-change production schema: no features_json column.
+    with hot.connect() as conn:
+        conn.execute(
+            """CREATE TABLE rival_forward_model_lineage (
+                   venue TEXT NOT NULL, contract TEXT NOT NULL,
+                   quote TEXT NOT NULL, horizon_minutes INTEGER NOT NULL,
+                   model_version TEXT NOT NULL,
+                   reference_opened_at TEXT NOT NULL,
+                   issued_at TEXT NOT NULL, weights_sha256 TEXT NOT NULL,
+                   feature_sha256 TEXT NOT NULL,
+                   training_labels INTEGER NOT NULL,
+                   historical_training_labels INTEGER NOT NULL,
+                   online_training_updates INTEGER NOT NULL,
+                   historical_seed_sha256 TEXT,
+                   PRIMARY KEY (venue,contract,quote,horizon_minutes,
+                                model_version,reference_opened_at))"""
+        )
+        conn.execute(
+            """INSERT INTO rival_forward_model_lineage
+               (venue,contract,quote,horizon_minutes,model_version,
+                reference_opened_at,issued_at,weights_sha256,feature_sha256,
+                training_labels,historical_training_labels,
+                online_training_updates,historical_seed_sha256)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("binance", "BTCUSDT", "USDT", 5, MODEL,
+             (now - timedelta(minutes=5)).isoformat(), now.isoformat(),
+             "a" * 64, "b" * 64, 520, 500, 20, "c" * 64),
+        )
+    monitor = ForwardAccuracyMonitor(PerpetualMarketStore(hot))
+    monitor.initialize()
+    with hot.connect() as conn:
+        columns = {row["name"] for row in conn.execute(
+            "PRAGMA table_info(rival_forward_model_lineage)").fetchall()}
+        row = conn.execute(
+            "SELECT * FROM rival_forward_model_lineage").fetchone()
+    assert "features_json" in columns
+    # The legacy row survives untouched and stays vectorless: pre-change
+    # decision points are never backfilled with reconstructed features.
+    assert row["weights_sha256"] == "a" * 64
+    assert row["features_json"] is None
+    # Schema init is idempotent: a fresh monitor adds nothing twice.
+    ForwardAccuracyMonitor(PerpetualMarketStore(hot)).initialize()
     hot.close()

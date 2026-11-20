@@ -32,6 +32,28 @@ MAX_FORECASTS_PER_FAMILY = 24000
 # even with a fresh promoted_paper row. Default: empty. Changing this set
 # requires Felix's explicit approval of the specific change.
 BLOCKED_FAMILIES: set[str] = set()
+# Rows per fetchmany chunk when streaming one family's evaluation input.
+# Scoring consumes rows incrementally, so the family's whole window (up to
+# MAX_FORECASTS_PER_FAMILY+1 dict rows, ~20 MB) never materializes at once;
+# the allocator arena high-water was the Track 3 ratchet mechanism
+# (diagnosis 2026-11-20). Chunk size changes no result: rows arrive in the
+# query's ORDER BY order either way.
+FORECAST_FETCH_CHUNK = 2000
+
+
+def _stream_family_forecasts(store, sql, params):
+    """Yield one family's forecast rows in FORECAST_FETCH_CHUNK chunks.
+
+    The connection stays open for the duration of the iteration and is
+    returned when the stream is exhausted or the generator is closed.
+    """
+    with store.connect() as conn:
+        cursor = conn.execute(sql, params)
+        while True:
+            chunk = cursor.fetchmany(FORECAST_FETCH_CHUNK)
+            if not chunk:
+                return
+            yield from chunk
 
 
 def _pinned_identity_matches(recorded, current) -> bool:
@@ -175,37 +197,40 @@ class FamilyPromotion:
             # erase XMarket from the evaluation entirely. Read one indexed,
             # source-exact family at a time, and filter its active pin BEFORE
             # the limit so queued artifacts cannot consume its input budget.
-            forecasts = []
+            forecasts = iter(())
             if family not in pinned_shas or pinned_shas[family] is not None:
                 pin_sql = " AND s.training_sha256=?" if family in pinned_shas else ""
                 pin_params = (pinned_shas[family],) if family in pinned_shas else ()
-                with self.store.connect() as conn:
-                    forecasts = conn.execute(
-                        """SELECT s.family,s.reference_opened_at,s.issued_at,
-                                  s.target_opened_at,s.settled_at,s.outcome_up,
-                                  s.probability_up,s.incumbent_up,s.baseline_up,
-                                  s.model_brier,s.incumbent_brier,s.baseline_brier,
-                                  q.state,q.training_sha256 AS quote_training,
-                                  s.training_sha256,q.entry_at,q.exit_at,
-                                  q.target_close_at,q.challenger_gross_bps,
-                                  q.incumbent_gross_bps,q.challenger_side,q.incumbent_side,
-                                  q.quantity
-                           FROM rival_model_shadow_forecasts s
-                           LEFT JOIN rival_family_quote_shadow q
-                            ON q.venue=s.venue AND q.contract=s.contract AND q.quote=s.quote
-                            AND q.horizon_minutes=s.horizon_minutes AND q.family=s.family
-                            AND q.reference_opened_at=s.reference_opened_at
-                           WHERE s.asset=? AND s.venue=? AND s.contract=? AND s.quote=?
-                            AND s.horizon_minutes=? AND s.family=?
-                            AND s.issued_at>=? AND s.issued_at<=?""" + pin_sql + """
-                           ORDER BY s.target_opened_at,s.issued_at,s.reference_opened_at
-                           LIMIT ?""",
-                        (asset,venue,contract,quote,horizon,family,
-                         (stamp-LOOKBACK).isoformat(),stamp.isoformat(),
-                         *pin_params,MAX_FORECASTS_PER_FAMILY+1),
-                    ).fetchall()
-            input_complete = len(forecasts) <= MAX_FORECASTS_PER_FAMILY
-            forecasts = forecasts[:MAX_FORECASTS_PER_FAMILY]
+                forecasts = _stream_family_forecasts(
+                    self.store,
+                    """SELECT s.family,s.reference_opened_at,s.issued_at,
+                              s.target_opened_at,s.settled_at,s.outcome_up,
+                              s.probability_up,s.incumbent_up,s.baseline_up,
+                              s.model_brier,s.incumbent_brier,s.baseline_brier,
+                              q.state,q.training_sha256 AS quote_training,
+                              s.training_sha256,q.entry_at,q.exit_at,
+                              q.target_close_at,q.challenger_gross_bps,
+                              q.incumbent_gross_bps,q.challenger_side,q.incumbent_side,
+                              q.quantity
+                       FROM rival_model_shadow_forecasts s
+                       LEFT JOIN rival_family_quote_shadow q
+                        ON q.venue=s.venue AND q.contract=s.contract AND q.quote=s.quote
+                        AND q.horizon_minutes=s.horizon_minutes AND q.family=s.family
+                        AND q.reference_opened_at=s.reference_opened_at
+                       WHERE s.asset=? AND s.venue=? AND s.contract=? AND s.quote=?
+                        AND s.horizon_minutes=? AND s.family=?
+                        AND s.issued_at>=? AND s.issued_at<=?""" + pin_sql + """
+                       ORDER BY s.target_opened_at,s.issued_at,s.reference_opened_at
+                       LIMIT ?""",
+                    (asset,venue,contract,quote,horizon,family,
+                     (stamp-LOOKBACK).isoformat(),stamp.isoformat(),
+                     *pin_params,MAX_FORECASTS_PER_FAMILY+1),
+                )
+            # Streamed equivalent of the old fetchall + cap: the query's
+            # LIMIT probe row (MAX+1) marks the input incomplete and is
+            # itself never scored, exactly as the old [:MAX] slice behaved.
+            input_complete = True
+            input_rows = 0
             # Models train from their own venue/horizon labels. Only uniquely
             # aligned target windows can contribute independent evidence.
             seen=set()
@@ -219,6 +244,10 @@ class FamilyPromotion:
             covered=eligible=trades=0
             invalid=0
             for row in forecasts:
+                input_rows += 1
+                if input_rows > MAX_FORECASTS_PER_FAMILY:
+                    input_complete = False
+                    break
                 # A single target outcome is one independent observation,
                 # regardless of how many overlapping reference candles issued
                 # forecasts for it. Select the EARLIEST issued row before
@@ -304,6 +333,11 @@ class FamilyPromotion:
                     c_net=candidate_gross-(cost if cs!="CASH" else 0)
                     i_net=incumbent_gross-(cost if ins!="CASH" else 0)
                     quote_pairs[label].append((target.date().isoformat(),c_net,i_net))
+            # Release the streamed read's connection deterministically
+            # (a no-op when the stream was exhausted or never opened).
+            _close_stream = getattr(forecasts, "close", None)
+            if _close_stream is not None:
+                _close_stream()
             try:
                 proof=score_paired_forward(scored_pairs)
                 base_proof=score_paired_forward(scored_base)
@@ -374,7 +408,7 @@ class FamilyPromotion:
                 },
                 "search_bar":search,
                 "input_complete":input_complete,
-                "input_rows":len(forecasts),
+                "input_rows":min(input_rows,MAX_FORECASTS_PER_FAMILY),
                 "input_row_limit":MAX_FORECASTS_PER_FAMILY,
                 "qualified":qualified,
                 "targets":proof.targets if proof else 0,

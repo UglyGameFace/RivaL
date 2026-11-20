@@ -425,11 +425,11 @@ def polymarket_call_fields(store, *, asset: str, now: datetime) -> list[tuple[st
             summary = learner.summary(asset=asset, horizon=horizon)
             n = int(summary.get("settled_forward_contracts") or 0)
             model, base = summary.get("forward_brier"), summary.get("market_baseline_brier")
-            record = (f"Last 7 days, {n:,} settled calls: the model "
+            record = (f"Last 7 days, {n:,} graded calls: the model "
                       f"{'beat' if model < base else 'did not beat'} the market's own price "
                       f"(error {model:.4f} vs {base:.4f}, lower is better)."
                       if n and model is not None and base is not None
-                      else "No settled calls to score yet.")
+                      else "No graded calls to score yet.")
         except Exception:  # noqa: BLE001 - the record is context, never required
             record = "Track record unavailable right now."
         label = "1 hour" if horizon == 60 else f"{horizon} min"
@@ -543,8 +543,8 @@ def crypto_desk_embed(
                 info = report["last_7d"][horizon]
                 decided = info["settled"]
                 edge = info["model_beats_baseline"]
-                verdict = ("Doing better than a simple guess" if edge is True
-                           else "Not doing better than a simple guess" if edge is False
+                verdict = ("Doing better than the base-rate forecast" if edge is True
+                           else "Not doing better than the base-rate forecast" if edge is False
                            else "Too early to tell")
                 period = "Last 7 days"
                 try:
@@ -554,7 +554,7 @@ def crypto_desk_embed(
                 except (TypeError, ValueError):
                     pass
                 embed.add_field(
-                    name=f"{period} • {horizon}-min predictions • current model",
+                    name=f"{period} • {horizon}-min predictions • main model",
                     value=(
                         f"Scored: **{decided:,}** · "
                         f"Right: **{info['hit_rate']:.1%}** "

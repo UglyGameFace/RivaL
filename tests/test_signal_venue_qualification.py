@@ -116,13 +116,13 @@ async def test_global_beats_but_venue_trails_is_pass(tmp_path):
             market, mock_books(now, okx=False), asset="BTC",
             horizon_minutes=5, now=now,
         )
-        assert "doing worse than a simple guess" in signal.title
+        assert "doing worse than the base-rate forecast" in signal.title
         assert "watch only" not in signal.title
         track = next(
             x.value for x in signal.fields
             if x.name.startswith("Track record")
         )
-        assert "hyperliquid" in track and "worse than a simple guess" in track
+        assert "hyperliquid" in track and "worse than the base-rate forecast" in track
         assert "All exchanges:" in track
     finally:
         store.close()

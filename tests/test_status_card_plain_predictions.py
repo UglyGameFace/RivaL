@@ -49,7 +49,7 @@ def test_the_field_leads_with_a_count_and_the_closest_three_in_plain_words():
         "behind the main model on raw score; full gates unverified"),
         ("• pattern test B [scope unspecified]: day 12 of 21, 2731 results (minimum met), "
         "behind the main model on raw score; full gates unverified"),
-        ("• 6-year history model (5-min) [scope unspecified]: day 8 of 21, "
+        ("• 6-year model (5-min) [scope unspecified]: day 8 of 21, "
          "1920 results (minimum met), ahead on raw score; qualification pending; full gates unverified"),
     ]
     assert lines[1 + SHOWN_CLOSEST] == "• 6 other groups; less observation time"
@@ -71,7 +71,7 @@ def test_a_tiny_sample_is_never_called_ahead():
     assert lines == [
         ("📊 1 model group in forward testing. Longest observation: day 2 of 21. "
          "Examples below are ordered by observation time, not accuracy."),
-        ("• 6-year history model (60-min) [scope unspecified]: day 2 of 21, "
+        ("• 6-year model (60-min) [scope unspecified]: day 2 of 21, "
          "2 of 150 results, too few results to judge; full gates unverified"),
     ]
 
@@ -83,7 +83,7 @@ def test_versions_of_one_model_are_one_line_led_by_the_furthest():
         ("shadow-progress:pooled_15m_bbbbbbbbbbbb",
          "📊 pooled_15m_bbbbbbbbbbbb: day 8/21 · 649/150 targets · gain +0.0001"),
     ])
-    assert lines[1] == ("• 6-year history model (15-min) (2 versions) [scope unspecified]: "
+    assert lines[1] == ("• 6-year model (15-min) (2 versions) [scope unspecified]: "
                         "day 8 of 21, 649 results (minimum met), level with the main model; "
                         "full gates unverified")
 
@@ -98,7 +98,7 @@ def test_family_names():
     assert family_words("calib_incumbent_v1") == "calibrated main model"
     assert family_words("flow_v1_venue") == "order-flow test 1, per exchange"
     assert family_words("pooled_5m_1273de73aa15_venue") == (
-        "6-year history model (5-min), per exchange")
+        "6-year model (5-min), per exchange")
     assert family_words("cross_v1") == "all-exchanges test"
     assert family_words("regime_wild_v1") == "wild-only test"
 

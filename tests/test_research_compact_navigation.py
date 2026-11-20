@@ -329,7 +329,7 @@ def test_research_accuracy_offers_plain_and_technical_sections():
     # Nov 11 cleanup: Results opens on the models; the old overview
     # duplicated Bot Performance and now opens Models on trial.
     assert list(labels) == ["better", "money", "accuracy", "running", "technical"]
-    assert labels["better"] == "Models on trial"
+    assert labels["better"] == "Test models"
     assert labels["accuracy"] == "Accuracy details"
     assert labels["running"] == "Running details"
     assert labels["money"] == "Would it make money?"

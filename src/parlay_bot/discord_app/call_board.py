@@ -182,7 +182,7 @@ def live_calls_embed(market, asset: str, now: datetime | None = None):
     # TP2 · R:R" field is dropped. Nothing ever computed an entry, stop,
     # or target for this board (the module contract forbids inventing
     # them), so the field only ever rendered a refusal — pure noise.
-    embed.set_footer(text="One edited channel card · Research only · No real orders")
+    embed.set_footer(text="Research only. No real trades. · One edited channel card")
     return embed, hashlib.sha256("|".join(fingerprint).encode()).hexdigest()
 
 
@@ -216,7 +216,7 @@ async def build_polymarket_calls(service, asset: str, horizon: int):
             inline=False,
         )
     embed.set_footer(
-        text="Polymarket contract price-to-beat ≠ exchange candle/TP · No orders"
+        text="Research only. No real trades. · Polymarket contract price-to-beat ≠ exchange candle/TP"
     )
     return embed, hashlib.sha256(str(embed.to_dict()).encode()).hexdigest()
 
@@ -275,7 +275,7 @@ async def build_kalshi_calls(browser, reader, asset: str):
             inline=False,
         )
     embed.set_footer(
-        text="No synthetic strikes/TP or cross-venue prices · No real orders"
+        text="Research only. No real trades. · No synthetic strikes/TP or cross-venue prices"
     )
     return embed, hashlib.sha256(str(embed.to_dict()).encode()).hexdigest()
 

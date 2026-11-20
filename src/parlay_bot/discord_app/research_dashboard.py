@@ -83,10 +83,10 @@ _SECTIONS = {
     ),
     # Cleanup (Nov 11): Bot Performance is the summary; Results holds the
     # deep dives. "At a glance" repeated Performance and is gone (an old
-    # link opens Models on trial); the other two summary cards are now
+    # link opens Test models); the other two summary cards are now
     # labelled as the detail sections they are.
     "accuracy": (
-        ("better", "Models on trial"),
+        ("better", "Test models"),
         ("money", "Would it make money?"),
         ("accuracy", "Accuracy details"),
         ("running", "Running details"),
@@ -774,7 +774,7 @@ class _WatchLiveButton(discord.ui.Button["ResearchDashboard"]):
 
 class _ModelBackButton(discord.ui.Button["ResearchDashboard"]):
     def __init__(self) -> None:
-        super().__init__(label="← Back to Models on trial",
+        super().__init__(label="← Back to Test models",
                          style=discord.ButtonStyle.secondary,
                          custom_id="rival:research:model:back", row=2)
 
@@ -903,9 +903,10 @@ def _forward_eval_card(horizon: int, stats: dict, scored: int, raw: str) -> str:
     The verdict comes from the same numbers the field already shows:
     ``model_beats_baseline`` with 50+ graded results is a Yes/No, fewer
     than 20 graded results is Not yet, nothing graded is Can't tell.
-    A Yes here is "beats the coin flip so far" — never proof of an
-    edge; the after-cost proof is a separate card. The full field text
-    stays under "Raw numbers:".
+    A Yes here is "beats the base-rate forecast so far" — never proof
+    of an edge; the after-cost proof is a separate card. The baseline
+    is named "coin flip" only when its error score is exactly 0.250
+    (product pass PR-4). The full field text stays under "Raw numbers:".
     """
     n = int(stats.get("settled") or 0)
     issued = int(stats.get("issued") or 0)
@@ -917,8 +918,9 @@ def _forward_eval_card(horizon: int, stats: dict, scored: int, raw: str) -> str:
     if isinstance(hit, (int, float)) and scored >= 20:
         details.append(
             f"Called the direction right {hit * 100:.1f}% of {scored:,} graded calls.")
+    benchmark = "coin flip" if baseline == 0.25 else "base-rate forecast"
     if isinstance(brier, (int, float)) and isinstance(baseline, (int, float)):
-        reason = f"Error score {brier:.4f} vs coin flip {baseline:.4f}."
+        reason = f"Error score {brier:.4f} vs {benchmark} {baseline:.4f}."
     else:
         reason = "Error score comparison unavailable."
     if n == 0 or scored == 0:
@@ -930,11 +932,11 @@ def _forward_eval_card(horizon: int, stats: dict, scored: int, raw: str) -> str:
         reason = f"Only {scored} graded results so far."
         next_step = f"Needs 50 graded results; has {scored}."
     elif beats is True:
-        verdict, answer = "Yes", "Yes — beats the coin flip so far."
+        verdict, answer = "Yes", f"Yes — beats the {benchmark} so far."
         next_step = "Next: check the after-cost proof before trusting it."
     elif beats is False:
-        verdict, answer = "No", "No — not beating the coin flip yet."
-        next_step = (f"Its error is higher than a coin flip's over {scored:,} graded "
+        verdict, answer = "No", f"No — not beating the {benchmark} yet."
+        next_step = (f"Its error is higher than the {benchmark}'s over {scored:,} graded "
                      "results; it has to get lower to count.")
     else:
         verdict, answer = "Not yet", "Not yet — skill not judged in this window."
@@ -1323,7 +1325,7 @@ class ResearchDashboard(discord.ui.View):
         """The numbers the Performance-page headlines cut (5-minute).
 
         One line per trial family with the detail the headline no
-        longer shows: Brier vs the simple guess, the vs-regime_v1
+        longer shows: Brier vs the base-rate forecast, the vs-regime_v1
         head-to-head, the selection decomposition, coverage,
         availability, trending labels learned, weight drift, and the
         7d vs 8-30d gain split. Only the metrics a family actually
@@ -1354,7 +1356,7 @@ class ResearchDashboard(discord.ui.View):
 
             store = self.market.store
             records = [
-                ("6-year history model", _pooled_record(self.market, self.asset, 5)),
+                ("6-year model", _pooled_record(self.market, self.asset, 5)),
                 ("trend-only test", regime_trial_report(store, asset=self.asset, horizon=5)),
                 ("trend learner", live_trial_report(
                     store, asset=self.asset, horizon=5, family=BASE_FAMILY)),
@@ -1940,16 +1942,18 @@ class ResearchDashboard(discord.ui.View):
                         # Audit Step 2: the replay card answers first;
                         # replay is not live evidence, and the card says so.
                         better = model_score < baseline_score
+                        benchmark = ("coin flip" if baseline_score == 0.25
+                                     else "base-rate forecast")
                         shadow_card = AnswerCard(
                             question="Automatic test model evaluation",
                             verdict="Yes" if better else "No",
                             answer=(
-                                "Yes — better than the coin flip in replay."
+                                f"Yes — better than the {benchmark} in replay."
                                 if better else
-                                "No — worse than the coin flip in replay."
+                                f"No — worse than the {benchmark} in replay."
                             ),
                             reason=(
-                                f"Error score {model_score:.4f} vs coin flip "
+                                f"Error score {model_score:.4f} vs {benchmark} "
                                 f"{baseline_score:.4f}."
                             ),
                             next_step=(

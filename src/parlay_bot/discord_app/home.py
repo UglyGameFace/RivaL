@@ -278,7 +278,7 @@ class _Entry(discord.ui.Modal):
             "zip": ("Enter ZIP", "Your 5-digit ZIP", "06001", 5, 5),
             "state": ("Choose State", "State name or letters", "CT", 2, 32),
             "target": ("Watch Price", "Exact USDT price", "75000", 1, 28),
-            "funds": ("Practice Funds", "Fake starting amount (100 to 100000)", "10000", 1, 24),
+            "funds": ("Practice Funds", "Practice starting amount (100 to 100000)", "10000", 1, 24),
         }
         title, label, placeholder, minimum, maximum = settings[kind]
         super().__init__(title=title, timeout=300)
@@ -745,7 +745,7 @@ def _trial_detail_line(label, record):
     """One family's cut metrics, for Detailed Research only.
 
     The metrics the Performance-page headline no longer shows: Brier
-    vs the simple guess, vs-regime_v1 head-to-head, selection,
+    vs the base-rate forecast, vs-regime_v1 head-to-head, selection,
     coverage, availability, trending labels learned, weight drift,
     the 7d vs 8-30d gain split. Only the metrics the record carries
     are shown; "too early to judge" is not a metric and is gone (the
@@ -964,10 +964,10 @@ def _calibration_sections(reports: dict) -> tuple[str, str]:
     conditions = "**Where it's right** (market calm vs wild when it called):\n"
     conditions += "```\n" + "\n".join(table) + "\n```\n"
     if best is not None and best[1] > 0:
-        conditions += (f"-# Best in **{best[0].lower()}** markets. Edge = less error than a "
-                       "coin flip, in points. A lead here is a clue, not proof.")
+        conditions += (f"-# Best in **{best[0].lower()}** markets. Edge = less error than the "
+                       "base-rate forecast, in points. A lead here is a clue, not proof.")
     else:
-        conditions += "-# No market condition where it beats a coin flip yet."
+        conditions += "-# No market condition where it beats the base-rate forecast yet."
     return confidence, conditions
 
 
@@ -1091,11 +1091,11 @@ def _trials_sections(reports: dict) -> dict:
 
     board = reports.get("trials")
     if "trials" not in reports:
-        return {"name": "🧪 Models on trial",
+        return {"name": "🧪 Test models",
                 "leader": "Trial results aren't available on this server.",
                 "table": "", "missing": "", "how_to_read": "", "count": None}
     if not isinstance(board, dict):
-        return {"name": "🧪 Models on trial",
+        return {"name": "🧪 Test models",
                 "leader": ("⚠️ Couldn't load the trial table right now. Press Refresh; "
                            "this is a slow read, not missing results."),
                 "table": "", "missing": "", "how_to_read": "", "count": None}
@@ -1109,7 +1109,7 @@ def _trials_sections(reports: dict) -> dict:
     if not rows:
         inactive = (f" {cut_here} fully stopped comparison(s) hidden from active trials."
                     if cut_here else "")
-        return {"name": "🧪 Models on trial here (0)",
+        return {"name": "🧪 Test models here (0)",
                 "leader": "No active scored model comparisons here." + inactive,
                 "table": "", "missing": "", "how_to_read": all_markets, "count": 0}
     from parlay_bot.discord_app.data_dashboard import VENUE_NAMES
@@ -1131,14 +1131,14 @@ def _trials_sections(reports: dict) -> dict:
                    f"{all_markets}"
                    + (f"\n-# {cut_here} fully stopped model(s) hidden from this active table."
                       if cut_here else ""))
-    return {"name": f"🧪 Models on trial here ({len(rows)})",
+    return {"name": f"🧪 Test models here ({len(rows)})",
             "leader": trial_board.leader_line(rows),
             "table": trial_board.table(rows),
             "missing": missing, "how_to_read": how_to_read, "count": len(rows)}
 
 
 def _trials_text(reports: dict) -> tuple[str, str]:
-    """(field name, value) for every model on trial here."""
+    """(field name, value) for every test model here."""
     sections = _trials_sections(reports)
     if not sections["table"]:
         body = sections["leader"]
@@ -1182,7 +1182,7 @@ def _contest_text(reports: dict) -> str | None:
         return None
     rows = trial_board.contest_rows(models)
     return (_contest_verdict(rows) + "\n" + trial_board.contest_table(rows)
-            + "-# Edge = less error than Polymarket's own odds, in points. Fees = paper "
+            + "-# Edge = less error than Polymarket's own odds, in points. Fees = practice "
             f"result per contract after Polymarket's fee. To qualify: "
             f"{trial_board.CONTEST_CONTRACTS} contracts and a statistical pass.")
 
@@ -1334,7 +1334,7 @@ def performance_embeds(coin: str, horizon: int, reports: dict, *, now: datetime,
 
     1. The main model: verdict first, then the scoreboard (one fact per
        line, label first), whether its confidence can be trusted, and where
-       it is right. 2. Models on trial: the closest to passing, the table
+       it is right. 2. Test models: the closest to passing, the table
        grouped by plain status headings, how to read it, the best model per
        timeframe, and the Model Lab. 3. The Polymarket contest and whether
        the bot is running and learning.
@@ -1370,9 +1370,9 @@ def performance_embeds(coin: str, horizon: int, reports: dict, *, now: datetime,
     trials = _trials_sections(reports)
     asset = ASSET_NAMES.get(coin, coin)
     second = discord.Embed(
-        title=(f"🧪 Models on trial here ({trials['count']}) — {asset} · {horizon}-min"
+        title=(f"🧪 Test models here ({trials['count']}) — {asset} · {horizon}-min"
                if trials["count"] is not None
-               else f"🧪 Models on trial — {asset} · {horizon}-min"),
+               else f"🧪 Test models — {asset} · {horizon}-min"),
         description=trials["leader"],
         color=(discord.Color.orange()
                if any(s in stale for s in ("trials", "best")) else discord.Color.blurple()),
@@ -1680,7 +1680,7 @@ def crypto_snapshot_card(
         ("⏱️ Expires", expiry),
         ("⚡ Strength", strength),
         ("📊 Accuracy", ("Refresh Signal checks the same-venue 7-day "
-         "settled record and its sample size")),
+         "graded record and its sample size")),
     )
     for index, (heading, value) in enumerate(fields):
         embed.add_field(name=heading, value=value, inline=True)
@@ -1689,8 +1689,8 @@ def crypto_snapshot_card(
         if index in (1, 3):
             embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.set_footer(
-        text="Reference candle ≠ live bid/ask • "
-             "Raw model score ≠ measured accuracy • No orders",
+        text="Research only. No real trades. · Reference candle ≠ live bid/ask · "
+             "Raw model score ≠ measured accuracy",
     )
     return embed
 
@@ -1866,8 +1866,8 @@ class GuidedHome(discord.ui.View):
             self.add_item(_Coin(self.coin))
             self._add("Practice Buy $25", "buy", 1, "📈", True)
             self._add("Practice Sell $25", "sell", 1, "📉")
-            self._add("Close Fake Trade", "close", 2, "✅")
-            self._add("Set Fake Balance", "funds", 2, "💵")
+            self._add("Close Practice Trade", "close", 2, "✅")
+            self._add("Set Practice Balance", "funds", 2, "💵")
             self._add("My Practice Results", "results", 3, "📊")
         elif p == "results":
             self._add("Back to Practice", "practice", 0, "💵", True)
@@ -2094,7 +2094,7 @@ class GuidedHome(discord.ui.View):
         elif p == "discover":
             embed = discord.Embed(
                 title="RivaL | Start Here",
-                description="Open Crypto for verified markets or Practice for fake trades.",
+                description="Open Crypto for verified markets or Practice for pretend trades.",
                 color=discord.Color.blurple(),
             )
         elif p in ("live", "kalshi"):
@@ -2536,7 +2536,7 @@ class GuidedHome(discord.ui.View):
                 color=discord.Color.blurple(),
             )
             embed.add_field(
-                name="My Fake Balance",
+                name="My Practice Balance",
                 value=f"**{money['equity']:,.2f} practice USDT**",
                 inline=False,
             )
@@ -2604,7 +2604,7 @@ class GuidedHome(discord.ui.View):
                             value=fit_embed_field_value(self.note, budget=1000),
                             inline=False)
         if p != "performance":  # Performance sets its own footer above
-            embed.set_footer(text="Research only • No real trades • Predictions can be wrong")
+            embed.set_footer(text=f"{RESEARCH_FOOTER} · Predictions can be wrong")
         return embed
 
     async def _performance_reports(self) -> dict:
@@ -2854,7 +2854,7 @@ class GuidedHome(discord.ui.View):
             embed = discord.Embed(
                 title="⏳ Market research still unavailable",
                 description=(
-                    "The live model and venue-matched book did not finish "
+                    "The main model and venue-matched book did not finish "
                     "checking in time. No new verified signal. "
                     "Press Refresh Prediction to try again."
                 ), color=discord.Color.orange(),
@@ -3448,7 +3448,7 @@ class GuidedHome(discord.ui.View):
                         notional_usdt=25.0, quote=quote,
                     )
             except (ValueError, QuoteUnavailable) as exc:
-                self.note = f"No fake trade placed: {exc}"
+                self.note = f"No practice trade placed: {exc}"
             except Exception:  # noqa: BLE001
                 _LOG.exception("Guided practice trade failed")
                 self.note = "Couldn't verify this practice trade. No order confirmed."

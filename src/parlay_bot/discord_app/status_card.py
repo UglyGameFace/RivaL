@@ -16,7 +16,7 @@ from pathlib import Path
 
 import discord
 
-from parlay_bot.discord_app.answer_cards import rename_text
+from parlay_bot.discord_app.answer_cards import RESEARCH_FOOTER, rename_text
 from parlay_bot.discord_app.embed_text import fit_embed_field_value
 
 STALE_FEED_AFTER = timedelta(minutes=8)
@@ -121,7 +121,7 @@ def family_words(family: str) -> str:
     pooled = re.fullmatch(r"pooled_(\d+)m_[0-9a-f]+", base)
     lab = re.fullmatch(r"lab_(\d+)m_([0-9a-f]+)", base)
     if pooled:
-        name = f"6-year history model ({pooled.group(1)}-min)"
+        name = f"6-year model ({pooled.group(1)}-min)"
     elif lab:
         from parlay_bot.perpetuals.model_lab import family_name
 
@@ -364,7 +364,7 @@ def _predictions_line(facts: StatusFacts) -> str:
               else "AI reviews off (background opt-in off)")
     return ("✅ **Predictions:** new ones in the last 20 min · 6-year model passed its "
             "gates and covers the last finished month · no in-use 6-year version "
-            "significantly worse than a simple guess over 3 days (needs 300+ graded "
+            "significantly worse than the base-rate forecast over 3 days (needs 300+ graded "
             f"results for a verdict) · {review}")
 
 
@@ -478,7 +478,7 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
         lines = problem_lines(facts.problems, now=now, boot_at=facts.boot_at,
                               totals=totals, open_incidents=open_incidents)
         _add_section(embed, 'Errors and warnings (last 24 h)', lines, budget=1400)
-    embed.set_footer(text="Live snapshot • refreshed every 2 min • "
+    embed.set_footer(text=f"{RESEARCH_FOOTER} · Live snapshot · refreshed every 2 min · "
                           f"Check version {_prediction_health_revision()}")
     return embed, severity, signature
 

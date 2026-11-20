@@ -1,33 +1,26 @@
 # RivaL ACTIVE_TASK — canonical current execution plan
 
-Updated 2026-11-20 00:27 EST. This is a short status checkpoint, not a global work lock. Earlier detailed evidence remains in Git history (prior blob 83db098437f104f2bbb5b846ed5cefba909e0cae); verify current main and parallel work each run.
+Updated 2026-11-20 01:44 EST. This is an execution checkpoint, not a global task lock. Prior detailed evidence is preserved in Git history.
 
-## Objective and governance
-Source-authentic research-only XMarket recovery, immutable prospective scoring, executable paired quotes, after-cost baseline comparisons, safe promotion/demotion/rollback, and truthful Discord delivery. No real-money orders, retrospective forecasts, holdout mining, recurring retraining, lowered thresholds, or fabricated source history. Edge requires >=150 independent forward targets, >=21 days, >=80% matched quote coverage, and robust positive after-cost comparison.
+## Objective and gates
+Restore source-authentic XMarket research history, preserve immutable prospective forecasts, evaluate executable matched quotes against source baselines after fees/slippage, and verify safe Discord delivery and promotion/rollback. Never trade real money, fabricate/backdate data, mine holdouts, trigger recurring historical training, or relax qualification (>=150 independent forward targets, >=21 days, >=80% matched quote coverage, robust positive after-cost baseline comparison).
 
-## Latest verified repository evidence
-- Main observed: `c43ef11162935f47d0b90bfd8d15230299ca211d` (PR #722 merged, independent Kalshi forward recorder). PRs #715–#717 also merged. Only #712 was open at inspection. Main may advance again; verify before integration.
-- #710 merged: Evidence Board collector KV write budget; #711 merged: alert deduplication fallback. Their merges do not prove Cloudflare production recovery.
-- Earlier #701 added bounded recorded-partition diagnostics; #703 removed temporary OAuth fingerprint workflow. The current publisher in `perpetuals/records_backup.py` uses `ensure_history_file()`; the Drive publisher supplies `rival_sha256`. This does **not** prove the metadata of stored original files.
-- Authenticated recovery run [#44517973204](https://github.com/UglyGameFace/RivaL/actions/runs/44517973204) rejected recorded-partition originals with `records original lacks verified SHA-256/size metadata`. The reader checks original identity, MD5, `rival_kind=history`, SHA-256 and bounded size; the exact defective field and original publication lineage are not established.
-- Earlier OKX source conflicts affect BTC/ETH/SOL/XRP native-month manifests. Existing typed `NativeMonthConflictError` and `docs/OKX_NATIVE_MONTH_CONFLICT_RECEIPTS.md` already provide bounded conflict evidence; do not duplicate or relax them.
-- Earlier first XMarket train-only ablation had 2 distinct eligible inner days vs required 7. No later eligible-day gain is independently verified. Five fitted research scopes (BTC 15/60m, SOL 15m, XRP 15/60m), seven missing, and no qualified after-cost edge were the last evidenced counts; remeasure before reporting current counts.
-- Parallel price-first changes affect directional challenger issuance. Respect current main and do not silently re-enable it. Jarvis work is unrelated.
+## Fresh repository reconciliation
+- Latest returned main commit: `3992ef79253c1888e78c8d1d2e512ecec8f17a3f` (2026-11-20 06:16 UTC), merging #723, a host-read retry and error-classification fix. #712 source-integrity diagnostics **merged** at `97f61808b3c011cc8469fac6a8c1f92df2f363e5` (2026-11-20 06:01 UTC). Do not describe #712 as draft/open or repeat its diagnostic patch.
+- GitHub open-PR search returned zero open PRs at this inspection. This is a point-in-time result, not a branch-deletion instruction. Parallel forward recorder, evidence-board and host work must be preserved.
+- Commit-specific workflow lookup returned no PR-triggered workflow runs for either merge SHA; this endpoint does not establish current-main CI or production success. Fresh full SQLite/PostgreSQL CI, Discloud running SHA/health and live source readback remain unverified.
+- The merged #712 distinguishes rejected original integrity metadata fields, but does not prove that the stored Drive originals have correct metadata or repair their publisher lineage. The merged #723 addresses host-read classification, not OKX history recovery.
 
-## Existing implementation and integration state
-- Draft PR #712 (`fix/records-original-integrity-reasons-20261119`) reconciled with main `c43ef111` by merge commit `42c84e9f`, retaining main's task record and all unrelated work, plus source diagnostics and tests. Earlier CI #44615546070 passed only on an older head. New merged branch CI and production source receipts remain unverified; do not merge on old green status.
-- Read-only connected Drive enumeration previously found warehouse folders but did not correlate them with production workflow credentials or rejected original IDs. No authenticated rejected-original metadata or publication lineage has been established. Do not interpret missing filename matches as deleted originals.
-- #717 is independent presentation work; do not alter it. Current main and host SHA parity remain unverified.
+## Source evidence and highest-priority actionable blocker
+- Authenticated recovery run [#44517973204](https://github.com/UglyGameFace/RivaL/actions/runs/44517973204) rejected recorded-partition originals for missing verified SHA-256/size metadata; actual rejected file IDs, declared fields, Drive MD5/size, production principal and publication run lineage are not yet correlated.
+- Earlier OKX native-month BTC/ETH/SOL/XRP conflicting manifest snapshots remain unresolved. Typed `NativeMonthConflictError` and `docs/OKX_NATIVE_MONTH_CONFLICT_RECEIPTS.md` already provide bounded conflict handling. Do not choose latest, silently coalesce divergent originals, or expose private IDs.
+- First train-only ablation had 2 distinct eligible inner evaluation days versus 7 required across 12 5/15/60m scopes. Five fitted research-only scopes and seven missing are historical counts, not freshly measured. No newly recovered eligible days or after-cost qualified edge established.
+- **Next code outcome:** inspect the current source-native restore and publisher against *authenticated, read-only* rejected-original metadata and recorded publication runs; correlate both real SHA/provenance identities per venue/contract/month; fix the authoritative publisher/restore boundary only where root cause is proven. Test identical replay, divergent originals, tampering, cross-asset collisions and legacy metadata; keep unresolved conflicts fail-closed. Validate lint, critical tests, full SQLite/PostgreSQL CI and credentialed readback.
+- If private original-source credentials or receipts are inaccessible, record the exact access boundary and advance independently verifiable forward quote matching, fee/slippage/baseline grading, overdue path settlement or next-target Discord channel delivery. Do not generate another speculative integrity patch.
 
-## Highest-priority actionable repair
-1. Obtain authenticated read-only metadata for **each rejected original**: bounded file identity, declared SHA/size/kind, actual Drive MD5/size, source run and publication provenance. Identify the exact failing field without exposing credentials, folder IDs, or private content.
-2. Correlate both real original OKX manifest SHA/provenance identities for each venue/contract/month; distinguish identical replay, differing manifest provenance, differing history bytes, tampering, and cross-asset collision. Preserve unresolved divergence fail-closed.
-3. Repair the authoritative publisher/restore boundary **only when the originals prove a root cause**; test divergent, identical, tampered, cross-asset and legacy metadata paths. Run lint, critical tests, full SQLite/PostgreSQL CI, then credentialed source readback and chronological eligibility. No new training until verified coverage and explicit authorization.
+## Integration and production verification
+- #712 and #723 are already merged; check their current-main tests and production receipts rather than reopening duplicate PRs. No current Discloud runtime SHA parity or production recovery was established by this inspection.
+- After *new verified* source coverage, count distinct eligible days and only run explicitly authorized source-exact train-only experiments under original chronological/Brier/ECE/daily gates. Keep existing research scopes prospectively issuing independent shadows.
+- Reconcile issue #295 (history) and issue #6 (forward qualification) only on demonstrated outcomes; do not close unresolved issues. Retire branches only after checking for unmerged commits, active work and protections.
 
-## Independent operational work
-Verify fresh Discloud deployed SHA and health, source-specific forward quote matching, fee/slippage/baseline grading, next-target Discord channel delivery, and overdue path settlement. Investigate historical RAM-kill recurrence using fresh host measurements before declaring fixed. Do not confuse Model Lab six-year candidates with XMarket fits.
-
-## Integration status and next proof
-No source-authentic recovery, fresh eligible-day increase, full current-main CI, live Discloud SHA parity, or model promotion was established at this checkpoint. Draft PR #712 remains unmerged; branch integration with main was performed, but fresh CI and authenticated original metadata are still required. Preserve other branches and independent changes. Next proof is authenticated original-file metadata and publication lineage, followed by an evidence-backed cohesive repair; keep relevant issues open until production acceptance.
-
-At every run: reread this file and current main/PRs/CI/host/source artifacts; recover existing work, implement and test a meaningful repair, integrate only with authorization, verify live outcome, safely reconcile fixed issues/obsolete branches, and update this document in place. Git history retains earlier detailed receipts.
+Each run: inspect newest main, ACTIVE_TASK.md, PRs, source, CI, host/source receipts and parallel work; implement and validate the highest-priority evidence-backed repair; update this single file in place. Git history preserves prior checkpoints.

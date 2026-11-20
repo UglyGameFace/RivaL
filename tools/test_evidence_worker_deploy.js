@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { checkBindings, checkSource, uploadBindings, EXPECTED } = require('./deploy_evidence_worker.cjs');
+const { checkBindings, checkSource, uploadBindings, planUpload, EXPECTED } = require('./deploy_evidence_worker.cjs');
 
 const root = path.resolve(__dirname, '..');
 assert.deepEqual(Object.keys(EXPECTED).sort(), ['board', 'collector']);
@@ -66,5 +66,47 @@ assert.deepEqual(
 assert.deepEqual(uploadBindings(EXPECTED.collector.bindings),
   EXPECTED.collector.bindings,
   'the collector payload is untouched by the translation');
+
+// The collector may additionally carry the alert-throttle Durable
+// Object binding: created by the upload itself the first time it is
+// missing (planUpload appends it with a one-time SQLite class
+// migration), preserved once it exists, and refused under any other
+// class name — the binding names the class the collector exports.
+const collector = EXPECTED.collector;
+assert.ok(Array.isArray(collector.optionalBindings));
+assert.deepEqual(collector.optionalBindings,
+  [{ type: 'durable_object_namespace', name: 'ALERT_THROTTLE', class_name: 'AlertThrottleDO' }]);
+checkBindings(collector.bindings, collector.bindings, collector.optionalBindings);
+checkBindings([...collector.bindings, ...collector.optionalBindings],
+  collector.bindings, collector.optionalBindings);
+assert.throws(() => checkBindings([...collector.bindings,
+  { type: 'durable_object_namespace', name: 'ALERT_THROTTLE', class_name: 'OtherClass' }],
+  collector.bindings, collector.optionalBindings), /bindings differ/);
+// Extra returned fields on a Durable Object binding are tolerated (its
+// contract is the identity fields, all compared by bindingKey); a
+// binding missing its class name does not match the contract at all.
+checkBindings([...collector.bindings,
+  { type: 'durable_object_namespace', name: 'ALERT_THROTTLE', class_name: 'AlertThrottleDO', script_name: 'rival-evidence-collector' }],
+  collector.bindings, collector.optionalBindings);
+assert.throws(() => checkBindings([...collector.bindings,
+  { type: 'durable_object_namespace', name: 'ALERT_THROTTLE' }],
+  collector.bindings, collector.optionalBindings), /bindings differ/);
+
+const bootstrapPlan = planUpload(collector.bindings, collector);
+assert.deepEqual(bootstrapPlan.bindings,
+  [...collector.bindings, ...collector.optionalBindings],
+  'a missing Durable Object binding is appended to the upload');
+assert.deepEqual(bootstrapPlan.migrations, { new_sqlite_classes: ['AlertThrottleDO'] },
+  'the first upload carries the one-time SQLite class migration');
+const existingPlan = planUpload([...collector.bindings, ...collector.optionalBindings], collector);
+assert.deepEqual(existingPlan.bindings,
+  [...collector.bindings, ...collector.optionalBindings],
+  'an existing Durable Object binding is carried forward verbatim');
+assert.equal(existingPlan.migrations, null,
+  'no migration is sent once the class exists');
+const boardPlan = planUpload(board.bindings, board);
+assert.deepEqual(boardPlan.bindings, board.bindings,
+  'the board upload plan is unchanged');
+assert.equal(boardPlan.migrations, null, 'the board never gains migrations');
 
 console.log('Evidence Worker offline deployment contract tests passed');

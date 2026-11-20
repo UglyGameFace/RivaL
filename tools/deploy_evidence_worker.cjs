@@ -45,13 +45,24 @@ const EXPECTED = Object.freeze({
     bindings: [
       { type: 'kv_namespace', name: 'EVIDENCE_KV',
         namespace_id: 'aff5366d8e0f4529b89fc6dc89729c0c' }
+    ],
+    // Optional: the alert-throttle Durable Object binding is created by
+    // the upload itself (planUpload appends it with a one-time SQLite
+    // class migration) the first time it is missing, and must be
+    // preserved once it exists. The collector falls back to its KV
+    // check-and-set whenever the binding is absent, so either state is
+    // a working production state.
+    optionalBindings: [
+      { type: 'durable_object_namespace', name: 'ALERT_THROTTLE',
+        class_name: 'AlertThrottleDO' }
     ]
   }
 });
 
 function bindingKey(binding) {
   return [binding.type, binding.name, binding.service || '',
-    binding.environment || '', binding.namespace_id || ''].join(':');
+    binding.environment || '', binding.namespace_id || '',
+    binding.class_name || ''].join(':');
 }
 function checkBindings(actual, expected, optional = []) {
   assert.ok(Array.isArray(actual), 'Remote Worker bindings unavailable');
@@ -66,6 +77,16 @@ function checkBindings(actual, expected, optional = []) {
     'Deployed Worker bindings differ from the known production contract; refusing upload');
   for (const binding of actual) {
     const spec = allowed.find(candidate => bindingKey(candidate) === bindingKey(binding));
+    if (spec.type === 'durable_object_namespace') {
+      // The settings API's returned field set for Durable Object
+      // bindings has not been observed in this account yet; the
+      // identity fields (type, name, class_name — all compared by
+      // bindingKey above) are the contract, so extra returned fields
+      // are tolerated for this type only.
+      assert.ok(Object.keys(spec).every(key => key in binding),
+        'Durable Object binding is missing a contract field; refusing upload');
+      continue;
+    }
     assert.deepEqual(Object.keys(binding).sort(), Object.keys(spec).sort(),
       'Unrecognized Worker binding configuration; refusing upload');
   }
@@ -86,10 +107,34 @@ function uploadBindings(bindings) {
       : binding);
 }
 
+/* Compute the upload payload's bindings and any one-time migrations.
+   A declared Durable Object binding that production does not have yet
+   is appended to the upload with a new_sqlite_classes migration (the
+   SQLite storage backend is the free-plan one); once it exists it is
+   carried forward like every other binding and no migration is sent
+   again. */
+function planUpload(settingsBindings, target) {
+  const bindings = uploadBindings(settingsBindings);
+  const newClasses = [];
+  for (const spec of target.optionalBindings || []) {
+    if (spec.type !== 'durable_object_namespace') continue;
+    if (!bindings.some(binding => bindingKey(binding) === bindingKey(spec))) {
+      bindings.push({ type: spec.type, name: spec.name, class_name: spec.class_name });
+      newClasses.push(spec.class_name);
+    }
+  }
+  return {
+    bindings,
+    migrations: newClasses.length ? { new_sqlite_classes: newClasses } : null
+  };
+}
+
 function checkSource(source, target) {
   assert.ok(source.length > (target.module ? 15000 : 160000), 'Worker source unexpectedly truncated');
   if (target.module) {
     assert.ok(source.includes('export default {'), 'Collector module entrypoint missing');
+    assert.ok(source.includes('export class AlertThrottleDO'),
+      'Collector alert-throttle Durable Object class missing');
     assert.ok(source.includes("'schedule','workflow_dispatch','push','workflow_run'"),
       'Collector would reject trusted release-triggered signed receipts');
   } else {
@@ -145,9 +190,11 @@ async function deploy(targetKey, dryRun) {
   assert.ok(!settings.tags?.length, 'Unreviewed Worker tags');
 
   const filename = target.module ? 'collector.js' : 'worker.js';
+  const plan = planUpload(settings.bindings, target);
   const metadata = {
     compatibility_date: EXPECTED_DATE,
-    bindings: uploadBindings(settings.bindings),
+    bindings: plan.bindings,
+    ...(plan.migrations ? { migrations: plan.migrations } : {}),
     [target.module ? 'main_module' : 'body_part']: filename
   };
   const form = new FormData();
@@ -175,4 +222,4 @@ if (require.main === module) {
     process.exitCode = 1;
   });
 }
-module.exports = { checkBindings, checkSource, uploadBindings, EXPECTED };
+module.exports = { checkBindings, checkSource, uploadBindings, planUpload, EXPECTED };

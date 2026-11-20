@@ -773,6 +773,29 @@ function build(payload,identity){
     limitations:['This is a timestamped read-only receipt, not continuously live health','Changed weights do not prove an after-cost edge','Drive report existence does not prove host import or shadow issuance']
   };
 }
+// Alert-throttle Durable Object: the atomic form of the /alert-throttle
+// check-and-set. One named instance serves every identity; the runtime
+// delivers its requests one at a time and a storage read-modify-write
+// cannot interleave with another consult, so two simultaneous consults
+// for the same new identity can no longer both be told to send.
+// SQLite-backed storage (the free-plan backend). One small entry per
+// alert identity ever sent; identities are bounded by the fixed alert
+// vocabulary, so storage stays tiny without expiry bookkeeping.
+export class AlertThrottleDO{
+  constructor(state){this.state=state;}
+  async fetch(req){
+    let body;try{body=await req.json()}catch(_){return reply({error:'invalid_key'},400,'no-store')}
+    const key=body&&typeof body.key==='string'?body.key:'';
+    if(!/^[A-Za-z0-9:._@|-]{1,512}$/.test(key))return reply({error:'invalid_key'},400,'no-store');
+    const now=Date.now();
+    const prev=await this.state.storage.get('sent:'+key);
+    const prevAt=prev&&Number.isFinite(prev.at)?prev.at:null;
+    const send=!(prevAt!==null&&now-prevAt<3600000);
+    if(send)await this.state.storage.put('sent:'+key,{at:now});
+    if(!send)return reply({send:false,last_sent_at:new Date(prevAt).toISOString()},200,'no-store');
+    return reply({send:true},200,'no-store');
+  }
+}
 export default {
  async fetch(req,env){
   const u=new URL(req.url);
@@ -787,8 +810,25 @@ export default {
   // identity is a new key and sends immediately. The key is an opaque
   // bounded token built from a fixed vocabulary (levels, alert codes,
   // ISO timestamps) — never a secret and never receipt content.
+  //
+  // The check-and-set runs in AlertThrottleDO whenever the ALERT_THROTTLE
+  // binding exists (2026-11-20): the KV version below cannot be atomic —
+  // two consults for the same new identity landing in the same instant
+  // (a poller tick and a human board view) could both read "no record"
+  // and both send. The object's single serialized instance removes that
+  // race outright. Any object error falls back to the KV path, which is
+  // unchanged from the original design.
   if(req.method==='POST'&&u.pathname==='/alert-throttle'){
-    let body;try{body=await req.json()}catch(_){return reply({error:'invalid_key'},400,'no-store')}
+    const rawBody=await req.text();
+    if(env.ALERT_THROTTLE){
+      try{
+        const stub=env.ALERT_THROTTLE.get(env.ALERT_THROTTLE.idFromName('alert-throttle'));
+        const res=await stub.fetch(new Request('https://alert-throttle.internal/consult',
+          {method:'POST',headers:{'content-type':'application/json'},body:rawBody}));
+        if(res.status<500)return reply(await res.json(),res.status,'no-store');
+      }catch(_){/* the object failed; the KV check-and-set below answers */}
+    }
+    let body;try{body=JSON.parse(rawBody)}catch(_){return reply({error:'invalid_key'},400,'no-store')}
     const key=body&&typeof body.key==='string'?body.key:'';
     if(!/^[A-Za-z0-9:._@|-]{1,512}$/.test(key))return reply({error:'invalid_key'},400,'no-store');
     const now=Date.now();

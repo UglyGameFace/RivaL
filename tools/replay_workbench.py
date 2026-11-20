@@ -21,6 +21,20 @@ Screens:
                       of the store).
     liquidation       R2: registered DATA-BLOCKED (design 5.2); prints
                       the block, runs nothing.
+    generation        G-A/G-B (phase-2 amendment): mask logistic
+                      refits + book-state conditioning on the settled
+                      forward record.
+    estate            G-C: new-estate loaders + availability; the
+                      registered candidates are graded as far as their
+                      records allow (NOT MEASURABLE today).
+    llm-intake        G-D: the frozen proposer's stored feature masks,
+                      validated, deduplicated, registered.
+
+Phase-2 screens record their per-candidate results into the
+workbench's own results table (the Models board reads it). Phase-1
+verdicts enter the same table via --import-report on their report
+files -- import records the verdicts as computed once; it recomputes
+nothing.
 
 Usage (on the host, from the deployed source tree):
     python tools/replay_workbench.py --screen recalibration [--output r.json]
@@ -28,6 +42,12 @@ Usage (on the host, from the deployed source tree):
     python tools/replay_workbench.py --screen coinbase-premium \
         --premium-file premium.jsonl [--record-file btc_record.jsonl]
     python tools/replay_workbench.py --export-record btc.jsonl --asset BTC
+    python tools/replay_workbench.py --screen generation [--output g.json]
+    python tools/replay_workbench.py --screen estate
+    python tools/replay_workbench.py --screen llm-intake
+    python tools/replay_workbench.py --import-report wb_r1.json \
+        --import-report wb_x.json --import-report wb_r3.json \
+        --import-report wb_r2.json
 """
 from __future__ import annotations
 
@@ -40,6 +60,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from parlay_bot.config import Settings
+from parlay_bot.perpetuals import replay_generation as gen
 from parlay_bot.perpetuals import replay_workbench as wb
 from parlay_bot.storage.hot import PostgresHotStore, SQLiteHotStore
 
@@ -75,11 +96,45 @@ def _load_record_file(path: Path) -> list[dict]:
             for line in path.read_text().splitlines() if line.strip()]
 
 
+def _generation_entries(masks: dict, conds: dict, *,
+                        evaluated_at: str) -> list[dict]:
+    meta = {c["id"]: c for c in
+            gen.MASK_CANDIDATES + gen.CONDITIONING_CANDIDATES}
+    entries = []
+    for result in (masks, conds):
+        for cid, cand in result["candidates"].items():
+            m = meta[cid]
+            if result["screen"] == "G-A":
+                score = cand.get("score") or {}
+                rows = score.get("rows") or 0
+                calls = (score.get("calls") or {}).get("n") or 0
+                days = score.get("days") or 0
+            else:
+                subset = cand.get("subset") or {}
+                rows = (cand.get("coverage") or {}).get("subset_rows") or 0
+                calls = subset.get("calls") or 0
+                days = subset.get("call_days") or 0
+            entries.append({
+                "candidate_id": cid, "screen": m["screen"],
+                "factory": m["factory"], "display": m["display"],
+                "status": cand.get("status"), "verdict": cand.get("verdict"),
+                "graded_rows": rows, "calls": calls, "days": days,
+                "evaluated_at": evaluated_at,
+                "detail": {"legs": cand.get("legs"),
+                           "floors": cand.get("floors")},
+            })
+    return entries
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Read-only replay workbench (frozen criteria)")
     parser.add_argument("--screen", choices=(
-        "recalibration", "xmarket", "coinbase-premium", "liquidation"))
+        "recalibration", "xmarket", "coinbase-premium", "liquidation",
+        "generation", "estate", "llm-intake"))
+    parser.add_argument("--import-report", type=Path, action="append",
+                        default=[], help="Phase-1 report JSON to record "
+                        "into the results table (repeatable)")
     parser.add_argument("--scope", action="append", default=[],
                         help="XMarket scope ASSET:HORIZON (repeatable)")
     parser.add_argument("--asset", default=None,
@@ -114,13 +169,26 @@ def main(argv: list[str] | None = None) -> int:
         return _emit(report, args.output)
 
     store = None
-    if args.export_record is not None or args.record_file is None:
+    if args.export_record is not None or args.record_file is None \
+            or args.import_report:
         store = _store()
         if store is None:
             print(json.dumps({
                 "status": "UNVERIFIED",
                 "reason": "host database not configured"}))
             return 2
+
+    if args.import_report:
+        imported: list[dict] = []
+        for path in args.import_report:
+            imported.extend(gen.import_phase1_reports(
+                [json.loads(path.read_text())]))
+        recorded = gen.record_results(store, imported)
+        if args.screen is None and args.export_record is None:
+            report = gen.base_report("IMPORT", now=now)
+            report.update({"imported_entries": len(imported),
+                           "recorded_results": recorded})
+            return _emit(report, args.output)
 
     if args.export_record is not None:
         rows, coverage = wb.load_live_record(store, asset=args.asset)
@@ -198,6 +266,61 @@ def main(argv: list[str] | None = None) -> int:
         report["premium_points"] = len(points)
         if args.fetch_premium:
             report["premium_fetch"] = fetch_meta
+        return _emit(report, args.output)
+
+    if args.screen == "generation":
+        rows, coverage = gen.load_generation_record(store)
+        masks = gen.screen_generation_masks(rows)
+        conds = gen.screen_conditioning(rows)
+        entries = _generation_entries(
+            masks, conds, evaluated_at=now.isoformat())
+        recorded = gen.record_results(store, entries)
+        report = gen.base_report("G-A/G-B", now=now)
+        report.update({"masks": masks, "conditioning": conds,
+                       "loader_coverage": coverage,
+                       "recorded_results": recorded})
+        return _emit(report, args.output)
+
+    if args.screen == "estate":
+        result = gen.screen_estate(store)
+        entries = [{
+            "candidate_id": cand["id"], "screen": cand["screen"],
+            "factory": cand["factory"], "display": cand["display"],
+            "status": "NOT_MEASURABLE", "verdict": None,
+            "graded_rows": 0, "calls": 0, "days": 0,
+            "evaluated_at": now.isoformat(),
+            "detail": {"cause": cand["cause"],
+                       "coverage": result["coverage"]},
+        } for cand in gen.ESTATE_CANDIDATES]
+        recorded = gen.record_results(store, entries)
+        report = gen.base_report("G-C", now=now)
+        report.update(result)
+        report["recorded_results"] = recorded
+        return _emit(report, args.output)
+
+    if args.screen == "llm-intake":
+        proposals, rejected = gen.load_llm_proposals(store)
+        registrations = gen.llm_registrations(proposals)
+        entries = [{
+            "candidate_id": reg["id"], "screen": reg["screen"],
+            "factory": reg["factory"], "display": reg["display"],
+            "status": reg["status"], "verdict": None,
+            "graded_rows": 0, "calls": 0, "days": 0,
+            "evaluated_at": now.isoformat(),
+            "detail": {"cause": reg["cause"], "asset": reg["asset"],
+                       "mask": reg["mask"],
+                       "proposed_at": reg["proposed_at"]},
+        } for reg in registrations]
+        recorded = gen.record_results(store, entries)
+        report = gen.base_report("G-D", now=now)
+        report.update({
+            "status": "INTAKE",
+            "verified_proposals": len(proposals),
+            "rejected": rejected,
+            "registrations": registrations,
+            "recorded_results": recorded,
+            "registry": gen.generation_registry(),
+        })
         return _emit(report, args.output)
 
     print(json.dumps({"status": "UNVERIFIED",

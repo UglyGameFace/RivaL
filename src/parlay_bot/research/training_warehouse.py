@@ -243,15 +243,33 @@ class TrainingWarehouse:
                             raise ValueError("records original lacks verified integrity metadata")
                         continue
                     sha = props.get("rival_sha256")
-                    size = int(row["size"]) if row.get("size") is not None else None
-                    if require_sha256 and (
-                        props.get("rival_kind") != "history"
-                        or not isinstance(row.get("id"), str)
-                        or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", row["id"])
-                        or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha)
-                        or size is None or not 0 < size <= 64 * 1024 * 1024
-                    ):
-                        raise ValueError("records original lacks verified SHA-256/size metadata")
+                    try:
+                        size = int(row["size"]) if row.get("size") is not None else None
+                    except (TypeError, ValueError, OverflowError):
+                        if require_sha256:
+                            raise ValueError(
+                                "records original lacks verified SHA-256/size metadata: size"
+                            ) from None
+                        size = None
+                    if require_sha256:
+                        # A failed source original must remain excluded, but
+                        # identify the failing metadata field without logging
+                        # private Drive IDs, names, hashes, or file contents.
+                        defects = []
+                        if props.get("rival_kind") != "history":
+                            defects.append("kind")
+                        if (not isinstance(row.get("id"), str)
+                                or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", row["id"])):
+                            defects.append("file_identity")
+                        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+                            defects.append("sha256")
+                        if size is None or not 0 < size <= 64 * 1024 * 1024:
+                            defects.append("size")
+                        if defects:
+                            raise ValueError(
+                                "records original lacks verified SHA-256/size metadata: "
+                                + ",".join(defects)
+                            )
                     entry = (str(row["id"]), md5, sha, size)
                     if name in found and found[name] != entry:
                         raise ValueError("conflicting records originals for the same day")

@@ -20,6 +20,7 @@ import argparse
 import csv
 import io
 import json
+import urllib.error
 import urllib.request
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -71,41 +72,55 @@ def vision_seconds(raw: int) -> float:
     return float(raw)
 
 
-def binance_closes(start: datetime, end: datetime) -> dict[datetime, float]:
-    """{candle close time: close} from Binance Vision BTCUSDT 5m zips."""
+def binance_closes(start: datetime, end: datetime):
+    """({candle close time: close}, [missing days]) from Vision zips.
+
+    A day whose zip is not published yet (the current day's file lags)
+    is skipped and REPORTED, never silently dropped: the screen's
+    exclusion count shows the rows that day would have covered."""
     closes: dict[datetime, float] = {}
+    missing: list[str] = []
     day = start.date()
     while day <= end.date():
-        payload = _get_bytes(VISION.format(day=day.isoformat()))
+        try:
+            payload = _get_bytes(VISION.format(day=day.isoformat()))
+        except (urllib.error.URLError, OSError):
+            missing.append(day.isoformat())
+            day += timedelta(days=1)
+            continue
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             name = archive.namelist()[0]
             text = archive.read(name).decode()
         for fields in csv.reader(io.StringIO(text)):
             try:
                 open_raw, close = int(fields[0]), float(fields[4])
-                close_raw = int(fields[6])
             except (ValueError, IndexError):
                 continue  # header or malformed row: never guessed
             opened = datetime.fromtimestamp(vision_seconds(open_raw), UTC)
             if not (start - timedelta(days=1) <= opened
                     <= end + timedelta(days=1)):
                 continue
-            closes[datetime.fromtimestamp(
-                vision_seconds(close_raw), UTC)] = close
+            # The close key is the candle boundary (open + 5m): the
+            # file's own close_time field is the last microsecond of
+            # the candle and never equals another venue's boundary.
+            closes[opened + timedelta(seconds=CANDLE_SECONDS)] = close
         day += timedelta(days=1)
-    return closes
+    return closes, missing
 
 
 def fetch_premium_series(start: datetime, end: datetime):
-    """[(close_at, premium)] over candles both venues printed."""
+    """([(close_at, premium)], meta) over candles both venues printed."""
     coinbase = coinbase_closes(start, end)
-    binance = binance_closes(start, end)
+    binance, missing = binance_closes(start, end)
     points = []
     for close_at in sorted(set(coinbase) & set(binance)):
         if binance[close_at] > 0:
             points.append(
                 (close_at, coinbase[close_at] / binance[close_at] - 1.0))
-    return points
+    meta = {"coinbase_candles": len(coinbase),
+            "binance_candles": len(binance),
+            "binance_missing_days": missing}
+    return points, meta
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -117,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     start = datetime.fromisoformat(args.start)
     end = datetime.fromisoformat(args.end)
-    points = fetch_premium_series(start, end)
+    points, meta = fetch_premium_series(start, end)
     args.output.write_text("\n".join(
         json.dumps({"at": at.isoformat(), "premium": premium})
         for at, premium in points) + "\n")
@@ -125,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         "points": len(points),
         "first": points[0][0].isoformat() if points else None,
         "last": points[-1][0].isoformat() if points else None,
+        **meta,
     }, sort_keys=True))
     return 0
 

@@ -184,7 +184,8 @@ def main(argv: list[str] | None = None) -> int:
             import fetch_coinbase_premium
             start = min(r["issued_at"] for r in rows)
             end = max(r["issued_at"] for r in rows)
-            points = fetch_coinbase_premium.fetch_premium_series(start, end)
+            points, fetch_meta = \
+                fetch_coinbase_premium.fetch_premium_series(start, end)
         else:
             print(json.dumps({
                 "status": "UNVERIFIED",
@@ -195,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
         report.update(result)
         report["loader_coverage"] = coverage
         report["premium_points"] = len(points)
+        if args.fetch_premium:
+            report["premium_fetch"] = fetch_meta
         return _emit(report, args.output)
 
     print(json.dumps({"status": "UNVERIFIED",

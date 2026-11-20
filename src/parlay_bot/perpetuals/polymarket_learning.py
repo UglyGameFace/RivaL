@@ -50,6 +50,30 @@ def polymarket_fee(price: float, rate: float = POLYMARKET_CRYPTO_FEE_RATE) -> fl
     return rate * price * (1 - price)
 
 
+_FORWARD_FEE_COLUMNS = ("fee_rate", "up_average_ask", "down_average_ask")
+
+
+def _ensure_forward_fee_columns(conn, store) -> None:
+    """Idempotently add per-contract fee evidence to forward rows.
+
+    CREATE TABLE IF NOT EXISTS cannot extend a table created before this
+    change, so extend it after the shared DDL runs -- introspect first, the
+    same additive pattern as convergence_quotes' reference_level repair.
+    The columns stay nullable: rows issued before the change keep unknown
+    fee evidence instead of a fabricated one, and after-fee readers fall
+    back to the published schedule for them.
+    """
+    present = set(store.database.column_names(
+        conn, "rival_polymarket_model_forward"))
+    for name in _FORWARD_FEE_COLUMNS:
+        if name not in present:
+            conn.execute(
+                "ALTER TABLE rival_polymarket_model_forward"
+                f" ADD COLUMN {name} DOUBLE PRECISION"
+            )
+            present.add(name)
+
+
 # Polymarket's published crypto fee schedule changed at this instant:
 # before it, every crypto Up/Down market used the 0.07 coefficient; from
 # it, BTC 5m/15m use 0.05 and all other crypto Up/Down markets use 0.01.
@@ -147,12 +171,14 @@ class PolymarketOutcomeLearner:
                 CREATE TABLE IF NOT EXISTS rival_polymarket_model_forward (
                     slug TEXT NOT NULL,model_version TEXT NOT NULL,issued_at TEXT NOT NULL,
                     weights_sha256 TEXT NOT NULL,probability_up DOUBLE PRECISION NOT NULL,market_baseline DOUBLE PRECISION NOT NULL,
+                    fee_rate DOUBLE PRECISION,up_average_ask DOUBLE PRECISION,down_average_ask DOUBLE PRECISION,
                     PRIMARY KEY(slug,model_version)
                 );
                 CREATE TABLE IF NOT EXISTS rival_polymarket_pooled_quotes (
                     slug TEXT PRIMARY KEY, up_ask DOUBLE PRECISION NOT NULL,
                     down_ask DOUBLE PRECISION NOT NULL
                 );""")
+                _ensure_forward_fee_columns(conn, self.store)
             self._initialized = True
 
     def contest_forecasts(self, notice) -> dict:
@@ -311,10 +337,12 @@ class PolymarketOutcomeLearner:
             candidate_p = _sigmoid(sum(w*x for w, x in zip(weights, (1., *features))))
             conn.execute(
                 "INSERT INTO rival_polymarket_model_forward "
-                "(slug,model_version,issued_at,weights_sha256,probability_up,market_baseline) "
-                "VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+                "(slug,model_version,issued_at,weights_sha256,probability_up,market_baseline,"
+                "fee_rate,up_average_ask,down_average_ask) "
+                "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
                 (notice.slug, MODEL, issued.isoformat(), weight_sha, candidate_p,
-                 notice.up_ask/(notice.up_ask+notice.down_ask)),
+                 notice.up_ask/(notice.up_ask+notice.down_ask),
+                 notice.fee_rate, notice.up_average_ask, notice.down_average_ask),
             )
             # Always render the first prospectively issued model forecast.
             # The original forward row and observation are immutable even if

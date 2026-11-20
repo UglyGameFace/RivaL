@@ -99,10 +99,25 @@ def live_calls_embed(market, asset: str, now: datetime | None = None):
                 if snapshot.calibrated else
                 "RAW model estimate; NOT calibrated or a verified win rate"
             )
+            # Product pass PR-3 (2026-11-20): the field leads with the
+            # qualification state, in PR-1's language. The direction leads
+            # only for an evidence-qualified snapshot; a sub-threshold lean
+            # is NO EDGE and an unproven model's lean is NO QUALIFIED CALL,
+            # with the lean itself demoted below the state, still labelled.
+            if snapshot.evidence_qualified:
+                lead = f"**{direction}**"
+                lean = f"**Confidence: {snapshot.probability:.1%}** ({score_type})"
+            elif snapshot.status == "weak_model":
+                lead = "**NO EDGE • NO CALL**"
+                lean = (f"Lean: {direction} · **Confidence: "
+                        f"{snapshot.probability:.1%}** ({score_type})")
+            else:
+                lead = "**NO QUALIFIED CALL**"
+                lean = (f"Lean: {direction} · **Confidence: "
+                        f"{snapshot.probability:.1%}** ({score_type})")
             text = (
-                f"**{direction}**\n"
-                f"**Confidence: {snapshot.probability:.1%}** "
-                f"({score_type})\n"
+                f"{lead}\n"
+                f"{lean}\n"
                 f"Model: `{snapshot.model_version or 'unknown'}` · "
                 f"Exchange: {snapshot.venue or 'unavailable'}\n"
                 f"**{verdict}**"
@@ -163,12 +178,10 @@ def live_calls_embed(market, asset: str, now: datetime | None = None):
         embed.add_field(name=f"{h}-minute call", value=text + "\n" + next_line,
                         inline=False)
         fingerprint.extend((str(h), snapshot.fingerprint, next_line))
-    embed.add_field(
-        name="Entry · SL · TP1 · TP2 · R:R",
-        value=("**Not verified.** No stop, targets, or risk/reward will be "
-               "fabricated from raw direction or a reference candle."),
-        inline=False,
-    )
+    # Product pass PR-3 (2026-11-20): the trailing "Entry · SL · TP1 ·
+    # TP2 · R:R" field is dropped. Nothing ever computed an entry, stop,
+    # or target for this board (the module contract forbids inventing
+    # them), so the field only ever rendered a refusal — pure noise.
     embed.set_footer(text="One edited channel card · Research only · No real orders")
     return embed, hashlib.sha256("|".join(fingerprint).encode()).hexdigest()
 
@@ -240,9 +253,15 @@ async def build_kalshi_calls(browser, reader, asset: str):
             if side == "TIED":
                 text += "No directional contract call (50/50 model)."
             else:
+                # Product pass PR-3 (2026-11-20): Kalshi previews are
+                # frozen shadow candidates with no qualification state,
+                # so no confidence figure is shown for them — the state
+                # leads and the model's lean is named below it, unnumbered
+                # (PR-1's rule: an unqualified lean is never the headline).
                 text += (
-                    f"**{side} · Confidence: {max(p, 1 - p):.1%}** "
-                    "(raw frozen model estimate, not verified accuracy)\n"
+                    "**NO QUALIFIED CALL**\n"
+                    f"Model leans {side} (raw frozen model estimate, "
+                    "not verified accuracy)\n"
                     f"Model: `{preview['model']}` · "
                     "**UNQUALIFIED RESEARCH; NO TRADE CALL**"
                 )

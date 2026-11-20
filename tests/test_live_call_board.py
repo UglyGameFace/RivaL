@@ -70,6 +70,10 @@ def test_call_board_shows_unqualified_up_down_and_only_issued_next(monkeypatch):
     ]
     assert "DOWN" in card.fields[0].value
     assert "UP" in card.fields[1].value
+    # Product pass PR-3: each field leads with its qualification state
+    # (PR-1's language); the lean is demoted below it, still labelled.
+    assert card.fields[0].value.startswith("**NO EDGE • NO CALL**")
+    assert card.fields[1].value.startswith("**NO QUALIFIED CALL**")
     assert "UNQUALIFIED RESEARCH; NO TRADE CALL" in card.fields[1].value
     assert "Confidence: 67.0%" in card.fields[1].value
     assert "Confidence: 53.0%" in card.fields[0].value
@@ -81,7 +85,10 @@ def test_call_board_shows_unqualified_up_down_and_only_issued_next(monkeypatch):
     assert "90%" not in card.fields[1].value
     assert "Next issued target: not yet available" in card.fields[0].value
     assert "NO CURRENT FORECAST" in card.fields[2].value
-    assert "Not verified" in card.fields[3].value
+    # Product pass PR-3: the dead Entry/SL/TP refusal field is dropped;
+    # only the three horizon fields remain.
+    assert len(card.fields) == 3
+    assert all("Entry" not in field.name for field in card.fields)
     assert "No real orders" in card.footer.text
 
 
@@ -95,6 +102,8 @@ def test_call_board_labels_calibrated_confidence_separately(monkeypatch):
                         _snapshot(horizon_minutes, now, direction="WAIT"))
     monkeypatch.setattr(call_board, "recent_watches", lambda *_a, **_k: [])
     card, _ = live_calls_embed(object(), "BTC", now=now)
+    # Product pass PR-3: a qualified snapshot still leads with its direction.
+    assert card.fields[1].value.startswith("**📉 DOWN**")
     assert "Confidence: 82.0%" in card.fields[1].value
     assert "Platt-calibrated model estimate" in card.fields[1].value
     assert "forward reliability unverified" in card.fields[1].value
@@ -236,8 +245,16 @@ async def test_kalshi_uses_exact_listed_contract_rules_not_exchange_candle():
     reader = SimpleNamespace(contract_preview=preview)
     card, digest = await build_kalshi_calls(browser, reader, "BTC")
     assert "Kalshi" in card.title
-    assert "YES · Confidence: 76.0%" in card.fields[0].value
-    assert "NO · Confidence: 69.0%" in card.fields[1].value
+    # Product pass PR-3: Kalshi previews have no qualification state, so
+    # the state leads and no confidence figure is shown; the frozen
+    # model's lean is named below the state, unnumbered.
+    assert "**NO QUALIFIED CALL**" in card.fields[0].value
+    assert "Model leans YES" in card.fields[0].value
+    assert "Model leans NO" in card.fields[1].value
+    assert "76.0%" not in card.fields[0].value
+    assert "69.0%" not in card.fields[1].value
+    assert "Confidence" not in card.fields[0].value
+    assert "Confidence" not in card.fields[1].value
     assert "NO ISSUED MODEL CALL" in card.fields[2].value
     assert "5m" not in card.fields[0].value
     assert len(digest) == 64

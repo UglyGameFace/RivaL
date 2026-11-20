@@ -277,8 +277,8 @@ def live_polymarket_embed(
                    f"Price to beat: {beat}\nSettles on {settles}."),
             inline=False,
         )
-    embed.add_field(name="🏆 Is any model proven here?",
-                    value=league_text(league, asset=asset, horizon=horizon), inline=False)
+    # Product pass PR-3 (2026-11-20): the call itself is the answer, so
+    # it sits above the "Is any model proven here?" league explainer.
     if valid:
         label = ("🧠 RivaL's call (test model, not proven)" if outranked
                  else "🧠 RivaL's call" if snapshot.kind == "model"
@@ -292,6 +292,8 @@ def live_polymarket_embed(
         embed.add_field(name="⚠️ Limits", value=snapshot.risk, inline=False)
         if ai_status:
             embed.add_field(name="AI update", value=ai_status, inline=False)
+    embed.add_field(name="🏆 Is any model proven here?",
+                    value=league_text(league, asset=asset, horizon=horizon), inline=False)
     if formula is not None and current is not None and formula.get("slug") == current.slug:
         chance = formula["chance_up"]
         embed.add_field(name="📐 Price-formula check (locked)", value=(

@@ -531,6 +531,13 @@ async def test_card_keeps_frozen_call_when_quote_drops_out(tmp_path):
         embed, _ = await service._observation("BTC", 5)
         assert "Test call DOWN" in embed.title and "not proven" in embed.title
         assert any("DOWN" in f.value for f in embed.fields if "not proven" in f.name)
+        # Product pass PR-3: the call field sits above the "Is any model
+        # proven here?" league explainer — answer first.
+        names = [f.name for f in embed.fields]
+        call_at = next(i for i, n in enumerate(names) if "RivaL's call" in n)
+        league_at = next(
+            i for i, n in enumerate(names) if "Is any model proven here?" in n)
+        assert call_at < league_at
         service.research.observe.assert_not_called()
         assert "No verified sell-side liquidity" in next(
             f.value for f in embed.fields if "Share prices now" in f.name)

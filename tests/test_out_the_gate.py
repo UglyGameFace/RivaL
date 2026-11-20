@@ -776,7 +776,10 @@ def test_target_embed_shows_otg_and_lean_fields():
         live_lean_as_of=now - timedelta(seconds=30),
     )
     embed = target_embed(snapshot)
-    assert "UP LEAN • NO SIGNAL" in embed.title
+    # Product pass PR-3: a sub-threshold Follow card leads with NO EDGE;
+    # the lean itself stays in the Out-the-gate field below the title.
+    assert "NO EDGE • NO CALL" in embed.title
+    assert "UP LEAN" not in embed.title
     fields = {f.name: f.value for f in embed.fields}
     assert "📡 Out the gate • live lean" in fields
     otg_field = fields["📡 Out the gate • live lean"]

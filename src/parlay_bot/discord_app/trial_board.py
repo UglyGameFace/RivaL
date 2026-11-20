@@ -547,6 +547,15 @@ def issuance_off(family: str) -> bool:
     return not getattr(fa, flag, True)
 
 
+def lab_issuance_off() -> bool:
+    """True when the Model Lab's own issuance switch is off. Every lab
+    design issues under the one lab_ prefix flag, so the prefix entry is
+    the representative family: when it is off, the lab's open designs are
+    frozen mid-trial and no new evidence accrues for them, however busy
+    the lab's frozen record still looks."""
+    return issuance_off("lab_")
+
+
 # --- Polymarket contest -----------------------------------------------------
 
 CONTEST_CONTRACTS = 300

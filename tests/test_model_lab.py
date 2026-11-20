@@ -373,9 +373,10 @@ def test_the_forecast_cycle_issues_lab_calls_beside_the_incumbent(tmp_path, monk
         store.close()
 
 
-def test_bot_performance_names_the_best_model_per_timeframe_and_the_lab():
+def test_bot_performance_names_the_best_model_per_timeframe_and_the_lab(monkeypatch):
     from parlay_bot.discord_app.home import _best_text
     from parlay_bot.discord_app.trial_board import TrialRow, best
+    from parlay_bot.perpetuals import forward_audit
 
     ahead = TrialRow(name="Trend learn", days=3, results=140, gain=.0071, ahead=1,
                      exchanges=1, stopped=0, passed=False, after_fees_bps=None)
@@ -388,6 +389,8 @@ def test_bot_performance_names_the_best_model_per_timeframe_and_the_lab():
     lab = {h: {"tried": 4, "active": [{}, {}, {}], "closed": 1, "passed": [],
                "best": ({"family": "lab_5m_3f9a2c11aa", "fitness": .002} if h == 5 else None),
                "learned": {}} for h in (5, 15, 60)}
+    # Lab issuance on: the live-testing copy renders as before.
+    monkeypatch.setattr(forward_audit, "ISSUE_LAB_CHALLENGERS", True)
     text = _best_text({"best": {"best": {5: ahead, 15: None, 60: "error"}, "lab": lab}})
     lines = text.splitlines()
     assert lines[0] == "**5m** · **Trend learn** +7.1 edge · 140 results over 3 days, not proven yet"
@@ -397,3 +400,18 @@ def test_bot_performance_names_the_best_model_per_timeframe_and_the_lab():
     assert "Leading so far (all coins): **Design unavailable** on 5-min (early" in lines[3]
     assert _best_text({"best": RuntimeError("slow")}) is None
     assert _best_text({"best": {"best": {5: None, 15: None, 60: None}}}) is None
+
+    # Lab issuance off (the production state since the price-first stop,
+    # PR #704): the field states the freeze and never implies the designs
+    # are testing or can finish and close on new evidence.
+    monkeypatch.setattr(forward_audit, "ISSUE_LAB_CHALLENGERS", False)
+    frozen = _best_text({"best": {"best": {5: ahead, 15: None, 60: "error"}, "lab": lab}})
+    lab_line = frozen.splitlines()[3]
+    assert lab_line.startswith("🧬 Model Lab: paused — issuance is off")
+    assert "its 9 open designs are frozen" in lab_line
+    assert "no new evidence is accruing" in lab_line
+    assert "3 closed so far" in lab_line
+    assert "designs testing" not in lab_line and "finish and close" not in lab_line
+    assert ("Frozen record — leading so far (all coins): "
+            "**Design unavailable** on 5-min (early") in lab_line
+    assert "Full record in Full evidence" in lab_line

@@ -194,6 +194,10 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
             passed = sum(r.passed for r in rows)
             text = (f"{len(rows)} test models scored · {ahead} ahead of the main model · {passed} passed.\n"
                     "Open Models for the comparisons and import status.")
+            hidden = int(board.get("cut_here") or 0) + int(board.get("stopped_here") or 0)
+            if hidden:
+                text += (f"\n{hidden} retired or early-stopped design(s) not counted "
+                         "here — full record in Full evidence.")
         else:
             text = "Test model comparisons unavailable. Open Models to check again."
         field(f"Test models · {horizon}m", text, "trials")

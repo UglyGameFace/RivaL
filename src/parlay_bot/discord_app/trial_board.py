@@ -329,6 +329,10 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
     """Rows for this coin and timeframe, plus a count across every market.
 
     Two point reads on small tables (one row per exchange and timeframe).
+    ``rows`` holds live contenders only (issuance switch on, not cut on
+    every scope here); ``all_rows`` keeps every non-cut row for the Full
+    evidence record, and ``trials``/``passed`` count the live set while
+    ``trials_all``/``passed_all`` count all of it.
     """
     stamp = (now or datetime.now(UTC)).astimezone(UTC)
     since = (stamp - FRESH).isoformat()
@@ -362,12 +366,12 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
     load_family_designs(store, {family for entry, _, _ in everywhere
                                for family in (entry[2] if isinstance(entry[2], dict) else {})
                                if str(family).startswith("lab_")})
-    all_rows = fold(here, stops_here, retired=retired)
-    cut_here = sum(r.status == "cut" for r in all_rows)
+    folded_here = fold(here, stops_here, retired=retired)
+    cut_here = sum(r.status == "cut" for r in folded_here)
     # A family stopped on all observed scopes cannot be presented as
     # currently "on trial". Preserve the immutable evidence and count it
     # separately, without touching actual candidate retirement policy.
-    rows = [r for r in all_rows if r.status != "cut"]
+    active = [r for r in folded_here if r.status != "cut"]
     # Right % is counted on the SAME exchanges as Day, Res and Edge (the ones
     # the hourly promotion check judged), so one row never mixes scopes.
     venues = sorted({venue for venue, _contract in contracts})
@@ -375,9 +379,15 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
              if venues else {})
     partial = rates is None
     rates = rates or {}
-    rows = [replace(r, calls=rates.get(r.family, (0, 0))[0],
-                    right=rates.get(r.family, (0, 0))[1]) for r in rows]
-    total = passed = 0
+    active = [replace(r, calls=rates.get(r.family, (0, 0))[0],
+                      right=rates.get(r.family, (0, 0))[1]) for r in active]
+    # The leaderboard lists live contenders only: a family whose issuance
+    # switch is off can never accrue new evidence, so it leaves the active
+    # table and is counted in stopped_here. Its rows stay in all_rows —
+    # the Full evidence record keeps everything.
+    rows = [r for r in active if not issuance_off(r.family)]
+    stopped_here = len(active) - len(rows)
+    total = passed = live_total = live_passed = 0
     by_market: dict[tuple[str, int], list] = {}
     for entry, a, h in everywhere:
         by_market.setdefault((a, h), []).append(entry)
@@ -389,9 +399,15 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
         folded = fold(entries, market_stops, retired=retired)
         total += sum(row.status != "cut" for row in folded)
         passed += sum(row.passed for row in folded)
-    return {"rows": rows, "markets": len(by_market), "trials": total, "passed": passed,
-            "cut_here": cut_here, "stops": len(stop_rows),
-            "venues": venues, "partial": partial}
+        live = [row for row in folded
+                if row.status != "cut" and not issuance_off(row.family)]
+        live_total += len(live)
+        live_passed += sum(row.passed for row in live)
+    return {"rows": rows, "all_rows": active, "markets": len(by_market),
+            "trials": live_total, "trials_all": total,
+            "passed": live_passed, "passed_all": passed,
+            "cut_here": cut_here, "stopped_here": stopped_here,
+            "stops": len(stop_rows), "venues": venues, "partial": partial}
 
 
 HIT_DAYS = 7
@@ -476,6 +492,59 @@ def retired_families() -> frozenset[str]:
         ("flow_v3", "ISSUE_FLOW_V3_CHALLENGERS"), ("regime_v2", "ISSUE_REGIME_V2_CHALLENGERS"),
         ("liq_v1", "ISSUE_LIQ_V1_CHALLENGERS"),
     ) if not getattr(fa, flag, True))
+
+
+# --- Issuance state -------------------------------------------------------
+# Every trial family issues through forward_audit, each behind its own
+# ISSUE_* switch (the competition funnel's own candidates share the funnel
+# switch). A family whose switch is off can never accrue new evidence: the
+# hourly promotion check keeps re-scoring its frozen record, so without
+# this test the board parades it as a live contender forever. The split
+# lives in read(), not fold(): fold() stays the pure evidence folder.
+_FAMILY_ISSUE_FLAGS = {
+    "archive_v1": "ISSUE_ARCHIVE_V1_CHALLENGERS",
+    "gbm_v1": "ISSUE_GBM_V1_CHALLENGERS",
+    "regime_v1": "ISSUE_REGIME_V1_CHALLENGERS",
+    "regime_v2": "ISSUE_REGIME_V2_CHALLENGERS",
+    "regime_live_v1": "ISSUE_REGIME_LIVE_V1_CHALLENGERS",
+    "regime_live_fast_v1": "ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS",
+    "regime_wild_v1": "ISSUE_REGIME_WILD_V1_CHALLENGERS",
+    "volcal_v1": "ISSUE_VOLCAL_V1_CHALLENGERS",
+    "xmarket_v1": "ISSUE_XMARKET_V1_CHALLENGERS",
+    "cross_v1": "ISSUE_CROSS_V1_CHALLENGERS",
+    "cross_all_v1": "ISSUE_CROSS_V1_CHALLENGERS",
+    "calib_incumbent_v1": "ISSUE_CALIBRATED_CHALLENGERS",
+    "flow_v1": "ISSUE_FLOW_CHALLENGERS",
+    "flow_v2": "ISSUE_FLOW_CHALLENGERS",
+    "flow_v3": "ISSUE_FLOW_V3_CHALLENGERS",
+    "liq_v1": "ISSUE_LIQ_V1_CHALLENGERS",
+    "gaussian_nb_v1": "ISSUE_COMPETITION_CHALLENGERS",
+    "knn21_v1": "ISSUE_COMPETITION_CHALLENGERS",
+}
+_PREFIX_ISSUE_FLAGS = (
+    ("pooled_", "ISSUE_POOLED_CHALLENGERS"),
+    ("boosted_", "ISSUE_COMPETITION_CHALLENGERS"),
+    ("historical_", "ISSUE_COMPETITION_CHALLENGERS"),
+    ("lab_", "ISSUE_LAB_CHALLENGERS"),
+)
+
+
+def issuance_off(family: str) -> bool:
+    """True when the family's issuance switch is off, so it can never
+    accrue new evidence however fresh its re-scored record looks. Unknown
+    families and unreadable flags read as on: a display test must never
+    hide a family it cannot account for."""
+    flag = _FAMILY_ISSUE_FLAGS.get(family)
+    if flag is None:
+        flag = next((name for prefix, name in _PREFIX_ISSUE_FLAGS
+                     if family.startswith(prefix)), None)
+    if flag is None:
+        return False
+    try:
+        from parlay_bot.perpetuals import forward_audit as fa
+    except Exception:  # noqa: BLE001 - a flag read must never break the page
+        return False
+    return not getattr(fa, flag, True)
 
 
 # --- Polymarket contest -----------------------------------------------------

@@ -75,6 +75,11 @@ class PolyBoltTWAP:
         self._first_valid_at: datetime | None = None
         self._valid_observations: int = 0
         self._reconnects: int = 0
+        # Optional sink for every accepted tick (the settlement-index
+        # recorder). Set by the owner after construction; None means the
+        # stream behaves exactly as before, ticks held in memory only.
+        # A sink fault must never break the stream, so calls are guarded.
+        self.tick_sink = None
 
     @property
     def configured(self) -> bool:
@@ -215,6 +220,14 @@ class PolyBoltTWAP:
                     continue
                 stream.append(tick)
                 updated += 1
+                if self.tick_sink is not None:
+                    try:
+                        self.tick_sink(tick)
+                    except Exception:  # noqa: BLE001 - recorder is downstream
+                        _LOG.warning(
+                            "RivaL PolyBolt tick sink failed; stream continues",
+                            exc_info=True,
+                        )
             except (ValueError, TypeError, OverflowError):
                 continue
         if updated:

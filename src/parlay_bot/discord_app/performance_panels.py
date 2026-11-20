@@ -137,9 +137,17 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
         _add_field(embed, stale, name, value, sources)
 
     if section == "overview":
-        embed.description = f"**{headline}.**\nModels in shadow are evaluated separately."
-        field("Exchange model · last 7 days", main, "exchange")
-        field("Polymarket · last 7 days", poly_summary(reports), "polymarket")
+        # Product pass PR-2: the Overview leads with the existing Polymarket
+        # verdict (the same headline the Full evidence scoreboard computes);
+        # the exchange-model line demotes to its field, and the Polymarket
+        # field states the after-fee gap plainly instead of staying silent.
+        verdict, _scoreboard = _scoreboard_text(coin, horizon, reports, now,
+                                                polymarket_only=True)
+        embed.description = f"{verdict}\nModels in shadow are evaluated separately."
+        field("Exchange model · last 7 days", f"{headline}\n{main}", "exchange")
+        field("Polymarket · last 7 days",
+              poly_summary(reports) + "\nAfter-fee money result: not measured yet",
+              "polymarket")
         field(f"XMarket · {coin}", xmarket_summary(reports.get("xmarket"), horizon=horizon), "xmarket")
         board = reports.get("trials")
         if isinstance(board, dict):

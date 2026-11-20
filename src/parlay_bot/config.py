@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     # Collection only; no model input, no evaluation, no issuance.
     rival_n1_surface_enabled: bool = Field(default=True)
     rival_n1_threshold_enabled: bool = Field(default=True)
+    # The exploratory Kalshi arm records forward too: its fallback was
+    # the venue's free historical candlesticks archive, whose coverage
+    # cutoff moves, so the live threshold markets are snapshotted on
+    # the same hourly cycle from the public (unauthenticated) API.
+    rival_n1_kalshi_threshold_enabled: bool = Field(default=True)
     rival_n1_collection_seconds: int = Field(default=3600, ge=600, le=21600)
     # Shared, read-only websocket feeds; offload only verified quote samples
     # into forward shadow research. Never persist a database row per tick.

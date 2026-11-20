@@ -107,7 +107,13 @@ async def test_page_is_verdict_first_then_scoreboard_trials_and_health(tmp_path,
         assert embeds[1].title == "🧪 Test models here (0) — Bitcoin · 5-min"
         assert embeds[2].title == "⚙️ Running and learning"   # no contest in this fixture
         fields = _all_fields(embeds)
-        assert list(fields) == [SCORE, "🎚️ Can you trust its confidence?", HEALTH]
+        # The replay workbench standings ride the test-models embed
+        # (workbench phase 2), between confidence and health; this
+        # fixture's store has no recorded results, so the field states
+        # that plainly instead of showing standings.
+        assert list(fields) == [SCORE, "🎚️ Can you trust its confidence?",
+                                "🔁 Replay workbench", HEALTH]
+        assert "No graded candidates yet" in fields["🔁 Replay workbench"]
         # Nothing on trial and no lab yet: no empty "best model" section.
         # The verdict is the first line; honesty disclosures stay.
         assert embeds[0].description.startswith(

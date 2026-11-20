@@ -321,7 +321,12 @@ async def test_exchange_performance_one_page_shows_sample_and_learning(
         pane = await home.render_embeds()
         body = str([e.to_dict() for e in pane])
         fields = {x.name: x.value for e in pane for x in e.fields}
-        assert len(fields) == 3
+        # Scoreboard + confidence on embed 1, health on embed 3, and the
+        # replay workbench standings on embed 2 (workbench phase 2). This
+        # harness's bare market object cannot serve the workbench read,
+        # so that field shows its couldn't-load copy, not standings.
+        assert len(fields) == 4
+        assert "Couldn't load the replay results" in fields["🔁 Replay workbench"]
         assert "4,150 of 4,159 predictions checked" in body
         assert "right **49.7%**" in body and "(2,063 of 4,150)" in body
         assert "(0.251 vs 0.249)" in body

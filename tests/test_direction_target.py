@@ -120,7 +120,11 @@ def test_targets_show_unqualified_leans_without_fabricated_forecasts(tmp_path):
         assert "not a qualified call" in ready.detail
         assert "Just watch: this is not a signal to trade." in ready.detail
         assert ready.evidence_qualified is False
-        assert "UP LEAN • NO SIGNAL" in target_embed(ready).title
+        # Product pass PR-3: the Follow card title leads with the state,
+        # not the direction (PR-1's language); the lean stays in the
+        # detail and Out-the-gate field, labelled as not a call.
+        assert "NO QUALIFIED CALL" in target_embed(ready).title
+        assert "UP LEAN" not in target_embed(ready).title
         assert target_snapshot(
             market, asset="BTC", horizon_minutes=15, now=now,
         ).direction == "WAIT"

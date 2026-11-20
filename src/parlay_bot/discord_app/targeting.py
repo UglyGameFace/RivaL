@@ -289,9 +289,24 @@ def target_embed(snapshot: TargetSnapshot) -> discord.Embed:
         if snapshot.probability is not None else "invalid"
     )
     qualified_watch = snapshot.evidence_qualified and strength == "directional watch"
+    # Product pass PR-3 (2026-11-20): an unqualified Follow card leads
+    # with its state in PR-1's language, never with its direction. The
+    # lean itself stays in the detail and the Out-the-gate field below,
+    # labelled as not a call. Snapshots in any other state keep the
+    # legacy lean label.
+    if qualified_watch:
+        direction_labels = {"UP": "📈 UP WATCH", "DOWN": "📉 DOWN WATCH"}
+    elif snapshot.status == "weak_model":
+        direction_labels = {"UP": "🟠 NO EDGE • NO CALL",
+                            "DOWN": "🟠 NO EDGE • NO CALL"}
+    elif snapshot.status == "unqualified_model":
+        direction_labels = {"UP": "🟠 NO QUALIFIED CALL",
+                            "DOWN": "🟠 NO QUALIFIED CALL"}
+    else:
+        direction_labels = {"UP": "🟠 UP LEAN • NO SIGNAL",
+                            "DOWN": "🟠 DOWN LEAN • NO SIGNAL"}
     labels = {
-        "UP": "📈 UP WATCH" if qualified_watch else "🟠 UP LEAN • NO SIGNAL",
-        "DOWN": "📉 DOWN WATCH" if qualified_watch else "🟠 DOWN LEAN • NO SIGNAL",
+        **direction_labels,
         "WAIT": "⏳ WAIT • NO CALL • NO VERIFIED EDGE",
         "FLAT": "⏳ FLAT • NO CALL • COIN FLIP",
     }

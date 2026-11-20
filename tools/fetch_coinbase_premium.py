@@ -61,6 +61,16 @@ def coinbase_closes(start: datetime, end: datetime) -> dict[datetime, float]:
     return closes
 
 
+def vision_seconds(raw: int) -> float:
+    """Binance Vision timestamps: current files are microseconds,
+    older files milliseconds. Normalize by magnitude."""
+    if raw >= 10**15:
+        return raw / 1_000_000
+    if raw >= 10**12:
+        return raw / 1_000
+    return float(raw)
+
+
 def binance_closes(start: datetime, end: datetime) -> dict[datetime, float]:
     """{candle close time: close} from Binance Vision BTCUSDT 5m zips."""
     closes: dict[datetime, float] = {}
@@ -72,15 +82,16 @@ def binance_closes(start: datetime, end: datetime) -> dict[datetime, float]:
             text = archive.read(name).decode()
         for fields in csv.reader(io.StringIO(text)):
             try:
-                open_ms, close = int(fields[0]), float(fields[4])
-                close_ms = int(fields[6])
+                open_raw, close = int(fields[0]), float(fields[4])
+                close_raw = int(fields[6])
             except (ValueError, IndexError):
                 continue  # header or malformed row: never guessed
-            opened = datetime.fromtimestamp(open_ms / 1000, UTC)
+            opened = datetime.fromtimestamp(vision_seconds(open_raw), UTC)
             if not (start - timedelta(days=1) <= opened
                     <= end + timedelta(days=1)):
                 continue
-            closes[datetime.fromtimestamp(close_ms / 1000, UTC)] = close
+            closes[datetime.fromtimestamp(
+                vision_seconds(close_raw), UTC)] = close
         day += timedelta(days=1)
     return closes
 

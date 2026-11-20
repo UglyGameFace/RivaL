@@ -292,6 +292,23 @@ def test_xmarket_registry_matches_frozen_scopes():
                       ("XRP", 15), ("XRP", 60)}
 
 
+# --- Premium fetcher: Binance Vision row shapes ---
+
+def test_vision_timestamp_units():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "fetch_coinbase_premium",
+        Path(__file__).resolve().parents[1] / "tools"
+        / "fetch_coinbase_premium.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # Milliseconds (older files) and microseconds (current files)
+    # normalize to the same instant.
+    assert module.vision_seconds(1762000000000) == 1762000000.0
+    assert module.vision_seconds(1762000000000000) == 1762000000.0
+
+
 # --- Loader: eligibility on a synthetic store ---
 
 def _seed_store(tmp_path):

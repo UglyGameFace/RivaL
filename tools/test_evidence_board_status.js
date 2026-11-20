@@ -6,12 +6,14 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname,'..','web','evidence-board','worker.js'),'utf8');
 let receipt;
+let diagOverride = null;
 let upstreamOk = true;
 const context = {
   URL, Request, Response, Date, console, fetch: async () => { throw Error('Unexpected external fetch'); },
   addEventListener() {},
   RIVAL_EVIDENCE_RECEIPTS: {
-    fetch: async () => ({ok:upstreamOk, status:upstreamOk?200:503, json:async()=>receipt})
+    fetch: async (url) => ({ok:upstreamOk, status:upstreamOk?200:503,
+      json:async()=>(diagOverride&&String(url).includes('diagnostics'))?diagOverride:receipt})
   }
 };
 vm.createContext(context);
@@ -134,6 +136,31 @@ async function main(){
   assert.equal(d.code,200);
   assert.equal(d.body.checks.stale_receipt,false);
   assert.equal(d.body.checks.failed_collection_attempt,false);
+  // The gap alert follows the last attempt of ANY trigger: a 20h-old
+  // schedule attempt beside a 5-minute-old dispatch attempt is a healthy
+  // pipeline, not a gap (the 2026-11-19 production case, where the
+  // schedule_gap warning outlived the outage it belonged to).
+  const savedReceipt=receipt;
+  const recentAttempt=new Date(Date.now()-5*60000).toISOString();
+  const oldSchedule=new Date(Date.now()-20*3600000).toISOString();
+  diagOverride={collection:{
+    last_attempt:{attempted_at:recentAttempt,outcome:'accepted'},
+    last_schedule_attempt:{attempted_at:oldSchedule},
+    last_publication:{captured_at:now}}};
+  receipt={...receipt,captured_at:now,
+    collection:{event:'workflow_dispatch',run_id:'44643698748',run_attempt:1,
+      attempted_at:new Date(Date.now()-13*3600000).toISOString(),coalesced:false}};
+  r=await status();
+  assert.equal(r.code,200);
+  assert.ok(!alertCodes(r.body).includes('schedule_gap'),
+    'A recent attempt of any trigger clears the gap alert');
+  assert.ok(r.body.collection.schedule_gap_seconds<3600,
+    'Gap is measured from the last attempt, not the last schedule event');
+  assert.equal(r.body.collection.last_attempt_at,recentAttempt);
+  assert.equal(r.body.collection.last_scheduled_attempt_at,oldSchedule,
+    'The raw schedule figure is still reported for Diagnostics');
+  diagOverride=null;
+  receipt=savedReceipt;
   upstreamOk=false;
   d=await diagnostics();
   assert.equal(d.code,503,'Diagnostics without a snapshot cannot invent health');

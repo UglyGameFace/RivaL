@@ -643,6 +643,23 @@ def _table_exists(store, conn, table: str) -> bool:
     return found is not None
 
 
+# Rows per fetchmany chunk when streaming the evaluator's growing series
+# loads (the #727 pattern): identical order and contents to fetchall(),
+# without materializing ~8 days of ticks/outcomes before the first row
+# is processed.
+FETCH_CHUNK = 2000
+
+
+def _stream_rows(conn, sql: str):
+    """Yield a query's rows in FETCH_CHUNK slices, in the query's order."""
+    cursor = conn.execute(sql)
+    while True:
+        chunk = cursor.fetchmany(FETCH_CHUNK)
+        if not chunk:
+            return
+        yield from chunk
+
+
 def load_windows(store) -> list[dict]:
     """Read snapshots, strikes, settlements and index paths (SELECT-only).
 
@@ -704,9 +721,10 @@ def load_windows(store) -> list[dict]:
                     kalshi_refs[str(row["contract_id"])] = value
         pm_results: dict[str, int] = {}
         if _table_exists(store, conn, "rival_polymarket_ai_outcomes"):
-            for row in conn.execute(
+            for row in _stream_rows(
+                    conn,
                     "SELECT slug, direction"
-                    " FROM rival_polymarket_ai_outcomes").fetchall():
+                    " FROM rival_polymarket_ai_outcomes"):
                 direction = str(row["direction"]).upper()
                 if direction == "UP":
                     pm_results[str(row["slug"])] = 1
@@ -715,10 +733,11 @@ def load_windows(store) -> list[dict]:
         series: dict[tuple[str, str], list[tuple[datetime, float]]] = {}
         recording: dict[str, dict] = {}
         if _table_exists(store, conn, "rival_settlement_index_ticks"):
-            for row in conn.execute(
+            for row in _stream_rows(
+                    conn,
                     "SELECT venue, asset, source_at, value"
                     " FROM rival_settlement_index_ticks"
-                    " ORDER BY venue, asset, source_at").fetchall():
+                    " ORDER BY venue, asset, source_at"):
                 stamp = _parse_time(row["source_at"])
                 if stamp is None:
                     continue

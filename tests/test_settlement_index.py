@@ -138,3 +138,28 @@ def test_fair_value_collection_config_defaults():
     assert fields["rival_settlement_index_seconds"].default == 10
     assert fields["kalshi_api_key_id"].default is None
     assert fields["kalshi_api_private_key"].default is None
+
+
+def test_ticks_streams_past_the_chunk_boundary(tmp_path):
+    """4,500 stored ticks (FETCH_CHUNK=2000) read back complete, in
+    source-time order, with contents identical to what was stored."""
+    recorder = _recorder(tmp_path)
+    recorder.initialize()
+    expected = []
+    with recorder.store.connect() as conn:
+        for i in range(4500):
+            at = T0 + timedelta(seconds=i * 10)
+            row = {
+                "venue": "polymarket", "asset": "BTC",
+                "source_at": at.isoformat(), "received_at": at.isoformat(),
+                "value": 67000.0 + i, "avg_60s": None,
+                "receipt_sha256": "ab" * 32,
+            }
+            expected.append(row)
+            conn.execute(
+                "INSERT INTO rival_settlement_index_ticks VALUES (?,?,?,?,?,?,?)",
+                (row["venue"], row["asset"], row["source_at"],
+                 row["received_at"], row["value"], row["avg_60s"],
+                 row["receipt_sha256"]),
+            )
+    assert recorder.ticks(venue="polymarket", asset="BTC") == expected

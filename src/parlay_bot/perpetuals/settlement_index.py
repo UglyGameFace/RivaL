@@ -37,6 +37,10 @@ from datetime import UTC, datetime
 
 VENUES = ("polymarket", "kalshi")
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
+# Rows per fetchmany chunk when streaming evaluator-side reads (the #727
+# pattern): identical ORDER BY order and contents to fetchall(), without
+# materializing a whole series before the first row is processed.
+FETCH_CHUNK = 2000
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rival_settlement_index_ticks (
@@ -168,13 +172,19 @@ class SettlementIndexRecorder:
     def ticks(self, *, venue: str, asset: str) -> list[dict]:
         """Stored ticks for one series, in source-time order."""
         self.initialize()
+        rows: list[dict] = []
         with self.store.connect() as conn:
-            rows = conn.execute(
+            cursor = conn.execute(
                 """SELECT * FROM rival_settlement_index_ticks
                    WHERE venue=? AND asset=? ORDER BY source_at""",
                 (venue, asset),
-            ).fetchall()
-        return [dict(row) for row in rows]
+            )
+            while True:
+                chunk = cursor.fetchmany(FETCH_CHUNK)
+                if not chunk:
+                    break
+                rows.extend(dict(row) for row in chunk)
+        return rows
 
     def pending_count(self) -> int:
         with self._lock:

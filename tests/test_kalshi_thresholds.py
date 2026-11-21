@@ -290,3 +290,23 @@ def test_record_markets_batches_with_identical_contents():
     finally:
         store.close()
         _drop_schema(dsn, schema)
+
+
+def test_snapshots_stream_past_the_chunk_boundary(tmp_path):
+    """2,500 stored markets (FETCH_CHUNK=2000) read back complete and in
+    snapshot order."""
+    recorder = KalshiThresholdsRecorder(SQLiteHotStore(tmp_path / "n1.sqlite"))
+    markets = [
+        _market(ticker=f"KXBTCD-26NOV2000-T{70000 + i}.99",
+                floor_strike=float(70000 + i))
+        for i in range(2500)
+    ]
+    written, skipped = recorder.record_markets(ABOVE_BTC, markets, snapshot_at=T0)
+    assert (written, skipped) == (2500, 0)
+    stored = recorder.snapshots(asset="BTC", contract_type="above")
+    assert len(stored) == 2500
+    by_ticker = {row["market_ticker"]: row for row in stored}
+    for market in markets:
+        want = market_row(ABOVE_BTC, market)
+        assert by_ticker[want["market_ticker"]] == {
+            "snapshot_at": T0.isoformat(), **want}

@@ -283,3 +283,27 @@ def test_record_event_batches_with_identical_contents():
     finally:
         store.close()
         _drop_schema(dsn, schema)
+
+
+def test_snapshots_stream_past_the_chunk_boundary(tmp_path):
+    """2,500 stored markets (FETCH_CHUNK=2000) read back complete and in
+    snapshot order."""
+    recorder = ThresholdMarketsRecorder(SQLiteHotStore(tmp_path / "n1.sqlite"))
+    markets = [
+        _market(id=str(7176633 + i), conditionId=f"0x{i:06x}",
+                groupItemTitle=f"{52000 + i:,}",
+                question=f"Will the price of Bitcoin be above "
+                         f"${52000 + i:,} on November 26?")
+        for i in range(2500)
+    ]
+    written, skipped = recorder.record_event(
+        ABOVE_BTC, _event(markets), snapshot_at=T0)
+    assert (written, skipped) == (2500, 0)
+    stored = recorder.snapshots(asset="BTC", contract_type="above")
+    assert len(stored) == 2500
+    by_condition = {row["condition_id"]: row for row in stored}
+    event = _event(markets)
+    for market in markets:
+        want = market_row(ABOVE_BTC, event, market)
+        assert by_condition[want["condition_id"]] == {
+            "snapshot_at": T0.isoformat(), **want}

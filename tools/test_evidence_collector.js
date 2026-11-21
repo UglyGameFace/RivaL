@@ -47,8 +47,6 @@ async function main(){
    postgres:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
    drive:{status:'failed_read',reason:'incomplete_listing',checked_at:now,freshness_seconds:86400},
    github:{status:'not_configured',reason:'credentials_not_configured',checked_at:now,freshness_seconds:3600},
-   intelligence:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
-   intelligence_host:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
    performance:{status:'measured_zero',reason:'no_pairs_measured',checked_at:now,freshness_seconds:3600},
    attacker_source:{status:'ok',reason:'PRIVATE',checked_at:now},
    bad_reason:{status:'ok',reason:'DROP TABLE',checked_at:now}},
@@ -103,16 +101,7 @@ async function main(){
   performance:{status:'observed',captured_at:now,sampling_policy:'per-asset-horizon-close-v3',
    scopes:[{asset:'BTC',horizon:5,model_version:'prospective-logistic-persistent-v3',
     paired_outcomes:100,model_brier:.2,baseline_brier:.3,unique_target_windows:20,venue_count:5,
-    within_target_candle_pairs:100,minimum_lead_seconds:180,outcome_clock:'target_5m_candle_close'}]},
-  intelligence_metrics:{status:'observed',probe:'llm_console_v1_status',captured_at:now,
-   model:'LiquidAI/LFM3-1.7B-GGUF:Q4_K_M',ready:true,inference_verified:false,
-   source_sha:'a'.repeat(40),repair_state:'healthy',repair_count:2,
-   runtime_context_tokens:8192,
-   memory:{current_mb:1190,limit_mb:4088,peak_mb:1300,oom_kills:0,
-    gateway_rss_mb:60,backend_rss_mb:1100},
-   status_latency_ms:42.5,status_http:200,
-   tokens_per_second:12.5,latency_ms_p95:800,
-   token:'PRIVATE',prompt:'PRIVATE',endpoint:'PRIVATE'}};
+    within_target_candle_pairs:100,minimum_lead_seconds:180,outcome_clock:'target_5m_candle_close'}]}};
  const records=new Map();
  let putCount=0;
  const env={EVIDENCE_KV:{get:async key=>records.has(key)?JSON.parse(records.get(key)):null,
@@ -200,47 +189,6 @@ async function main(){
  assert.equal(receipt.performance.scopes[0].minimum_lead_seconds,180);
  assert.equal(receipt.performance.scopes[0].within_target_candle_pairs,100);
  assert.equal(receipt.performance.after_cost_qualified,false);
- // D3: authenticated LFM3 metrics are allowlisted, never healthy by default.
- assert.equal(receipt.intelligence_metrics.status,'observed');
- assert.equal(receipt.intelligence_metrics.model,'LiquidAI/LFM3-1.7B-GGUF:Q4_K_M');
- assert.equal(receipt.intelligence_metrics.ready,true);
- assert.equal(receipt.intelligence_metrics.inference_verified,false,
-  'A status-endpoint read must never be reported as verified generation');
- assert.equal(receipt.intelligence_metrics.memory_pressure_pct,29.1);
- assert.equal(receipt.intelligence_metrics.memory.oom_kills,0);
- assert.equal(receipt.intelligence_metrics.repair_state,'healthy');
- assert.equal(receipt.intelligence_metrics.tokens_per_second,12.5);
- assert.ok(!JSON.stringify(receipt.intelligence_metrics).includes('PRIVATE'),
-  'Prompts, tokens and private endpoints must never leave the signed receiver');
- // F4: the probe marker is carried into storage (null when absent), and
- // F13: intelligence.inference_verified agrees with the metrics probe gate.
- assert.equal(receipt.intelligence_metrics.generation_probe,null,
-  'No probe marker in the payload means no marker in storage');
- assert.equal(receipt.intelligence.inference_verified,false,
-  'intelligence.inference_verified must agree with the metrics probe gate');
- const verifiedMetrics={status:'observed',probe:'llm_console_v1_status',captured_at:now,
-  model:'LiquidAI/LFM3-1.7B-GGUF:Q4_K_M',ready:true,inference_verified:true,
-  generation_probe:'authenticated_generation',
-  source_sha:'a'.repeat(40),repair_state:'healthy',repair_count:2,
-  runtime_context_tokens:8192,
-  memory:{current_mb:1190,limit_mb:4088,peak_mb:1300,oom_kills:0,
-   gateway_rss_mb:60,backend_rss_mb:1100},
-  status_latency_ms:42.5,status_http:200,
-  tokens_per_second:12.5,latency_ms_p95:800};
- const verified=cx.build({schema_version:1,captured_at:now,
-  intelligence_metrics:verifiedMetrics},{runId:'123456789'});
- assert.equal(verified.intelligence_metrics.inference_verified,true);
- assert.equal(verified.intelligence_metrics.generation_probe,'authenticated_generation',
-  'An authenticated probe marker must survive ingest into storage');
- assert.equal(verified.intelligence.inference_verified,true,
-  'A verified probe must be reported as verified, not permanently false');
- const tampered=cx.build({schema_version:1,captured_at:now,
-  intelligence_metrics:{...verifiedMetrics,generation_probe:'tampered'}},
-  {runId:'123456789'});
- assert.equal(tampered.intelligence_metrics.inference_verified,false,
-  'A tampered probe marker must not verify generation');
- assert.equal(tampered.intelligence_metrics.generation_probe,null);
- assert.equal(tampered.intelligence.inference_verified,false);
  // F8: Signals admission is exactly 6h, matching the window_hours===6
  // contract and the UI label; the 2-minute future tolerance is unchanged.
  const signalRow=(issued,asset)=>({asset,horizon:5,venue:'okx',quote:'USDT',
@@ -279,25 +227,7 @@ async function main(){
  assert.equal(malformed.sources.postgres.reason,'malformed_reason');
  assert.equal(malformed.sources.github.status,'failed_read');
  assert.equal(malformed.sources.github.reason,'upper_case_reason');
- // Merge addendum: a probe that ran but could not read status stays
- // distinguishable in storage from a probe that never ran — the collector
- // carries the probe label, the validated failure label, and the read time
- // through even on the unavailable path.
- const statusFailed=cx.build({schema_version:1,captured_at:now,
-  intelligence_metrics:{status:'unavailable',probe:'llm_console_v1_status',
-   status_error:'status_http_503',captured_at:now}},{runId:'123456789'});
- assert.equal(statusFailed.intelligence_metrics.status,'unavailable');
- assert.equal(statusFailed.intelligence_metrics.probe,'llm_console_v1_status',
-  'A probe that emitted a marker must not be reported as never emitted');
- assert.equal(statusFailed.intelligence_metrics.status_error,'status_http_503');
- assert.equal(statusFailed.intelligence_metrics.captured_at,now);
- assert.equal(statusFailed.intelligence_metrics.inference_verified,false);
- const neverRan=cx.build({schema_version:1,captured_at:now,
-  intelligence_metrics:{status:'unavailable'}},{runId:'123456789'});
- assert.equal(neverRan.intelligence_metrics.probe,'host_probe_not_emitted');
- assert.equal(neverRan.intelligence_metrics.status_error,null);
- assert.equal(neverRan.intelligence_metrics.captured_at,null);
- // D3: history points are versioned and carry bounded Drive/LLM trend inputs.
+ // D3: history points are versioned and carry bounded Drive trend inputs.
  const series=JSON.parse(records.get('metrics-series'));
  assert.equal(series.length,1);
  assert.equal(series[0].schema_version,1,'Trend comparisons must gate on receipt schema version');
@@ -305,14 +235,23 @@ async function main(){
  assert.equal(series[0].drive.status,'unknown');
  assert.equal(series[0].drive.blocked,1);
  assert.equal(series[0].drive.fitted,1);
- assert.equal(series[0].llm.status,'observed');
- assert.equal(series[0].llm.inference_verified,false);
- assert.equal(series[0].llm.memory_pressure_pct,29.1);
- assert.equal(series[0].llm.oom_kills,0);
+ assert.ok(!Object.hasOwn(series[0],'llm'),
+  'History points no longer carry an LLM summary');
+ assert.ok(!Object.hasOwn(series[0],'intelligence'),
+  'History points no longer carry an intelligence summary');
  const noMetrics=cx.build({schema_version:1,captured_at:now},{runId:'123456789'});
- assert.equal(noMetrics.intelligence_metrics.status,'unavailable');
- assert.equal(noMetrics.intelligence_metrics.inference_verified,false);
- assert.equal(noMetrics.intelligence_metrics.memory_pressure_pct,null);
+ assert.ok(!Object.hasOwn(noMetrics,'intelligence'));
+ assert.ok(!Object.hasOwn(noMetrics,'intelligence_metrics'));
+ // A legacy in-flight receipt that still carries the retired sections is
+ // accepted, but the sections are dropped, never stored.
+ const legacy=cx.build({schema_version:1,captured_at:now,
+  intelligence:{status:'verified',prs:[],runs:[]},
+  intelligence_host:{status:'online'},
+  intelligence_metrics:{status:'observed'}},{runId:'123456789'});
+ assert.ok(!Object.hasOwn(legacy,'intelligence'),
+  'Retired intelligence section must be dropped at ingest');
+ assert.ok(!Object.hasOwn(legacy,'intelligence_metrics'),
+  'Retired intelligence metrics must be dropped at ingest');
  assert.ok(!records.get('latest').includes('PRIVATE'));
  assert.equal(records.get('run:'+claims.run_id),undefined,
   'the write-only per-run receipt archive is gone (KV write budget)');

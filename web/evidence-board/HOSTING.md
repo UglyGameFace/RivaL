@@ -20,7 +20,7 @@ The `rival-evidence-board` Worker is presently a **classic Service Worker** (`ad
 
 | Binding | Destination | Purpose |
 | --- | --- | --- |
-| `RIVAL_EVIDENCE_RECEIPTS` | `rival-evidence-collector`, production | Read signed, sanitized host/DB/Drive/Intelligence evidence |
+| `RIVAL_EVIDENCE_RECEIPTS` | `rival-evidence-collector`, production | Read signed, sanitized host/DB/Drive evidence |
 | `RIVAL_MARKET_FEED` | `rival-public-site`, production | Read allowlisted public exchange and prediction-market quotes |
 
 The collector has its own `EVIDENCE_KV` KV namespace, GitHub OIDC trust policy, and trusted workflow `.github/workflows/evidence-board-receipt.yml`. Preserve those settings when restoring. **Never** copy secrets into the public Worker, public Git repository, or browser. Never replace the collector with a mocked success response.
@@ -33,13 +33,11 @@ One optional binding is allowed on `rival-evidence-board` only: the secret `ALER
 2. Retrieve the current tested source from this GitHub repository. Inspect the current branch's CI and compare the deployed Worker script to the intended commit. If they differ, choose the tested version, preserving the deployed version as rollback.
 3. Deploy the **classic** Worker using Cloudflare's own tools/API, preserving the Worker name, compatibility date, and both existing bindings. Avoid converting to a module, changing the collector, or resetting KV just to republish the UI.
 4. Verify HTTPS and GET `/`, `/health`, `/api/status`, `/api/market/perps`, and `/api/market/predictions?asset=BTC`; `/api/market/predictions?asset=DOGE` must be rejected. The `/health` endpoint is **Worker liveness only**. `/api/status` may correctly return **503** for stale or missing signed evidence; do not hide that failure.
-5. Check that the dashboard's Command, Markets, Signals, Models, XMarket, Intelligence, and Diagnostics views render on Android. Signed production snapshots have their own capture times and must never be labeled as streaming or a verified profitable edge.
+5. Check that the dashboard's Command, Markets, Signals, Models, XMarket, and Diagnostics views render on Android. Signed production snapshots have their own capture times and must never be labeled as streaming or a verified profitable edge.
 
 ## Important independence boundary
 
 Losing a ChatGPT membership does **not** delete Cloudflare Workers, a custom domain, or GitHub repository code. Those services have their own accounts, billing, limits, and credentials. However, the dashboard is only as fresh as its external sources: its signed GitHub OIDC publisher, private Discloud access, PostgreSQL and Drive evidence, and Cloudflare KV must continue running independently. A stale receipt means stale evidence, **not** necessarily a failed website.
-
-The separate ChatGPT-hosted *RivaL Intelligence Health* workspace is **not** this Evidence Board. It requires its own migration if its source exists only inside ChatGPT Sites.
 
 ## Unattended publication reliability
 

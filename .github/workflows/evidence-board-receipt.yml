@@ -74,7 +74,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
-          DISCLOUD_LLM_APP_ID: ${{ secrets.DISCLOUD_LLM_APP_ID }}
           RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
           RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
           RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
@@ -84,17 +83,15 @@ jobs:
           python tools/evidence_board_receipt.py > evidence-board-publish.log 2>&1 || code=$?
           cat evidence-board-publish.log
           exit $code
-      - name: Summarize Intelligence probe in run summary
+      - name: Summarize receipt publication in run summary
         if: always()
         run: |
           {
             echo "## Evidence Board receipt"
             echo ""
-            if grep -q '"publication": "coalesced"' evidence-board-publish.log 2>/dev/null; then
-              echo "- Run coalesced onto a receipt younger than 5 minutes; no new collection ran, so there is no new probe result."
-            elif grep -q "^EVIDENCE-BOARD SUMMARY:" evidence-board-publish.log 2>/dev/null; then
-              grep "^EVIDENCE-BOARD SUMMARY:" evidence-board-publish.log | sed 's/^/- /'
+            if grep -q '"publication":' evidence-board-publish.log 2>/dev/null; then
+              grep '"publication":' evidence-board-publish.log | sed 's/^/- /'
             else
-              echo "- Receipt publication reported no Intelligence probe summary (see the publish step log); treat the probe as not run."
+              echo "- Receipt publication produced no summary line (see the publish step log)."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

@@ -3,12 +3,8 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
-import threading
-import time
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,12 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from evidence_board_github import (
     PINNED_PRS,
     read_github_snapshot,
-    read_public_intelligence,
 )
 from evidence_board_receipt import (
-    LLM_GENERATION_PROBE_PROGRAM,
-    LLM_METRICS_CMD,
-    LLM_METRICS_MARKER,
     _artifact_prefix,
     _check_receipt_size,
     _collection_block,
@@ -38,9 +30,7 @@ from evidence_board_receipt import (
     classify_read_error,
     publish,
     read_drive,
-    read_intelligence_metrics,
     summarize_host,
-    summarize_llm_metrics,
     summarize_xmarket_report,
 )
 
@@ -646,12 +636,11 @@ class ReceiptTests(unittest.TestCase):
         })
         with patch.dict(os.environ, {
             "GITHUB_TOKEN": "", "DISCLOUD_TOKEN": "",
-            "DISCLOUD_LLM_APP_ID": "", "RIVAL_DRIVE_REPORTS_FOLDER_ID": "",
+            "RIVAL_DRIVE_REPORTS_FOLDER_ID": "",
         }):
             details = build_source_details(
                 host, db,
                 {"status": "unavailable", "reports_considered": None},
-                {"status": "unavailable"}, {"status": "unavailable"},
                 {"status": "unavailable"},
                 {"status": "no_pairs", "scopes": []}, {},
                 checked_at="2026-11-17T02:00:00+00:00")
@@ -677,33 +666,11 @@ class ReceiptTests(unittest.TestCase):
         details = build_source_details(
             host, db, {"status": "unavailable"},
             {"status": "unavailable"}, {"status": "unavailable"},
-            {"status": "unavailable"}, {"status": "unavailable"},
             {"host": url_error.URLError("dns")},
             checked_at="2026-11-17T02:00:00+00:00")
         self.assertEqual(details["discloud_forecast"]["status"], "unreachable")
         self.assertEqual(details["discloud_learning"]["status"], "unreachable")
         self.assertEqual(details["discloud_forecast"]["reason"], "network_error")
-
-    def test_offline_intelligence_host_is_unreachable_not_ok(self) -> None:
-        # F11: a genuinely offline Intelligence host used to be reported
-        # as source status "ok", so any consumer treating "ok" as healthy
-        # misread a down host as fine. "unreachable" is already in the
-        # collector's status vocabulary; the online case stays "ok".
-        host, db = summarize_host(None)
-        details = build_source_details(
-            host, db, {"status": "unavailable"},
-            {"status": "unavailable"}, {"status": "unavailable"},
-            {"status": "offline"}, {"status": "observed", "scopes": []}, {},
-            checked_at="2026-11-17T02:00:00+00:00")
-        self.assertEqual(details["intelligence_host"]["status"], "unreachable")
-        self.assertEqual(details["intelligence_host"]["reason"], "host_offline")
-        self.assertEqual(details["performance"]["status"], "ok")
-        details = build_source_details(
-            host, db, {"status": "unavailable"},
-            {"status": "unavailable"}, {"status": "unavailable"},
-            {"status": "online"}, {"status": "observed", "scopes": []}, {},
-            checked_at="2026-11-17T02:00:00+00:00")
-        self.assertEqual(details["intelligence_host"]["status"], "ok")
 
     def test_partial_performance_is_not_ok(self) -> None:
         # F11: "partial" means some scopes measured and some scope reads
@@ -712,14 +679,12 @@ class ReceiptTests(unittest.TestCase):
         host, db = summarize_host(None)
         details = build_source_details(
             host, db, {"status": "unavailable"},
-            {"status": "unavailable"}, {"status": "unavailable"},
-            {"status": "online"},
+            {"status": "unavailable"},
             {"status": "partial", "scopes": [{"asset": "BTC"}],
              "failed_scopes": 3}, {},
             checked_at="2026-11-17T02:00:00+00:00")
         self.assertEqual(details["performance"]["status"], "failed_read")
         self.assertEqual(details["performance"]["reason"], "partial_performance")
-        self.assertEqual(details["intelligence_host"]["status"], "ok")
 
     def test_collection_block_sanitizes_trigger_run_and_attempt(self) -> None:
         with patch.dict(os.environ, {
@@ -836,7 +801,7 @@ class ReceiptTests(unittest.TestCase):
                         "GITHUB_EVENT_NAME": event,
                         "GITHUB_RUN_ID": "44002956865",
                         "GITHUB_RUN_ATTEMPT": "1", "GITHUB_TOKEN": "",
-                        "DISCLOUD_TOKEN": "", "DISCLOUD_LLM_APP_ID": "",
+                        "DISCLOUD_TOKEN": "",
                         "RIVAL_DRIVE_REPORTS_FOLDER_ID": "",
                     }), \
                     patch.object(receipt_module, "read_host",
@@ -857,7 +822,7 @@ class ReceiptTests(unittest.TestCase):
 
         with patch.dict(os.environ, {
             "GITHUB_EVENT_NAME": "schedule", "GITHUB_TOKEN": "",
-            "DISCLOUD_TOKEN": "", "DISCLOUD_LLM_APP_ID": "",
+            "DISCLOUD_TOKEN": "",
             "RIVAL_DRIVE_REPORTS_FOLDER_ID": "",
         }), patch.object(receipt_module, "read_host", return_value=None), \
                     patch.object(receipt_module, "_github_oidc",
@@ -887,7 +852,7 @@ class ReceiptTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "GITHUB_EVENT_NAME": "schedule", "GITHUB_RUN_ID": "44002956865",
             "GITHUB_RUN_ATTEMPT": "1", "GITHUB_TOKEN": "",
-            "DISCLOUD_TOKEN": "", "DISCLOUD_LLM_APP_ID": "",
+            "DISCLOUD_TOKEN": "",
             "RIVAL_DRIVE_REPORTS_FOLDER_ID": "",
         }), patch.object(receipt_module, "read_host", return_value=None), \
                     patch.object(receipt_module, "_github_oidc",
@@ -925,7 +890,7 @@ class ReceiptTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "GITHUB_EVENT_NAME": "schedule", "GITHUB_RUN_ID": "44002956865",
             "GITHUB_RUN_ATTEMPT": "1", "GITHUB_TOKEN": "",
-            "DISCLOUD_TOKEN": "", "DISCLOUD_LLM_APP_ID": "",
+            "DISCLOUD_TOKEN": "",
             "RIVAL_DRIVE_REPORTS_FOLDER_ID": "",
         }), patch.object(receipt_module, "HOST_READ_RETRY_DELAY_SECONDS", 0), \
                 patch.object(receipt_module, "read_host",
@@ -972,7 +937,7 @@ class ReceiptTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "GITHUB_EVENT_NAME": "schedule", "GITHUB_RUN_ID": "44002956865",
             "GITHUB_RUN_ATTEMPT": "1", "GITHUB_TOKEN": "",
-            "DISCLOUD_TOKEN": "", "DISCLOUD_LLM_APP_ID": "",
+            "DISCLOUD_TOKEN": "",
             "RIVAL_DRIVE_REPORTS_FOLDER_ID": "",
         }), patch.object(receipt_module, "HOST_READ_RETRY_DELAY_SECONDS", 0), \
                 patch.object(receipt_module, "read_host",
@@ -1006,7 +971,7 @@ class ReceiptTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "GITHUB_EVENT_NAME": "schedule", "GITHUB_RUN_ID": "44002956865",
             "GITHUB_RUN_ATTEMPT": "1", "GITHUB_TOKEN": "",
-            "DISCLOUD_TOKEN": "", "DISCLOUD_LLM_APP_ID": "",
+            "DISCLOUD_TOKEN": "",
             "RIVAL_DRIVE_REPORTS_FOLDER_ID": "",
         }), patch.object(receipt_module, "HOST_READ_RETRY_DELAY_SECONDS", 0), \
                 patch.object(receipt_module, "read_host",
@@ -1024,410 +989,13 @@ class ReceiptTests(unittest.TestCase):
             "not_configured")
 
 
-class LlmMetricsTests(unittest.TestCase):
-    def _valid_raw(self) -> dict:
-        return {
-            "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M", "ready": True,
-            "source_sha": "a" * 40, "repair_state": "healthy",
-            "repair_count": 2, "runtime_context_tokens": 8192,
-            "memory": {"current_mb": 1190, "limit_mb": 4088,
-                       "peak_mb": 1300, "anon_mb": 900, "file_mb": 200,
-                       "file_mapped_mb": 150, "gateway_rss_mb": 60,
-                       "backend_rss_mb": 1100, "oom_kills": 0},
-            "status_latency_ms": 42.5, "status_http": 200,
-            "token": "PRIVATE", "prompt": "PRIVATE",
-        }
-
-    def test_status_probe_is_observed_but_never_proves_generation(self) -> None:
-        clean = summarize_llm_metrics(self._valid_raw())
-        self.assertEqual(clean["status"], "observed")
-        self.assertEqual(clean["model"], "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M")
-        self.assertTrue(clean["ready"])
-        self.assertFalse(clean["inference_verified"])
-        self.assertAlmostEqual(clean["memory_pressure_pct"], 29.1, places=1)
-        self.assertEqual(clean["memory"]["oom_kills"], 0)
-        self.assertEqual(clean["repair_state"], "healthy")
-        self.assertEqual(clean["status_latency_ms"], 42.5)
-        self.assertNotIn("PRIVATE", str(clean))
-        self.assertNotIn("prompt", str(clean))
-
-    def test_generation_claim_needs_an_authenticated_generation_probe(self) -> None:
-        raw = self._valid_raw()
-        raw["inference_verified"] = True
-        self.assertFalse(summarize_llm_metrics(raw)["inference_verified"])
-        raw["generation_probe"] = "authenticated_generation"
-        self.assertTrue(summarize_llm_metrics(raw)["inference_verified"])
-
-    def test_generation_probe_marker_is_carried_for_the_board_checker(self) -> None:
-        # The board's collector re-checks the marker before trusting the
-        # verified flag, so the publisher must carry it in the receipt.
-        # Live 2026-11-17: the probe verified (8.8s generation) but the
-        # board stayed Unverified because this field was stripped here.
-        raw = self._valid_raw()
-        raw["inference_verified"] = True
-        raw["generation_probe"] = "authenticated_generation"
-        clean = summarize_llm_metrics(raw)
-        self.assertTrue(clean["inference_verified"])
-        self.assertEqual(clean["generation_probe"], "authenticated_generation")
-        raw["generation_probe"] = "tampered"
-        clean = summarize_llm_metrics(raw)
-        self.assertFalse(clean["inference_verified"])
-        self.assertIsNone(clean["generation_probe"])
-        # F14: a tampered marker must not lend plausible timing numbers to
-        # the published receipt, even when they look realistic.
-        raw["latency_ms_p50"] = 5230.4
-        raw["latency_ms_p95"] = 5230.4
-        raw["tokens_per_second"] = 8.024
-        clean = summarize_llm_metrics(raw)
-        self.assertFalse(clean["inference_verified"])
-        self.assertIsNone(clean["latency_ms_p50"])
-        self.assertIsNone(clean["latency_ms_p95"])
-        self.assertIsNone(clean["tokens_per_second"])
-        clean = summarize_llm_metrics(self._valid_raw())
-        self.assertIsNone(clean["generation_probe"])
-
-    def test_generation_timing_fields_are_carried_when_probe_verified(self) -> None:
-        raw = self._valid_raw()
-        raw.update({
-            "inference_verified": True,
-            "generation_probe": "authenticated_generation",
-            "latency_ms_p50": 5230.4, "latency_ms_p95": 5230.4,
-            "tokens_per_second": 8.024, "requests_sampled": 1,
-            "generation_errors": 0,
-        })
-        clean = summarize_llm_metrics(raw)
-        self.assertTrue(clean["inference_verified"])
-        self.assertEqual(clean["latency_ms_p50"], 5230.4)
-        self.assertEqual(clean["latency_ms_p95"], 5230.4)
-        self.assertEqual(clean["tokens_per_second"], 8.024)
-        self.assertEqual(clean["requests_sampled"], 1)
-        self.assertEqual(clean["generation_errors"], 0)
-
-    def test_generation_failure_stays_unverified_but_observed(self) -> None:
-        raw = self._valid_raw()
-        raw.update({"inference_verified": False, "requests_sampled": 1,
-                    "generation_errors": 1,
-                    # F14: plausible timing numbers on an unverified
-                    # generation must not be carried through.
-                    "latency_ms_p50": 5230.4, "latency_ms_p95": 5230.4,
-                    "tokens_per_second": 8.024})
-        clean = summarize_llm_metrics(raw)
-        self.assertEqual(clean["status"], "observed")
-        self.assertFalse(clean["inference_verified"])
-        self.assertEqual(clean["generation_errors"], 1)
-        self.assertIsNone(clean["latency_ms_p50"])
-        self.assertIsNone(clean["latency_ms_p95"])
-        self.assertIsNone(clean["tokens_per_second"])
-
-    def test_generation_marker_is_parsed_and_verifies(self) -> None:
-        raw = self._valid_raw()
-        raw.update({
-            "inference_verified": True,
-            "generation_probe": "authenticated_generation",
-            "latency_ms_p50": 5230.4, "latency_ms_p95": 5230.4,
-            "tokens_per_second": 8.024, "requests_sampled": 1,
-            "generation_errors": 0,
-        })
-        marker = LLM_METRICS_MARKER + json.dumps(raw)
-        shell = {"stdout": "some log line\n" + marker + "\n trailing\n"}
-        with patch("evidence_board_receipt._read_llm_console",
-                   return_value=shell):
-            result = read_intelligence_metrics()
-        self.assertEqual(result["status"], "observed")
-        self.assertEqual(result["probe"], "llm_console_v1_status")
-        self.assertTrue(result["inference_verified"])
-        self.assertEqual(result["latency_ms_p95"], 5230.4)
-        self.assertEqual(result["tokens_per_second"], 8.024)
-
-    def test_invalid_or_missing_host_fields_are_unavailable_not_healthy(self) -> None:
-        self.assertEqual(summarize_llm_metrics(None)["status"], "unavailable")
-        self.assertIsNone(summarize_llm_metrics(None)["memory_pressure_pct"])
-        self.assertFalse(summarize_llm_metrics(None)["inference_verified"])
-        bad = self._valid_raw()
-        bad["model"] = "unknown-model"
-        self.assertEqual(summarize_llm_metrics(bad)["status"], "unavailable")
-        bad = self._valid_raw()
-        bad["ready"] = "yes"
-        self.assertEqual(summarize_llm_metrics(bad)["status"], "unavailable")
-        bad = self._valid_raw()
-        bad["status_http"] = 503
-        self.assertEqual(summarize_llm_metrics(bad)["status"], "unavailable")
-        bad = self._valid_raw()
-        bad["memory"] = {"current_mb": 999999999, "limit_mb": 4088}
-        clean = summarize_llm_metrics(bad)
-        self.assertEqual(clean["status"], "observed")
-        self.assertIsNone(clean["memory"]["current_mb"])
-        self.assertIsNone(clean["memory_pressure_pct"])
-        bad = self._valid_raw()
-        bad["repair_state"] = "tampered"
-        self.assertIsNone(summarize_llm_metrics(bad)["repair_state"])
-        bad = self._valid_raw()
-        bad["db_pressure"] = "exploding"
-        self.assertIsNone(summarize_llm_metrics(bad)["db_pressure"])
-
-    def test_unemitted_generation_fields_stay_null(self) -> None:
-        clean = summarize_llm_metrics(self._valid_raw())
-        self.assertIsNone(clean["latency_ms_p50"])
-        self.assertIsNone(clean["tokens_per_second"])
-        self.assertIsNone(clean["cpu_pct"])
-        self.assertIsNone(clean["dns_ok"])
-        self.assertIsNone(clean["db_pressure"])
-
-    def test_console_marker_is_parsed_and_nothing_else_is_trusted(self) -> None:
-        import json
-
-        marker = LLM_METRICS_MARKER + json.dumps(self._valid_raw())
-        shell = {"stdout": "some log line\n" + marker + "\n trailing\n"}
-        with patch("evidence_board_receipt._read_llm_console",
-                   return_value=shell):
-            result = read_intelligence_metrics()
-        self.assertEqual(result["status"], "observed")
-        self.assertEqual(result["probe"], "llm_console_v1_status")
-        self.assertIsNotNone(result["captured_at"])
-        self.assertFalse(result["inference_verified"])
-        with patch("evidence_board_receipt._read_llm_console",
-                   return_value={"stdout": "no marker here\n"}):
-            self.assertEqual(read_intelligence_metrics()["status"], "unavailable")
-        with patch("evidence_board_receipt._read_llm_console",
-                   return_value=None):
-            self.assertEqual(read_intelligence_metrics()["status"], "unavailable")
-        with patch("evidence_board_receipt._read_llm_console",
-                   return_value={"stdout": LLM_METRICS_MARKER + "{not json"}):
-            self.assertEqual(read_intelligence_metrics()["status"], "unavailable")
-
-    def test_failed_status_read_marker_keeps_probe_ran_and_error(self) -> None:
-        # F15: a marker from a probe whose status read failed must not be
-        # reported as "probe never emitted" — the probe ran, it just could
-        # not read status, and the failure label is preserved.
-        marker = LLM_METRICS_MARKER + json.dumps({
-            "model": None, "ready": None, "status_http": 503,
-            "status_error": "status_http_503", "requests_sampled": 1,
-            "generation_errors": 1,
-        })
-        with patch("evidence_board_receipt._read_llm_console",
-                   return_value={"stdout": marker + "\n"}):
-            result = read_intelligence_metrics()
-        self.assertEqual(result["status"], "unavailable")
-        self.assertEqual(result["probe"], "llm_console_v1_status")
-        self.assertEqual(result["status_error"], "status_http_503")
-        self.assertIsNotNone(result["captured_at"])
-
-
-class LlmGenerationProbeTests(unittest.TestCase):
-    """The console probe program itself, run against a stub gateway.
-
-    The program runs inside the LFM3 container in production; here it runs
-    in a subprocess against a local stub that mimics the gateway's
-    authenticated /v1/status and /v1/research routes.
-    """
-
-    TOKEN = "s" * 48
-
-    def setUp(self) -> None:
-        self.mode = "ok"
-        self.research_calls = 0
-        test = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *args):
-                pass
-
-            def _auth_ok(self):
-                return (self.headers.get("Authorization", "")
-                        == "Bearer " + LlmGenerationProbeTests.TOKEN)
-
-            def _json(self, data, status=200):
-                payload = json.dumps(data).encode("utf-8")
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-
-            def do_GET(self):
-                if self.path != "/v1/status":
-                    self._json({"error": "not_found"}, 404)
-                    return
-                if not self._auth_ok():
-                    self._json({"error": "unauthorized"}, 401)
-                    return
-                if test.mode == "status_503":
-                    self._json({"error": "status_unavailable"}, 503)
-                    return
-                self._json({
-                    "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
-                    "ready": True, "source_sha": "b" * 40,
-                    "repair_state": "healthy", "repair_count": 0,
-                    "runtime_context_tokens": 4096,
-                    "memory": {"current_mb": 1190, "limit_mb": 4088,
-                               "peak_mb": 1300, "oom_kills": 0},
-                })
-
-            def do_POST(self):
-                if self.path != "/v1/research":
-                    self._json({"error": "not_found"}, 404)
-                    return
-                if not self._auth_ok():
-                    self._json({"error": "unauthorized"}, 401)
-                    return
-                test.research_calls += 1
-                length = int(self.headers.get("Content-Length", "0"))
-                self.rfile.read(length)
-                if test.mode == "busy_then_ok" and test.research_calls == 1:
-                    self._json({"error": "inference_busy"}, 429)
-                    return
-                if test.mode == "error_503":
-                    self._json({"error": "inference_failed",
-                                "failure_kind": "backend_timeout"}, 503)
-                    return
-                time.sleep(0.05)
-                grounded = {
-                    "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
-                    "direction": "uncertain", "confidence": "low",
-                    "grounding_status": "insufficient_evidence",
-                    "grounded_by": "deterministic_historical_evidence_policy",
-                    "informational_only": True, "uncalibrated": True,
-                }
-                if test.mode == "ungrounded":
-                    grounded["direction"] = "up"
-                    grounded["confidence"] = "high"
-                if test.mode != "no_usage":
-                    grounded["usage"] = {"prompt_tokens": 180,
-                                         "completion_tokens": 42,
-                                         "total_tokens": 222}
-                self._json(grounded)
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.port = self.server.server_address[1]
-        self.thread = threading.Thread(target=self.server.serve_forever,
-                                       daemon=True)
-        self.thread.start()
-
-    def tearDown(self) -> None:
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=5)
-
-    def _run_probe(self, token=TOKEN):
-        env = dict(os.environ)
-        env["RIVAL_LLM_PORT"] = str(self.port)
-        env["RIVAL_LLM_SHARED_TOKEN"] = token
-        return subprocess.run(
-            [sys.executable, "-c", LLM_GENERATION_PROBE_PROGRAM],
-            env=env, capture_output=True, text=True, timeout=90,
-            check=False,
-        )
-
-    def _marker(self, stdout):
-        for line in stdout.splitlines():
-            if line.startswith(LLM_METRICS_MARKER):
-                return json.loads(line[len(LLM_METRICS_MARKER):])
-        return None
-
-    def test_probe_verifies_real_authenticated_generation(self):
-        result = self._run_probe()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        marker = self._marker(result.stdout)
-        self.assertIsNotNone(marker)
-        self.assertTrue(marker["inference_verified"])
-        self.assertEqual(marker["generation_probe"],
-                         "authenticated_generation")
-        self.assertGreater(marker["latency_ms_p50"], 0)
-        self.assertEqual(marker["latency_ms_p50"], marker["latency_ms_p95"])
-        self.assertGreater(marker["tokens_per_second"], 0)
-        self.assertLess(marker["tokens_per_second"], 5000)
-        self.assertEqual(marker["generation_errors"], 0)
-        self.assertEqual(marker["requests_sampled"], 1)
-        self.assertEqual(marker["status_http"], 200)
-        self.assertEqual(marker["model"], "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M")
-
-    def test_probe_retries_once_when_gateway_busy(self):
-        self.mode = "busy_then_ok"
-        result = self._run_probe()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        marker = self._marker(result.stdout)
-        self.assertTrue(marker["inference_verified"])
-        self.assertEqual(self.research_calls, 2)
-
-    def test_probe_reports_failure_without_poisoning_status(self):
-        self.mode = "error_503"
-        result = self._run_probe()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        marker = self._marker(result.stdout)
-        self.assertFalse(marker["inference_verified"])
-        self.assertEqual(marker["generation_errors"], 1)
-        self.assertEqual(marker["status_http"], 200)
-        self.assertTrue(marker["ready"])
-        self.assertNotIn("generation_probe", marker)
-        self.assertNotIn("latency_ms_p95", marker)
-
-    def test_probe_rejects_ungrounded_generation(self):
-        self.mode = "ungrounded"
-        result = self._run_probe()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        marker = self._marker(result.stdout)
-        self.assertFalse(marker["inference_verified"])
-        self.assertEqual(marker["generation_errors"], 1)
-
-    def test_probe_verifies_without_usage_but_reports_no_rate(self):
-        self.mode = "no_usage"
-        result = self._run_probe()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        marker = self._marker(result.stdout)
-        self.assertTrue(marker["inference_verified"])
-        self.assertNotIn("tokens_per_second", marker)
-
-    def test_probe_fails_closed_with_wrong_token(self):
-        # F15: a 401 on /v1/status used to crash the probe with no marker
-        # line at all. It now degrades to a clearly-marked status failure.
-        result = self._run_probe(token="w" * 48)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        marker = self._marker(result.stdout)
-        self.assertIsNotNone(marker)
-        self.assertFalse(marker["inference_verified"])
-        self.assertEqual(marker["status_error"], "status_http_401")
-        self.assertEqual(marker["status_http"], 401)
-        self.assertIsNone(marker["model"])
-        self.assertNotIn("generation_probe", marker)
-        self.assertNotIn("latency_ms_p50", marker)
-
-    def test_probe_status_failure_still_emits_marker(self):
-        # F15: a 503 on /v1/status must not lose the probe: the marker
-        # still prints, the status failure is labelled, and the generation
-        # still runs but cannot verify without the status model to match.
-        self.mode = "status_503"
-        result = self._run_probe()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        marker = self._marker(result.stdout)
-        self.assertIsNotNone(marker)
-        self.assertEqual(marker["status_error"], "status_http_503")
-        self.assertEqual(marker["status_http"], 503)
-        self.assertFalse(marker["inference_verified"])
-        self.assertIsNone(marker["model"])
-        self.assertIsNone(marker["ready"])
-        self.assertEqual(marker["generation_errors"], 1)
-        self.assertNotIn("latency_ms_p50", marker)
-        self.assertNotIn("tokens_per_second", marker)
-
-    def test_metrics_command_carries_the_probe_program(self):
-        import base64
-        import re
-
-        match = re.search(
-            r"base64\.b64decode\('([^']+)'\)", LLM_METRICS_CMD)
-        self.assertIsNotNone(match)
-        decoded = base64.b64decode(match.group(1)).decode("utf-8")
-        self.assertEqual(decoded, LLM_GENERATION_PROBE_PROGRAM)
-
-
 class CombinedPayloadBudgetTests(unittest.TestCase):
     """Delivery 4: the D1+D2+D3 sections together must fit the collector's
     byte cap. Before the Delivery 4 budget (40 PRs / 45 runs) a
     worst-case realistic receipt measured 106,820 bytes and even a live-like
     one 82,629 bytes -- both rejected with 413, losing that publication.
     The budget trims counts, not evidence: 20 RivaL PRs (every pinned PR
-    plus the newest others), 12 runs, 8 Intelligence PRs / runs, and
-    80-char gate failures. The cap was raised 80,000 -> 128,000 on
+    plus the newest others), 12 runs, and 80-char gate failures. The cap was raised 80,000 -> 128,000 on
     2026-11-19 after the live receipt reached 80,034 bytes and full
     publications stopped; the ceiling here is the publisher's 96,000-byte
     warning line, so a worst-case run keeps >=32KB headroom and trips the
@@ -1614,36 +1182,9 @@ class CombinedPayloadBudgetTests(unittest.TestCase):
                 return self._max_pr(int(url.split("/")[-1]))
             raise AssertionError(f"unexpected url {url}")
 
-        def fake_intelligence(url: str, token: str, **kwargs: object) -> object:
-            if url.startswith("/commits/main"):
-                return {"sha": "c" * 40}
-            if url.startswith("/pulls?"):
-                return [self._max_pr(3000 + i) for i in range(12)]
-            if url.startswith("/actions/runs"):
-                return {"workflow_runs": [self._max_run(45000000000 + i)
-                                          for i in range(15)]}
-            raise AssertionError(f"unexpected url {url}")
-
         with patch("evidence_board_github._github_json",
                    side_effect=fake_github):
             github = read_github_snapshot("short-lived-token")
-        with patch("evidence_board_github._github_json",
-                   side_effect=fake_intelligence):
-            intelligence = read_public_intelligence("short-lived-token")
-        metrics = summarize_llm_metrics({
-            "model": "LiquidAI/LFM3-1.7B-GGUF:lfm3-q4_k_m", "ready": True,
-            "source_sha": "c" * 40, "repair_state": "healthy",
-            "repair_count": 999, "runtime_context_tokens": 999999,
-            "memory": {"current_mb": 3999, "limit_mb": 4088,
-                       "peak_mb": 4088, "anon_mb": 3999, "file_mb": 99,
-                       "file_mapped_mb": 99, "gateway_rss_mb": 999,
-                       "backend_rss_mb": 999},
-            "status_latency_ms": 999.9, "status_http": 200,
-            "latency_ms_p50": 999.9, "latency_ms_p95": 999.9,
-            "tokens_per_second": 999.9, "requests_sampled": 99999,
-            "generation_errors": 999, "fallback_count": 999,
-            "cpu_pct": 99.9, "dns_ok": True, "upstream_ok": True,
-            "db_pressure": "high", "captured_at": self.NOW})
         performance = {
             "status": "observed", "captured_at": self.NOW,
             "sampling_policy": "per-asset-horizon-close-v3",
@@ -1657,29 +1198,21 @@ class CombinedPayloadBudgetTests(unittest.TestCase):
                 "outcome_clock": "target_5m_candle_close",
             } for a in self.ASSETS for h in self.HORIZONS]}
         env = {"GITHUB_TOKEN": "fake", "DISCLOUD_TOKEN": "fake",
-               "DISCLOUD_LLM_APP_ID": "fake-app",
                "RIVAL_DRIVE_REPORTS_FOLDER_ID": "synthetic-test-folder-id-0",
                "GITHUB_EVENT_NAME": "schedule", "GITHUB_RUN_ID": "123456789",
                "GITHUB_RUN_ATTEMPT": "1"}
         with patch.dict(os.environ, env):
             sources = build_source_details(
-                host, db, drive, github, intelligence,
-                {"status": "online", "inference_verified": False},
-                performance, {}, self.NOW)
+                host, db, drive, github, performance, {}, self.NOW)
             payload = {
                 "schema_version": 1, "captured_at": self.NOW,
                 "collection": _collection_block(), "sources": sources,
                 "host": host, "database": db, "drive": drive,
-                "github": github, "intelligence": intelligence,
-                "intelligence_host": {"status": "online",
-                                      "inference_verified": False},
-                "intelligence_metrics": metrics,
+                "github": github,
                 "performance": performance}
         self.assertEqual(len(github["prs"]), 20)
         self.assertTrue({p["number"] for p in github["prs"]} >= set(PINNED_PRS))
         self.assertEqual(len(github["runs"]), 12)
-        self.assertEqual(len(intelligence["prs"]), 8)
-        self.assertEqual(len(intelligence["runs"]), 8)
         body = json.dumps(payload, separators=(",", ":")).encode()
         self.assertLessEqual(
             len(body), 96000,

@@ -37,7 +37,6 @@ cx.state.prs=[
  {number:557,title:'Synthetic recent change for fixture',state:'open',merged_at:null,
   html_url:'https://github.com/UglyGameFace/RivaL/pull/557',updated_at:at}
 ];
-cx.state.intPrs=[];
 cx.state.runs=[
  {id:43350851273,name:'RivaL Evidence Board source receipt',conclusion:'success',status:'completed',
   html_url:'https://github.com/UglyGameFace/RivaL/actions/runs/43350851273',
@@ -59,8 +58,7 @@ cx.state.evidence={
   reason:'no_prospective_export',report_modified_at:at,
   family:'xmarket_v1',model_version:null}]},
  performance:{scopes:[{asset:'BTC',horizon:15,paired_outcomes:285,model_brier:0.227,
-  baseline_brier:0.235,after_cost_qualified:false}]},
- intelligence:{status:'verified',prs:[],runs:[]}
+  baseline_brier:0.235,after_cost_qualified:false}]}
 };
 assert.match(cx.sourcePanel(),/KuCoin exact source gaps/);
 assert.match(cx.opsXMarket(),/No fitted model/);
@@ -211,7 +209,7 @@ assert.match(source,/if\(url.pathname==='\/api\/status'\)/);
 assert.doesNotMatch(source,/signed auto-updates/);
 
 // The primary product UI must be an operations dashboard, not a PR index.
-assert.deepEqual(Array.from(cx.NAV),['Command','Markets','Signals','Models','XMarket','Intelligence','Diagnostics']);
+assert.deepEqual(Array.from(cx.NAV),['Command','Markets','Signals','Models','XMarket','Diagnostics']);
 assert.match(cx.opsCommand(),/See what the bot is actually doing/);
 assert.match(cx.opsCommand(),/Evidence integrity and freshness/);
 assert.match(cx.opsEvidenceReadiness(),/Signed receipt/);
@@ -219,7 +217,8 @@ assert.match(cx.opsEvidenceReadiness(),/Discloud forecasting/);
 assert.match(cx.opsEvidenceReadiness(),/PostgreSQL read/);
 assert.match(cx.opsEvidenceReadiness(),/Private Drive reports/);
 assert.match(cx.opsEvidenceReadiness(),/Public market quotes/);
-assert.match(cx.opsEvidenceReadiness(),/LFM3 inference/);
+assert.doesNotMatch(cx.opsEvidenceReadiness(),/LFM3/,
+  'The readiness panel must not reference the retired LFM3 service');
 const evidenceTimestamp=cx.state.evidence.captured_at;
 cx.state.evidence.captured_at=new Date(Date.now()-60000).toISOString();
 cx.state.receiptError='';
@@ -353,7 +352,8 @@ assert.match(cx.opsSignals(),/Coverage is not an 80% prediction-accuracy rule/);
 assert.match(cx.opsModels(),/Are RivaL predictions improving/);
 assert.match(cx.opsXMarket(),/From market inputs to usable shadow predictions/);
 assert.match(cx.opsXMarket(),/7 rejected by offline gates/);
-assert.match(cx.opsIntelligenceView(),/Is the model actually serving/);
+assert.equal(cx.opsIntelligenceView,undefined,
+  'The Intelligence view must not exist');
 assert.match(cx.opsDiagnostics(),/Diagnostics and source evidence/);
 assert.match(cx.opsDiagnostics(),/Loading collection attempts/,
   'Diagnostics must show the reliability section while /api/diagnostics loads');
@@ -551,23 +551,6 @@ cx.ops.predictions.BTC.polymarket.contracts[0].usable=false;
 cx.ops.predictions.BTC.polymarket.contracts[0].closes=Date.now()-60000;
 assert.match(cx.opsMarkets(),/Expired/);
 assert.match(cx.opsMarkets(),/contract not usable as a baseline/);
-
-// D3: authenticated LFM3 metrics — observed values shown, absent stays unmeasured.
-cx.state.evidence.intelligence_metrics={
- status:'observed',probe:'llm_console_v1_status',captured_at:new Date().toISOString(),
- model:'LiquidAI/LFM3-1.7B-GGUF:Q4_K_M',ready:true,inference_verified:false,
- source_sha:'a'.repeat(40),repair_state:'healthy',repair_count:2,
- runtime_context_tokens:8192,
- memory:{current_mb:1190,limit_mb:4088,peak_mb:1300,oom_kills:0},
- status_latency_ms:42.5,status_http:200,tokens_per_second:null};
-assert.match(cx.opsIntelligenceView(),/LiquidAI\/LFM3-1\.7B-GGUF:Q4_K_M/);
-assert.match(cx.opsIntelligenceView(),/29\.1%/);
-assert.match(cx.opsIntelligenceView(),/OOM kills 0/);
-assert.match(cx.opsIntelligenceView(),/43 ms/);
-assert.match(cx.opsIntelligenceView(),/Not verified/,'A status probe must never claim verified generation');
-delete cx.state.evidence.intelligence_metrics;
-assert.match(cx.opsIntelligenceView(),/Unmeasured/);
-assert.match(cx.opsIntelligenceView(),/not emitted by the host yet/);
 
 // D3: Diagnostics Trends — version/policy gated history with filters.
 const trendPoint=(at,policy,paired)=>({run_id:'t'+at,schema_version:1,captured_at:at,

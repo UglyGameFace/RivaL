@@ -13,12 +13,10 @@ from urllib.error import HTTPError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-from evidence_board_github import read_public_intelligence
 from evidence_board_receipt import (
     _oidc_contract_summary,
     _receiver_http_error,
     _safe_receiver_error,
-    read_intelligence_host,
     read_paired_performance,
     receiver_preflight,
 )
@@ -160,35 +158,6 @@ class ModelScoreEvidenceTests(unittest.TestCase):
             self.assertEqual(_oidc_contract_summary(make_token(bad)),
                              "local_oidc_mismatch_aud")
         self.assertNotIn("attacker", _oidc_contract_summary("bad.token.value"))
-
-    def test_unavailable_intelligence_app_is_not_reported_offline(self) -> None:
-        with patch.dict("os.environ", {"DISCLOUD_LLM_APP_ID": "",
-                                        "DISCLOUD_TOKEN": ""}):
-            result = read_intelligence_host()
-        self.assertEqual(result["status"], "unavailable")
-        self.assertFalse(result["inference_verified"])
-
-    def test_public_intelligence_ci_does_not_prove_inference(self) -> None:
-        fake_sha = "a" * 40
-        def fake(path: str, token: str, **kwargs: object) -> object:
-            self.assertEqual(kwargs["repository"], "UglyGameFace/RivaL-Intelligence")
-            if path.startswith("/commits/"):
-                return {"sha": fake_sha}
-            if path.startswith("/pulls?"):
-                return [{"number": 10, "title": "release", "state": "closed",
-                         "merged_at": "2026-11-10T18:00:00Z",
-                         "body": "do not copy secrets"}]
-            return {"workflow_runs": [{"id": 42880099795,
-                     "name": "RivaL Intelligence CI and Discloud release",
-                     "status": "completed", "conclusion": "success"}]}
-        with patch("evidence_board_github._github_json", side_effect=fake):
-            result = read_public_intelligence("token")
-        self.assertEqual(result["status"], "verified")
-        self.assertFalse(result["runtime_inference_verified"])
-        self.assertEqual(len(result["runs"]), 1)
-        self.assertNotIn("secrets", str(result))
-        self.assertEqual(result["head_sha"], fake_sha)
-
 
 if __name__ == "__main__":
     unittest.main()

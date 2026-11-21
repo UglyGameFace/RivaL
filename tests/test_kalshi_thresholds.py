@@ -8,7 +8,7 @@ exists because the arm's fallback (the venue's historical
 candlesticks archive) has a moving coverage cutoff; it must never
 guess a market's terms, and one series' outage must stay local.
 """
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -219,3 +219,74 @@ async def test_capture_follows_the_cursor(tmp_path):
 def test_kalshi_recorder_config_default():
     fields = Settings.model_fields
     assert fields["rival_n1_kalshi_threshold_enabled"].default is True
+
+
+
+def _pg_store():
+    """Schema-scoped PostgresHotStore (statement counting is PG-only)."""
+    import os
+    import uuid
+    from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+
+    import psycopg
+    import pytest
+    from psycopg import sql
+
+    from parlay_bot.storage.hot import PostgresHotStore
+
+    dsn = os.getenv("RIVAL_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("PostgreSQL CI service required")
+    schema = "n1_batch_" + uuid.uuid4().hex
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+    parts = urlsplit(dsn)
+    query = dict(parse_qsl(parts.query))
+    query["options"] = (query.get("options", "") + f" -c search_path={schema}").strip()
+    scoped = urlunsplit(parts._replace(query=urlencode(query, quote_via=quote)))
+    return PostgresHotStore(scoped), dsn, schema
+
+
+def _drop_schema(dsn, schema):
+    import psycopg
+    from psycopg import sql
+
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+def test_record_markets_batches_with_identical_contents():
+    """250 markets land in 3 chunk statements (was: ~1,270 round trips per
+    hourly snapshot across series), with written/skipped counts and table
+    contents identical to the per-row semantics."""
+    from parlay_bot.storage.database import database_clock
+
+    store, dsn, schema = _pg_store()
+    try:
+        recorder = KalshiThresholdsRecorder(store)
+        markets = [
+            _market(ticker=f"KXBTCD-26NOV2000-T{70000 + i}.99",
+                    floor_strike=float(70000 + i))
+            for i in range(250)
+        ]
+        markets.append(dict(markets[0]))  # in-batch duplicate: first wins
+        markets.append(_market(ticker=""))  # unparseable: skipped, not stored
+        recorder.record_markets(ABOVE_BTC, markets[:1], snapshot_at=T0 - timedelta(hours=1))  # warm
+        with database_clock() as clock:
+            written, skipped = recorder.record_markets(
+                ABOVE_BTC, markets, snapshot_at=T0)
+        assert clock.statements == 3  # ceil(251 / 100) chunk inserts
+        assert (written, skipped) == (250, 1)
+        assert recorder.record_markets(
+            ABOVE_BTC, markets, snapshot_at=T0) == (0, 1)
+        stored = [row for row in recorder.snapshots(asset="BTC", contract_type="above")
+                  if row["snapshot_at"] == T0.isoformat()]
+        assert len(stored) == 250
+        by_ticker = {row["market_ticker"]: row for row in stored}
+        for market in markets[:250]:
+            want = market_row(ABOVE_BTC, market)
+            got = by_ticker[want["market_ticker"]]
+            assert got == {"snapshot_at": T0.isoformat(), **want}
+    finally:
+        store.close()
+        _drop_schema(dsn, schema)

@@ -312,34 +312,49 @@ class ThresholdMarketsRecorder:
         if not isinstance(markets, list):
             return 0, 0
         stamp = _iso(snapshot_at)
-        written = 0
+        pending = []
         skipped = 0
+        for market in markets:
+            row = market_row(spec, event, market)
+            if row is None:
+                skipped += 1
+                continue
+            pending.append(
+                (stamp, row["asset"], row["contract_type"], row["horizon"],
+                 row["series_id"], row["series_slug"], row["event_id"],
+                 row["event_slug"], row["market_id"], row["condition_id"],
+                 row["market_slug"], row["question"],
+                 row["group_item_title"], row["strike_low"],
+                 row["strike_high"], row["end_date"], row["yes_price"],
+                 row["best_bid"], row["best_ask"], row["fee_rate"],
+                 row["fee_schedule_json"]))
+        written = 0
         with self._lock, self.store.connect() as conn:
-            for market in markets:
-                row = market_row(spec, event, market)
-                if row is None:
-                    skipped += 1
-                    continue
-                cursor = conn.execute(
-                    """INSERT INTO rival_threshold_market_snapshots
-                       (snapshot_at, asset, contract_type, horizon,
-                        series_id, series_slug, event_id, event_slug,
-                        market_id, condition_id, market_slug, question,
-                        group_item_title, strike_low, strike_high, end_date,
-                        yes_price, best_bid, best_ask, fee_rate,
-                        fee_schedule_json)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                       ON CONFLICT DO NOTHING""",
-                    (stamp, row["asset"], row["contract_type"], row["horizon"],
-                     row["series_id"], row["series_slug"], row["event_id"],
-                     row["event_slug"], row["market_id"], row["condition_id"],
-                     row["market_slug"], row["question"],
-                     row["group_item_title"], row["strike_low"],
-                     row["strike_high"], row["end_date"], row["yes_price"],
-                     row["best_bid"], row["best_ask"], row["fee_rate"],
-                     row["fee_schedule_json"]),
+            # 100-row multi-value inserts (the market_store pattern) replace
+            # per-row round trips for every event in the hourly snapshot.
+            # RETURNING counts only rows that actually landed — the same
+            # count the per-row rowcount produced under ON CONFLICT
+            # DO NOTHING.
+            for offset in range(0, len(pending), 100):
+                chunk = pending[offset:offset + 100]
+                placeholders = ", ".join(
+                    "(" + ",".join("?" for _ in range(21)) + ")"
+                    for _ in chunk
                 )
-                written += cursor.rowcount
+                params = tuple(item for values in chunk for item in values)
+                landed = conn.execute(
+                    "INSERT INTO rival_threshold_market_snapshots "
+                    "(snapshot_at, asset, contract_type, horizon, "
+                    "series_id, series_slug, event_id, event_slug, "
+                    "market_id, condition_id, market_slug, question, "
+                    "group_item_title, strike_low, strike_high, end_date, "
+                    "yes_price, best_bid, best_ask, fee_rate, "
+                    "fee_schedule_json) VALUES "
+                    + placeholders
+                    + " ON CONFLICT DO NOTHING RETURNING condition_id",
+                    params,
+                ).fetchall()
+                written += len(landed)
         return written, skipped
 
     async def _fetch_series(self, client: httpx.AsyncClient,

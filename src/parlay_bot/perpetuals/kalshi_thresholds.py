@@ -240,36 +240,50 @@ class KalshiThresholdsRecorder:
         if not isinstance(markets, list):
             return 0, 0
         stamp = _iso(snapshot_at)
-        written = 0
+        pending = []
         skipped = 0
+        for market in markets:
+            row = market_row(spec, market)
+            if row is None:
+                skipped += 1
+                continue
+            pending.append(
+                (stamp, row["asset"], row["contract_type"], row["horizon"],
+                 row["series_ticker"], row["event_ticker"],
+                 row["market_ticker"], row["title"], row["subtitle"],
+                 row["strike_type"], row["strike_low"], row["strike_high"],
+                 row["yes_bid"], row["yes_ask"], row["no_bid"],
+                 row["no_ask"], row["last_price"], row["status"],
+                 row["open_time"], row["close_time"],
+                 row["expected_expiration_time"], row["rules_primary"],
+                 row["rules_secondary"]))
+        written = 0
         with self._lock, self.store.connect() as conn:
-            for market in markets:
-                row = market_row(spec, market)
-                if row is None:
-                    skipped += 1
-                    continue
-                cursor = conn.execute(
-                    """INSERT INTO rival_kalshi_threshold_snapshots
-                       (snapshot_at, asset, contract_type, horizon,
-                        series_ticker, event_ticker, market_ticker, title,
-                        subtitle, strike_type, strike_low, strike_high,
-                        yes_bid, yes_ask, no_bid, no_ask, last_price,
-                        status, open_time, close_time,
-                        expected_expiration_time, rules_primary,
-                        rules_secondary)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                       ON CONFLICT DO NOTHING""",
-                    (stamp, row["asset"], row["contract_type"], row["horizon"],
-                     row["series_ticker"], row["event_ticker"],
-                     row["market_ticker"], row["title"], row["subtitle"],
-                     row["strike_type"], row["strike_low"], row["strike_high"],
-                     row["yes_bid"], row["yes_ask"], row["no_bid"],
-                     row["no_ask"], row["last_price"], row["status"],
-                     row["open_time"], row["close_time"],
-                     row["expected_expiration_time"], row["rules_primary"],
-                     row["rules_secondary"]),
+            # 100-row multi-value inserts (the market_store pattern) replace
+            # ~1,270 per-row round trips per hourly snapshot. RETURNING
+            # counts only rows that actually landed — the same count the
+            # per-row rowcount produced under ON CONFLICT DO NOTHING.
+            for offset in range(0, len(pending), 100):
+                chunk = pending[offset:offset + 100]
+                placeholders = ", ".join(
+                    "(" + ",".join("?" for _ in range(23)) + ")"
+                    for _ in chunk
                 )
-                written += cursor.rowcount
+                params = tuple(item for values in chunk for item in values)
+                landed = conn.execute(
+                    "INSERT INTO rival_kalshi_threshold_snapshots "
+                    "(snapshot_at, asset, contract_type, horizon, "
+                    "series_ticker, event_ticker, market_ticker, title, "
+                    "subtitle, strike_type, strike_low, strike_high, "
+                    "yes_bid, yes_ask, no_bid, no_ask, last_price, "
+                    "status, open_time, close_time, "
+                    "expected_expiration_time, rules_primary, "
+                    "rules_secondary) VALUES "
+                    + placeholders
+                    + " ON CONFLICT DO NOTHING RETURNING market_ticker",
+                    params,
+                ).fetchall()
+                written += len(landed)
         return written, skipped
 
     async def _fetch_series(self, client: httpx.AsyncClient,

@@ -6,7 +6,7 @@ force at that hour -- grading reads the recorded schedule, so the
 recorder must distinguish a stated 0.07, a stated fee-free market, and
 an unknown schedule, and must never guess a market's terms.
 """
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -210,3 +210,76 @@ async def test_capture_records_series_and_isolates_failures(tmp_path):
     rows = recorder.snapshots()
     assert len(rows) == 1
     assert rows[0]["condition_id"] == "0xabc123"
+
+
+
+def _pg_store():
+    """Schema-scoped PostgresHotStore (statement counting is PG-only)."""
+    import os
+    import uuid
+    from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+
+    import psycopg
+    import pytest
+    from psycopg import sql
+
+    from parlay_bot.storage.hot import PostgresHotStore
+
+    dsn = os.getenv("RIVAL_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("PostgreSQL CI service required")
+    schema = "n1_batch_" + uuid.uuid4().hex
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+    parts = urlsplit(dsn)
+    query = dict(parse_qsl(parts.query))
+    query["options"] = (query.get("options", "") + f" -c search_path={schema}").strip()
+    scoped = urlunsplit(parts._replace(query=urlencode(query, quote_via=quote)))
+    return PostgresHotStore(scoped), dsn, schema
+
+
+def _drop_schema(dsn, schema):
+    import psycopg
+    from psycopg import sql
+
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+def test_record_event_batches_with_identical_contents():
+    """250 markets land in 3 chunk statements (was: one round trip per
+    market), with written/skipped counts and table contents identical to
+    the per-row semantics."""
+    from parlay_bot.storage.database import database_clock
+
+    store, dsn, schema = _pg_store()
+    try:
+        recorder = ThresholdMarketsRecorder(store)
+        markets = [
+            _market(id=str(7176633 + i), conditionId=f"0x{i:06x}",
+                    groupItemTitle=f"{52000 + i:,}",
+                    question=f"Will the price of Bitcoin be above "
+                             f"${52000 + i:,} on November 26?")
+            for i in range(250)
+        ]
+        markets.append(dict(markets[0]))  # in-batch duplicate: first wins
+        recorder.record_event(ABOVE_BTC, _event(markets[:1]), snapshot_at=T0 - timedelta(hours=1))
+        with database_clock() as clock:
+            written, skipped = recorder.record_event(
+                ABOVE_BTC, _event(markets), snapshot_at=T0)
+        assert clock.statements == 3  # ceil(251 / 100) chunk inserts
+        assert (written, skipped) == (250, 0)
+        assert recorder.record_event(
+            ABOVE_BTC, _event(markets), snapshot_at=T0) == (0, 0)
+        stored = [row for row in recorder.snapshots(asset="BTC", contract_type="above")
+                  if row["snapshot_at"] == T0.isoformat()]
+        assert len(stored) == 250
+        by_condition = {row["condition_id"]: row for row in stored}
+        event = _event(markets)
+        for market in markets[:250]:
+            want = market_row(ABOVE_BTC, event, market)
+            got = by_condition[want["condition_id"]]
+            assert got == {"snapshot_at": T0.isoformat(), **want}
+    finally:
+        store.close()
+        _drop_schema(dsn, schema)

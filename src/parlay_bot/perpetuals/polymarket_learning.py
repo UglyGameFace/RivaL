@@ -16,6 +16,11 @@ from parlay_bot.perpetuals.model_checkpoints import canonical
 
 MODEL = "polymarket-terminal-book-logistic-v1"
 MIN_LABELS = 100
+# Rows per fetchmany chunk when streaming scorecard reads (the #727
+# pattern): the 7-day forward-table reads aggregate incrementally in the
+# query's own row order, so outputs are byte-identical to the fetchall
+# versions while the peak materialization drops to one chunk.
+SCORECARD_FETCH_CHUNK = 2000
 # Provisional near-even research filter, not a calibrated profit or confidence gate.
 MIN_DIRECTIONAL_MARGIN = 0.05
 
@@ -380,8 +385,27 @@ class PolymarketOutcomeLearner:
         self.initialize()
         clock = datetime.now(UTC)
         since = (clock - timedelta(days=days)).isoformat()
+
+        def fair(row) -> bool:
+            issued = datetime.fromisoformat(str(row["issued_at"]))
+            start = (datetime.fromisoformat(str(row["expires_at"]))
+                     - timedelta(minutes=int(row["horizon"])))
+            return issued >= START_PRICE_FROZEN_FROM or issued - start <= START_PRICE_WINDOW
+
+        # Streamed in SCORECARD_FETCH_CHUNK chunks with incremental
+        # aggregation in the query's own row order: every sum below adds
+        # the same terms in the same order the fetchall version's list
+        # comprehensions did, so the returned dict is byte-identical.
+        n = 0
+        model_brier = market_brier = 0.0
+        accuracy = 0
+        bets_sum = 0.0
+        bets_count = bets_wins = 0
+        priced = 0
+        stakes = profit = 0.0
+        real_bets = real_wins = 0
         with self.store.connect() as conn:
-            rows = conn.execute(
+            cursor = conn.execute(
                 "SELECT f.probability_up,f.market_baseline,o.direction,"
                 "f.issued_at,v.expires_at,v.horizon,q.up_ask,q.down_ask "
                 "FROM rival_polymarket_model_forward f "
@@ -394,56 +418,63 @@ class PolymarketOutcomeLearner:
                 "AND f.probability_up BETWEEN 0 AND 1 AND f.market_baseline BETWEEN 0 AND 1 "
                 "AND v.asset=? AND v.horizon=?",
                 (since, clock.isoformat(), asset, horizon),
-            ).fetchall()
-        def fair(row) -> bool:
-            issued = datetime.fromisoformat(str(row["issued_at"]))
-            start = (datetime.fromisoformat(str(row["expires_at"]))
-                     - timedelta(minutes=int(row["horizon"])))
-            return issued >= START_PRICE_FROZEN_FROM or issued - start <= START_PRICE_WINDOW
-
-        rows = [r for r in rows if fair(r)]
-        n = len(rows)
+            )
+            while True:
+                chunk = cursor.fetchmany(SCORECARD_FETCH_CHUNK)
+                if not chunk:
+                    break
+                for row in chunk:
+                    if not fair(row):
+                        continue
+                    n += 1
+                    y = int(row["direction"] == "UP")
+                    p = float(row["probability_up"])
+                    m = float(row["market_baseline"])
+                    model_brier += (p - y) ** 2
+                    market_brier += (m - y) ** 2
+                    accuracy += (p > .5) == (y == 1)
+                    if p - m >= edge:
+                        bet = y - m          # bought UP at m
+                        bets_sum += bet
+                        bets_count += 1
+                        bets_wins += bet > 0
+                    elif m - p >= edge:
+                        bet = (1 - y) - (1 - m)  # bought DOWN at 1-m
+                        bets_sum += bet
+                        bets_count += 1
+                        bets_wins += bet > 0
+                    # Real start-time asks plus Polymarket's crypto taker
+                    # fee, where recorded. The fee coefficient is the
+                    # venue's published schedule for the contract's own
+                    # series and issue time (0.07 before the 2026-11-20
+                    # 23:59 UTC change, 0.05 for BTC 5m/15m and 0.01 for
+                    # all other crypto after it) — never the flat legacy
+                    # default.
+                    if row["up_ask"] is not None and row["down_ask"] is not None:
+                        priced += 1
+                        rate = polymarket_scheduled_fee_rate(
+                            asset=asset, horizon=horizon,
+                            issued_at=datetime.fromisoformat(str(row["issued_at"])))
+                        for side_p, ask, win in (
+                                (p, float(row["up_ask"]), y == 1),
+                                (1 - p, float(row["down_ask"]), y == 0)):
+                            cost = ask + polymarket_fee(ask, rate)
+                            if 0 < ask < 1 and side_p - cost >= edge:
+                                real_bets += 1
+                                real_wins += win
+                                stakes += cost
+                                profit += (1.0 if win else 0.0) - cost
         if not n:
             return {"contracts": 0, "score_window_days": days}
-        ys = [int(r["direction"] == "UP") for r in rows]
-        ps = [float(r["probability_up"]) for r in rows]
-        ms = [float(r["market_baseline"]) for r in rows]
-        bets = []
-        for p, m, y in zip(ps, ms, ys, strict=True):
-            if p - m >= edge:
-                bets.append(y - m)          # bought UP at m
-            elif m - p >= edge:
-                bets.append((1 - y) - (1 - m))  # bought DOWN at 1-m
-        # Real start-time asks plus Polymarket's crypto taker fee, where recorded.
-        # The fee coefficient is the venue's published schedule for the
-        # contract's own series and issue time (0.07 before the 2026-11-20
-        # 23:59 UTC change, 0.05 for BTC 5m/15m and 0.01 for all other crypto
-        # after it) — never the flat legacy default.
-        real = [(float(r["probability_up"]), float(r["up_ask"]), float(r["down_ask"]), y,
-                 datetime.fromisoformat(str(r["issued_at"])))
-                for r, y in zip(rows, ys, strict=True)
-                if r["up_ask"] is not None and r["down_ask"] is not None]
-        stakes = profit = 0.0
-        real_bets = real_wins = 0
-        for p, up_ask, down_ask, y, issued in real:
-            rate = polymarket_scheduled_fee_rate(
-                asset=asset, horizon=horizon, issued_at=issued)
-            for side_p, ask, win in ((p, up_ask, y == 1), (1 - p, down_ask, y == 0)):
-                cost = ask + polymarket_fee(ask, rate)
-                if 0 < ask < 1 and side_p - cost >= edge:
-                    real_bets += 1
-                    real_wins += win
-                    stakes += cost
-                    profit += (1.0 if win else 0.0) - cost
         return {
             "contracts": n, "score_window_days": days,
-            "model_brier": sum((p - y) ** 2 for p, y in zip(ps, ys, strict=True)) / n,
-            "market_brier": sum((m - y) ** 2 for m, y in zip(ms, ys, strict=True)) / n,
-            "model_accuracy": sum((p > .5) == (y == 1) for p, y in zip(ps, ys, strict=True)) / n,
-            "value_bets": len(bets),
-            "value_bet_wins": sum(b > 0 for b in bets),
-            "value_bet_avg_return": sum(bets) / len(bets) if bets else None,
-            "priced_contracts": len(real),
+            "model_brier": model_brier / n,
+            "market_brier": market_brier / n,
+            "model_accuracy": accuracy / n,
+            "value_bets": bets_count,
+            "value_bet_wins": bets_wins,
+            "value_bet_avg_return": bets_sum / bets_count if bets_count else None,
+            "priced_contracts": priced,
             "real_value_bets": real_bets, "real_value_bet_wins": real_wins,
             "real_return_per_dollar_after_fees": profit / stakes if stakes else None,
         }
@@ -462,13 +493,21 @@ class PolymarketOutcomeLearner:
             (" WHERE asset=? AND horizon=?", (asset, horizon))
             if asset is not None else ("", ())
         )
+        # Streamed in SCORECARD_FETCH_CHUNK chunks with incremental
+        # aggregation in the query's own row order (the #727 pattern):
+        # every sum adds the same terms in the same order the fetchall
+        # version's loops did, so the returned dict is byte-identical.
+        count = 0
+        forward_brier = market_brier = 0.0
+        nets_sum = 0.0
+        nets_count = 0
         with self.store.connect() as conn:
             counts = conn.execute(
                 "SELECT COUNT(*) AS observed, "
                 "SUM(CASE WHEN learned_at IS NOT NULL THEN 1 ELSE 0 END) AS learned "
                 "FROM rival_polymarket_observations" + where, params,
             ).fetchone()
-            rows = conn.execute(
+            cursor = conn.execute(
                 "SELECT f.probability_up,f.market_baseline,o.direction,"
                 "f.issued_at,v.asset,v.horizon,v.features_json "
                 "FROM rival_polymarket_model_forward f "
@@ -484,39 +523,45 @@ class PolymarketOutcomeLearner:
                 "AND f.market_baseline BETWEEN 0 AND 1 "
                 + ("AND v.asset=? AND v.horizon=?" if asset is not None else ""),
                 (MODEL, since, clock.isoformat(), clock.isoformat(), *params),
-            ).fetchall()
-        count = len(rows)
-        nets = []
-        for r in rows:
-            try:
-                issued = datetime.fromisoformat(str(r["issued_at"]))
-                features = json.loads(r["features_json"])
-            except (TypeError, ValueError):
-                continue
-            if issued.tzinfo is None:
-                continue
-            net = after_fee_call_net(
-                probability_up=r["probability_up"], direction=r["direction"],
-                features=features, market_baseline=r["market_baseline"],
-                asset=r["asset"], horizon=int(r["horizon"]), issued_at=issued)
-            if net is not None:
-                nets.append(net)
+            )
+            while True:
+                chunk = cursor.fetchmany(SCORECARD_FETCH_CHUNK)
+                if not chunk:
+                    break
+                for r in chunk:
+                    count += 1
+                    forward_brier += (
+                        r["probability_up"] - int(r["direction"] == "UP")) ** 2
+                    market_brier += (
+                        r["market_baseline"] - int(r["direction"] == "UP")) ** 2
+                    try:
+                        issued = datetime.fromisoformat(str(r["issued_at"]))
+                        features = json.loads(r["features_json"])
+                    except (TypeError, ValueError):
+                        continue
+                    if issued.tzinfo is None:
+                        continue
+                    net = after_fee_call_net(
+                        probability_up=r["probability_up"], direction=r["direction"],
+                        features=features, market_baseline=r["market_baseline"],
+                        asset=r["asset"], horizon=int(r["horizon"]), issued_at=issued)
+                    if net is not None:
+                        nets_sum += net
+                        nets_count += 1
         return {
             "observed_contracts": int(counts["observed"]),
             "learned_contracts": int(counts["learned"] or 0),
             "settled_forward_contracts": count,
-            "after_fee_calls": len(nets),
+            "after_fee_calls": nets_count,
             "after_fee_mean_net_cents": (
-                sum(nets) / len(nets) * 100 if nets else None),
+                nets_sum / nets_count * 100 if nets_count else None),
             "score_window_days": 7,
             "model": MODEL,
             "forward_brier": (
-                sum((r["probability_up"]-int(r["direction"] == "UP"))**2
-                    for r in rows)/count if count else None
+                forward_brier / count if count else None
             ),
             "market_baseline_brier": (
-                sum((r["market_baseline"]-int(r["direction"] == "UP"))**2
-                    for r in rows)/count if count else None
+                market_brier / count if count else None
             ),
             "verified_trading_edge": False,
         }

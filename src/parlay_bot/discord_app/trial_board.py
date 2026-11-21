@@ -421,8 +421,16 @@ def hit_rates(store, *, asset: str, horizon: int, now: datetime | None = None,
     if now is not None and abs((now - wall).total_seconds()) > 10:
         return _hit_rates_uncached(store, asset=asset, horizon=horizon, now=now, venues=venues)
     venues = None if venues is None else tuple(sorted(set(venues)))
+    # 35 minutes, the page cache's own horizon: the only systematic caller
+    # is the 30-minute background warm, so a 300 s TTL expired before every
+    # warm and the grouped 7-day aggregate recomputed for all 12 coin x
+    # timeframe keys every cycle — the burst behind the slow-op incidents
+    # (max 33.7 s, 2026-11-21). Displayed freshness is unchanged: renders
+    # already sit behind the 35-minute page cache. The covering index
+    # (idx_rival_model_shadow_recent_hit_cover) carries the per-read cost;
+    # this carries the rate.
     return shared_reads(store).read(
-        ("trial_hit_rates", asset, horizon, venues), 300,
+        ("trial_hit_rates", asset, horizon, venues), 2100,
         lambda: _hit_rates_uncached(store, asset=asset, horizon=horizon, now=now, venues=venues))
 
 

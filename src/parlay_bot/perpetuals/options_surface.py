@@ -192,23 +192,37 @@ class OptionsSurfaceRecorder:
         """Persist one snapshot's rows; returns the number written."""
         self.initialize()
         stamp = _iso(snapshot_at)
+        pending = [
+            (stamp, row["currency"], row["instrument_name"],
+             _iso(row["expiry_at"]), row["strike"], row["option_type"],
+             row["mark_price"], row["mark_iv"], row.get("bid_price"),
+             row.get("ask_price"), row.get("underlying_price"),
+             row.get("index_price"))
+            for row in rows
+        ]
         written = 0
         with self._lock, self.store.connect() as conn:
-            for row in rows:
-                cursor = conn.execute(
-                    """INSERT INTO rival_options_surface_snapshots
-                       (snapshot_at, currency, instrument_name, expiry_at,
-                        strike, option_type, mark_price, mark_iv, bid_price,
-                        ask_price, underlying_price, index_price)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-                       ON CONFLICT DO NOTHING""",
-                    (stamp, row["currency"], row["instrument_name"],
-                     _iso(row["expiry_at"]), row["strike"], row["option_type"],
-                     row["mark_price"], row["mark_iv"], row.get("bid_price"),
-                     row.get("ask_price"), row.get("underlying_price"),
-                     row.get("index_price")),
+            # 100-row multi-value inserts (the market_store pattern) replace
+            # ~1,800 per-row round trips per hourly snapshot. RETURNING
+            # counts only rows that actually landed — the same count the
+            # per-row rowcount produced under ON CONFLICT DO NOTHING.
+            for offset in range(0, len(pending), 100):
+                chunk = pending[offset:offset + 100]
+                placeholders = ", ".join(
+                    "(" + ",".join("?" for _ in range(12)) + ")"
+                    for _ in chunk
                 )
-                written += cursor.rowcount
+                params = tuple(item for values in chunk for item in values)
+                landed = conn.execute(
+                    "INSERT INTO rival_options_surface_snapshots "
+                    "(snapshot_at, currency, instrument_name, expiry_at, "
+                    "strike, option_type, mark_price, mark_iv, bid_price, "
+                    "ask_price, underlying_price, index_price) VALUES "
+                    + placeholders
+                    + " ON CONFLICT DO NOTHING RETURNING instrument_name",
+                    params,
+                ).fetchall()
+                written += len(landed)
         return written
 
     async def _fetch(self, client: httpx.AsyncClient, path: str,

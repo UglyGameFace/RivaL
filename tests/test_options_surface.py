@@ -6,7 +6,7 @@ the raw venue fields per instrument, skips malformed entries without
 losing the snapshot, and isolates a failed currency so its outage can
 never stall the other currency or the bot.
 """
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -196,3 +196,80 @@ def test_n1_collection_config_defaults():
     assert fields["rival_n1_collection_seconds"].default == 3600
     with pytest.raises(ValidationError):
         Settings(rival_n1_collection_seconds=60)  # below the 600s floor
+
+
+
+def _pg_store():
+    """Schema-scoped PostgresHotStore (statement counting is PG-only)."""
+    import os
+    import uuid
+    from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+
+    import psycopg
+    import pytest
+    from psycopg import sql
+
+    from parlay_bot.storage.hot import PostgresHotStore
+
+    dsn = os.getenv("RIVAL_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("PostgreSQL CI service required")
+    schema = "n1_batch_" + uuid.uuid4().hex
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+    parts = urlsplit(dsn)
+    query = dict(parse_qsl(parts.query))
+    query["options"] = (query.get("options", "") + f" -c search_path={schema}").strip()
+    scoped = urlunsplit(parts._replace(query=urlencode(query, quote_via=quote)))
+    return PostgresHotStore(scoped), dsn, schema
+
+
+def _drop_schema(dsn, schema):
+    import psycopg
+    from psycopg import sql
+
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        connection.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+
+
+def test_record_snapshot_batches_with_identical_contents():
+    """250 rows land in 3 chunk statements (was: 250 round trips), with
+    written counts and table contents identical to the per-row semantics:
+    in-batch duplicates and replays count once / not at all."""
+    from parlay_bot.storage.database import database_clock
+
+    store, dsn, schema = _pg_store()
+    try:
+        recorder = OptionsSurfaceRecorder(store)
+        rows = [{
+            "currency": "BTC",
+            "instrument_name": f"BTC-20NOV26-{60000 + i}-C",
+            "expiry_at": datetime(2026, 11, 20, 8, 0, tzinfo=UTC),
+            "strike": float(60000 + i), "option_type": "call",
+            "mark_price": 0.01, "mark_iv": 50.0, "bid_price": 0.009,
+            "ask_price": 0.011, "underlying_price": 61000.0,
+            "index_price": 61000.0,
+        } for i in range(250)]
+        rows.append(dict(rows[0]))  # in-batch duplicate PK: first wins
+        recorder.record_snapshot(rows[:1], snapshot_at=T0 - timedelta(hours=1))  # warm
+        with database_clock() as clock:
+            written = recorder.record_snapshot(rows, snapshot_at=T0)
+        assert clock.statements == 3  # ceil(251 / 100) chunk inserts
+        assert written == 250
+        assert recorder.record_snapshot(rows, snapshot_at=T0) == 0  # replay
+        stored = recorder.snapshots(currency="BTC", snapshot_at=T0)
+        assert len(stored) == 250
+        expected = sorted(rows[:250], key=lambda row: row["strike"])
+        for got, want in zip(stored, expected, strict=True):
+            assert got == {
+                "snapshot_at": T0.isoformat(), "currency": "BTC",
+                "instrument_name": want["instrument_name"],
+                "expiry_at": want["expiry_at"].isoformat(),
+                "strike": want["strike"], "option_type": "call",
+                "mark_price": 0.01, "mark_iv": 50.0, "bid_price": 0.009,
+                "ask_price": 0.011, "underlying_price": 61000.0,
+                "index_price": 61000.0,
+            }
+    finally:
+        store.close()
+        _drop_schema(dsn, schema)

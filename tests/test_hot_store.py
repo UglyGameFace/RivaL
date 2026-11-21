@@ -130,3 +130,36 @@ def test_line_metadata_is_persisted_and_line_move_creates_new_state(tmp_path) ->
     assert current[0]["line_group_value"] == 6.0
     assert current[0]["deeplink"] == "https://example.invalid/book"
     assert len(changes) == 2
+
+
+def test_initialize_runs_schema_once_per_instance(tmp_path, monkeypatch) -> None:
+    """The schema script takes the database-wide advisory DDL lock on
+    Postgres, so public calls must not re-run it after the first call."""
+    from parlay_bot.storage.hot import RelationalHotStore
+
+    store = SQLiteHotStore(tmp_path / "rival.sqlite")
+    calls = 0
+    original = RelationalHotStore._initialize_schema
+
+    def counting(self) -> None:
+        nonlocal calls
+        calls += 1
+        original(self)
+
+    monkeypatch.setattr(RelationalHotStore, "_initialize_schema", counting)
+    store.set_runtime_state("key", "1")
+    store.get_runtime_state("key")
+    store.set_runtime_state("key", "2")
+    store.initialize()
+    assert calls == 1
+    assert store.get_runtime_state("key") == "2"
+
+
+def test_fresh_store_first_call_creates_schema(tmp_path) -> None:
+    store = SQLiteHotStore(tmp_path / "fresh.sqlite")
+    assert store.get_runtime_state("missing") is None
+    store.set_runtime_state("key", "value")
+    assert store.get_runtime_state("key") == "value"
+    # A second instance over the same file initializes independently.
+    other = SQLiteHotStore(tmp_path / "fresh.sqlite")
+    assert other.get_runtime_state("key") == "value"

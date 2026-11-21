@@ -136,6 +136,7 @@ from parlay_bot.storage.query_scope import (
     BACKGROUND_STATEMENT_TIMEOUT_MS,
     WATCHDOG_STATEMENT_TIMEOUT_MS,
     mark_background,
+    run_background,
     statement_timeout,
 )
 from parlay_bot.storage.startup import initialize_with_dns_recovery
@@ -1527,12 +1528,25 @@ class RivalDiscordClient(discord.Client):
         # closed in the parlay builder. Remote collection runs in background.
         return
 
+    def _spawn_worker(self, coro, *, name: str) -> asyncio.Task:
+        """Create a background worker task under the 60 s statement bound.
+
+        Every long-lived worker goes through here (setup_hook, the watchdog
+        restart path, and the manual sports refresh) so no loop runs with
+        unbounded statements: a lock-parked statement aborts with
+        QueryCanceled and returns its pooled connection instead of holding
+        one of the pool's 8 slots until the lock clears. Tighter scopes
+        (interactions, watchdog blocks, performance readers) still override
+        inside the task. See storage/query_scope.run_background.
+        """
+        return asyncio.create_task(run_background(coro), name=name)
+
     async def setup_hook(self) -> None:
         # Inside the running loop so Sentry's asyncio integration attaches to it.
         from parlay_bot.observability import init_sentry
         init_sentry()
         if self._memory_task is None:
-            self._memory_task = asyncio.create_task(
+            self._memory_task = self._spawn_worker(
                 self._memory_receipt_loop(), name="rival-memory-receipt",
             )
         if self._loop_watch_task is None:
@@ -1540,11 +1554,12 @@ class RivalDiscordClient(discord.Client):
             from parlay_bot.discord_app.loop_watch import LoopStallWatch
 
             self.loop_watch = LoopStallWatch()
-            self._loop_watch_task = asyncio.create_task(
+            self._loop_watch_task = self._spawn_worker(
                 self.loop_watch.run(), name="rival-event-loop-stall-watch",
             )
         install_view_dispatch_logging(self)
-        # Discord-triggered queries get a 15 s PostgreSQL limit; workers don't.
+        # Discord-triggered queries get an 8 s PostgreSQL limit; background
+        # workers run under the 60 s background bound via _spawn_worker.
         install_interaction_scope(self.tree)
         # Persistent fallback for guided menus that outlived their live view
         # (15-minute timeout or bot restart). Without this, taps on those
@@ -1592,27 +1607,27 @@ class RivalDiscordClient(discord.Client):
         # Retired duplicated Auto-Hunt alert producers. Live Polymarket
         # tracking and optional verified direction-shift notices continue.
         if self._target_task is None:
-            self._target_task = asyncio.create_task(
+            self._target_task = self._spawn_worker(
                 self._target_loop(), name="rival-personal-direction-updates",
             )
         if self._call_board_task is None:
-            self._call_board_task = asyncio.create_task(
+            self._call_board_task = self._spawn_worker(
                 self._call_board_loop(), name="rival-requested-channel-calls",
             )
         if self._poly_board_task is None:
-            self._poly_board_task = asyncio.create_task(
+            self._poly_board_task = self._spawn_worker(
                 self._poly_board_loop(), name="rival-auto-polymarket-board",
             )
         if self._model_watch_task is None and self.perp_collector is not None:
-            self._model_watch_task = asyncio.create_task(
+            self._model_watch_task = self._spawn_worker(
                 self._model_watch_loop(), name="rival-live-model-watch",
             )
         if self._model_lab_task is None and self.perp_collector is not None:
-            self._model_lab_task = asyncio.create_task(
+            self._model_lab_task = self._spawn_worker(
                 self._model_lab_loop(), name="rival-model-lab",
             )
         if self._retention_task is None:
-            self._retention_task = asyncio.create_task(
+            self._retention_task = self._spawn_worker(
                 self._retention_loop(), name="rival-prediction-cleanup",
             )
         if (
@@ -1620,7 +1635,7 @@ class RivalDiscordClient(discord.Client):
             and self.polybolt.configured
             and self._polybolt_task is None
         ):
-            self._polybolt_task = asyncio.create_task(
+            self._polybolt_task = self._spawn_worker(
                 self.polybolt.run(), name="rival-read-only-chainlink-twap",
             )
             _LOG.info(
@@ -1633,28 +1648,28 @@ class RivalDiscordClient(discord.Client):
                 "book-only Polymarket research remains available"
             )
         if self._poly_research_task is None:
-            self._poly_research_task = asyncio.create_task(
+            self._poly_research_task = self._spawn_worker(
                 self._poly_research_loop(), name="rival-silent-polymarket-learning",
             )
         if self._formula_task is None:
-            self._formula_task = asyncio.create_task(
+            self._formula_task = self._spawn_worker(
                 self._formula_loop(), name="rival-polymarket-formula-test",
             )
         if self._kalshi_research_task is None:
-            self._kalshi_research_task = asyncio.create_task(
+            self._kalshi_research_task = self._spawn_worker(
                 self._kalshi_research_loop(), name="rival-silent-kalshi-research",
             )
         if self.settings.rival_convergence_quotes_enabled and self._convergence_task is None:
-            self._convergence_task = asyncio.create_task(
+            self._convergence_task = self._spawn_worker(
                 self._convergence_quote_loop(), name="rival-convergence-quote-collection",
             )
         if self.settings.rival_polybolt_recorder_enabled and self._settlement_index_task is None:
-            self._settlement_index_task = asyncio.create_task(
+            self._settlement_index_task = self._spawn_worker(
                 self._settlement_index_loop(), name="rival-settlement-index-recorder",
             )
         if self.settings.rival_kalshi_brti_enabled and self._kalshi_brti_task is None:
             if self.kalshi_brti.configured:
-                self._kalshi_brti_task = asyncio.create_task(
+                self._kalshi_brti_task = self._spawn_worker(
                     self.kalshi_brti.run(), name="rival-kalshi-brti-index",
                 )
             else:
@@ -1666,7 +1681,7 @@ class RivalDiscordClient(discord.Client):
                 or self.settings.rival_n1_threshold_enabled
                 or self.settings.rival_n1_kalshi_threshold_enabled) \
                 and self._n1_collection_task is None:
-            self._n1_collection_task = asyncio.create_task(
+            self._n1_collection_task = self._spawn_worker(
                 self._n1_collection_loop(), name="rival-n1-forward-collection",
             )
             if self.settings.rival_n1_surface_enabled:
@@ -1688,11 +1703,11 @@ class RivalDiscordClient(discord.Client):
                     "from today)"
                 )
         if (self.current_collector is not None or self.oddspapi_collector is not None or self.the_odds_api_collector is not None) and self._sports_task is None:
-            self._sports_task = asyncio.create_task(
+            self._sports_task = self._spawn_worker(
                 self._sports_loop(), name="rival-sports-current-refresh",
             )
         if self.sports_results is not None and self._sports_results_task is None:
-            self._sports_results_task = asyncio.create_task(
+            self._sports_results_task = self._spawn_worker(
                 self._sports_results_loop(), name="rival-sports-final-results",
             )
         # A sync failure must not abort the workers below: data collection
@@ -1725,11 +1740,11 @@ class RivalDiscordClient(discord.Client):
         if self.live_stream is not None:
             self.live_stream.start()
             if self._stream_shadow_task is None:
-                self._stream_shadow_task = asyncio.create_task(
+                self._stream_shadow_task = self._spawn_worker(
                     self._stream_shadow_loop(), name="rival-stream-forward-cost-audit",
                 )
             if self.liquidity_recorder is not None and self._liquidity_task is None:
-                self._liquidity_task = asyncio.create_task(
+                self._liquidity_task = self._spawn_worker(
                     self._liquidity_loop(), name="rival-liquidity-5m-record",
                 )
             _LOG.info(
@@ -1744,30 +1759,30 @@ class RivalDiscordClient(discord.Client):
                 ",".join(self.perp_collector.assets),
                 self.settings.rival_perp_collection_seconds,
             )
-            self._perp_task = asyncio.create_task(
+            self._perp_task = self._spawn_worker(
                 self._perp_loop(), name="rival-perp-auto-collector"
             )
             if self._benefit_task is None:
-                self._benefit_task = asyncio.create_task(
+                self._benefit_task = self._spawn_worker(
                     self._benefit_loop(), name="rival-performance-refresh",
                 )
             if self._context_task is None:
-                self._context_task = asyncio.create_task(
+                self._context_task = self._spawn_worker(
                     self._context_loop(), name="rival-binance-context",
                 )
             if self._kalshi_updown_task is None:
-                self._kalshi_updown_task = asyncio.create_task(
+                self._kalshi_updown_task = self._spawn_worker(
                     self._kalshi_updown_loop(), name="rival-kalshi-updown",
                 )
             if self._records_task is None and self.research_drive is not None:
-                self._records_task = asyncio.create_task(
+                self._records_task = self._spawn_worker(
                     self._records_loop(), name="rival-records-backup",
                 )
             if (self._intelligence_task is None
                     and isinstance(self.intelligence_research, LocalFirstResearch)
                     and self.intelligence_research.available
                     and llm_background_enabled(self.settings)):
-                self._intelligence_task = asyncio.create_task(
+                self._intelligence_task = self._spawn_worker(
                     self._intelligence_loop(), name="rival-intelligence-review",
                 )
             elif (self._intelligence_task is None
@@ -1803,18 +1818,18 @@ class RivalDiscordClient(discord.Client):
              or self.phemex_history_recovery is not None)
             and self._history_task is None
         ):
-            self._history_task = asyncio.create_task(
+            self._history_task = self._spawn_worker(
                 self._history_loop(), name="rival-perp-history-recovery"
             )
 
         if (self.hypothesis_lab is not None and self._hypothesis_task is None
                 and llm_background_enabled(self.settings)):
-            self._hypothesis_task = asyncio.create_task(
+            self._hypothesis_task = self._spawn_worker(
                 self._hypothesis_loop(), name="rival-llm-feature-research",
             )
         if (self._research_loop_task is None and self.settings.rival_research_loop_enabled
                 and self.research_loop_drive is not None):
-            self._research_loop_task = asyncio.create_task(
+            self._research_loop_task = self._spawn_worker(
                 self._research_loop_driver(), name="rival-research-loop-driver",
             )
         if self.shadow_monitor is not None and self._shadow_task is None:
@@ -1823,12 +1838,12 @@ class RivalDiscordClient(discord.Client):
                 "max_streams=%d model=shadow_only",
                 self.settings.rival_shadow_eval_seconds, 10,
             )
-            self._shadow_task = asyncio.create_task(
+            self._shadow_task = self._spawn_worker(
                 self._shadow_loop(), name="rival-shadow-learning"
             )
 
         if self.archive_runtime is not None and self._archive_task is None:
-            self._archive_task = asyncio.create_task(
+            self._archive_task = self._spawn_worker(
                 self._archive_loop(),
                 name="rival-cold-archive",
             )
@@ -1836,7 +1851,7 @@ class RivalDiscordClient(discord.Client):
             # Do not strand imports for the whole host lifetime when the
             # PostgreSQL pool is temporarily busy during startup. The worker
             # owns retryable initialization, independent of the cold archive.
-            self._candidate_task = asyncio.create_task(
+            self._candidate_task = self._spawn_worker(
                 self._candidate_import_loop(),
                 name="rival-verified-offline-candidate-import",
             )
@@ -1846,19 +1861,19 @@ class RivalDiscordClient(discord.Client):
             await asyncio.to_thread(self.health_monitor.initialize)
             if self.stream_shadow is not None:
                 await asyncio.to_thread(FamilyQuoteShadow(self.store).initialize)
-            self._health_task = asyncio.create_task(
+            self._health_task = self._spawn_worker(
                 self._health_loop(), name="rival-process-health-watchdog",
             )
         except Exception:  # noqa: BLE001 - monitoring must not stop trading-free research
             _LOG.exception("RivaL host watchdog could not initialize")
         if self.heartbeat is not None and self._heartbeat_task is None:
-            self._heartbeat_task = asyncio.create_task(
+            self._heartbeat_task = self._spawn_worker(
                 self._heartbeat_loop(), name="rival-healthchecks-heartbeat",
             )
         elif self.heartbeat is None:
             _LOG.info("RivaL Healthchecks.io heartbeat not configured")
         if self.settings.rival_status_channel_id and self._status_task is None:
-            self._status_task = asyncio.create_task(
+            self._status_task = self._spawn_worker(
                 self._status_loop(), name="rival-status-card",
             )
 
@@ -2874,7 +2889,7 @@ class RivalDiscordClient(discord.Client):
     def _request_sports_refresh(self) -> str:
         if getattr(self, "_sports_manual_task", None) is not None and not self._sports_manual_task.done():
             return "Refresh already running. No new odds confirmed."
-        self._sports_manual_task = asyncio.create_task(
+        self._sports_manual_task = self._spawn_worker(
             self._refresh_all_sports(), name="rival-manual-sports-refresh",
         )
         return "Checking all three odds providers in background. No new odds confirmed yet."
@@ -4040,7 +4055,7 @@ class RivalDiscordClient(discord.Client):
                     faults[f"worker:{name}"] = "restart budget exhausted or cooling down"
                     continue
                 self._health_restarts[attr].append(now)
-                setattr(self, attr, asyncio.create_task(method(), name=name))
+                setattr(self, attr, self._spawn_worker(method(), name=name))
                 _LOG.warning("RivaL watchdog restarted exited worker %s", name)
             try:
                 feeds = (

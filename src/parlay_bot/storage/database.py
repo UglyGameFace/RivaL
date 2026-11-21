@@ -360,6 +360,11 @@ class PostgresDatabase(RelationalDatabase):
         self._idle: queue.Queue[Any] = queue.Queue()
         self._lock = threading.Lock()
         self._total = 0
+        # Threads currently blocked waiting for a returned connection.
+        # While this is nonzero, new arrivals skip the get_nowait fast
+        # path: a just-returned connection belongs to the longest-waiting
+        # thread, not to whichever thread happens to ask next (FIFO).
+        self._waiters = 0
         self._closed = False
         # Cumulative pool-checkout wait since boot, for the host receipt:
         # the #640 de-chatter fix (fetch -> release -> compute -> short
@@ -483,16 +488,19 @@ class PostgresDatabase(RelationalDatabase):
 
     def _checkout(self) -> Any:
         while True:
-            try:
-                raw = self._idle.get_nowait()
-            except queue.Empty:
-                pass
-            else:
-                if raw.closed:
-                    with self._lock:
-                        self._total -= 1
-                    continue
-                return raw
+            with self._lock:
+                waiters = self._waiters
+            if waiters == 0:
+                try:
+                    raw = self._idle.get_nowait()
+                except queue.Empty:
+                    pass
+                else:
+                    if raw.closed:
+                        with self._lock:
+                            self._total -= 1
+                        continue
+                    return raw
             with self._lock:
                 if self._closed:
                     raise RuntimeError(
@@ -512,6 +520,8 @@ class PostgresDatabase(RelationalDatabase):
                     with self._lock:
                         self._total -= 1
                     raise
+            with self._lock:
+                self._waiters += 1
             try:
                 raw = self._idle.get(timeout=self._checkout_timeout)
             except queue.Empty:
@@ -546,6 +556,9 @@ class PostgresDatabase(RelationalDatabase):
                     f"(max_size={self._max_size}); all connections are "
                     "checked out",
                 ) from None
+            finally:
+                with self._lock:
+                    self._waiters -= 1
             if raw.closed:
                 with self._lock:
                     self._total -= 1

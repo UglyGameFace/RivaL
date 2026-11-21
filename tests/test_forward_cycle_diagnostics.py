@@ -122,7 +122,7 @@ async def test_mobile_accuracy_engine_exposes_measured_blocker_not_stale_guess(t
         seed(market, now=datetime.now(UTC), bars=42, late_backfill=True)
         ForwardAccuracyMonitor(market).run_once()
         view = ResearchDashboard(
-            owner_id=42, market=market, ai=None,
+            owner_id=42, market=market,
             venues=("hyperliquid",), shadow_enabled=True,
         )
         view.screen = "accuracy"

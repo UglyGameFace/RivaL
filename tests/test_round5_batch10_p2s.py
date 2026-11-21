@@ -78,7 +78,7 @@ def test_legacy_quote_profit_observer_covers_xrp():
 
 # --- (iv) Gemini label/column/log-string cleanup ------------------------------
 
-def test_analytics_payload_key_is_historical_external_ai_not_gemini(tmp_path):
+def test_analytics_payload_has_no_external_ai_key(tmp_path):
     from parlay_bot.perpetuals.analytics import analytics_snapshot
     from parlay_bot.perpetuals.market_store import PerpetualMarketStore
     from parlay_bot.storage.hot import SQLiteHotStore
@@ -90,7 +90,7 @@ def test_analytics_payload_key_is_historical_external_ai_not_gemini(tmp_path):
     finally:
         store.close()
     assert "gemini" not in report
-    assert report["historical_external_ai"]["directional_accuracy"] is None
+    assert "historical_external_ai" not in report
 
 
 def test_retired_gemini_log_strings_are_gone():
@@ -99,8 +99,6 @@ def test_retired_gemini_log_strings_are_gone():
     assert "RivaL automatic Gemini research cycle failed" not in code
     assert "Global Gemini API spacing" not in code
     assert "auto_ai_ok" in code
-    audit = (ROOT / "tools" / "discloud_llm_edge_audit.py").read_text()
-    assert "rival_gemini_auto_enabled" not in audit
 
 
 def test_heartbeat_column_is_auto_ai_ok_on_fresh_database(tmp_path):
@@ -110,7 +108,7 @@ def test_heartbeat_column_is_auto_ai_ok_on_fresh_database(tmp_path):
 
     store = SQLiteHotStore(tmp_path / "fresh.sqlite")
     market = PerpetualMarketStore(store)
-    system = AutonomousResearch(market, ai=None, venues=())
+    system = AutonomousResearch(market, venues=())
     try:
         system.initialize()
         with store.connect() as conn:
@@ -150,7 +148,7 @@ def test_heartbeat_column_renamed_in_place_on_legacy_database(tmp_path):
                 );
                 """
             )
-        system = AutonomousResearch(market, ai=None, venues=())
+        system = AutonomousResearch(market, venues=())
         system.initialize()
         with store.connect() as conn:
             columns = store.database.column_names(conn, "perp_learning_cycle_health")

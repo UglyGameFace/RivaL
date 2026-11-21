@@ -291,7 +291,7 @@ async def test_progress_section_renders_the_proof_card(monkeypatch):
     from tests.test_audit_step1_card_quick_fixes import _FakeRegimeMonitor
     monkeypatch.setattr(rd_module, "ForwardAccuracyMonitor", _FakeRegimeMonitor)
     dashboard = ResearchDashboard(
-        owner_id=42, market=SimpleNamespace(store=object()), ai=None,
+        owner_id=42, market=SimpleNamespace(store=object()),
         venues=("hyperliquid",),
     )
     dashboard.shadow_enabled = True
@@ -359,7 +359,7 @@ async def test_lineage_section_renders_the_lineage_card(monkeypatch):
 
     monkeypatch.setattr(rd_module, "ForwardAccuracyMonitor", _FakeMonitor)
     dashboard = ResearchDashboard(
-        owner_id=42, market=SimpleNamespace(store=object()), ai=None,
+        owner_id=42, market=SimpleNamespace(store=object()),
         venues=("hyperliquid",),
     )
     dashboard.shadow_enabled = True

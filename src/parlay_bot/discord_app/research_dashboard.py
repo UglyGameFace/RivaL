@@ -23,7 +23,6 @@ from parlay_bot.discord_app.answer_cards import (
 from parlay_bot.discord_app.home import fit_embed_field_value, rate_or_too_few
 from parlay_bot.discord_app.opportunities import crypto_desk_embed
 from parlay_bot.discord_app.patient_render import patient, still_loading
-from parlay_bot.perpetuals.ai_types import AiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 from parlay_bot.perpetuals.analytics import analytics_snapshot
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
@@ -36,11 +35,6 @@ from parlay_bot.perpetuals.forward_tracking import (
 )
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
-from parlay_bot.perpetuals.local_first_research import (
-    EVIDENCE_MODEL,
-    LOCAL_MODEL,
-    LocalFirstResearch,
-)
 from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.polymarket_history import (
@@ -81,7 +75,6 @@ _SECTIONS = {
         ("spikes", "Spikes & volume"),
         ("history", "Data health (technical)"),
         ("recovery", "Backfill progress (technical)"),
-        ("ai", "AI Review"),
     ),
     # Cleanup (Nov 11): Bot Performance is the summary; Results holds the
     # deep dives. "At a glance" repeated Performance and is gone (an old
@@ -93,11 +86,6 @@ _SECTIONS = {
         ("accuracy", "Accuracy details"),
         ("running", "Running details"),
         ("technical", "Technical evidence"),
-    ),
-    "ai": (
-        ("overview", "Overview"),
-        ("limits", "Intelligence status"),
-        ("analysis", "AI assessment"),
     ),
 }
 # Audit Step 3 (2026-11-10): the accuracy ("Results") screen lists 5
@@ -151,8 +139,6 @@ def _resolve_section(screen: str, section: str) -> str:
 # view still finds a field built by older code paths or tests.
 _FIELD_GROUPS = {
     "math": {
-        "ai": ("AI research · UNCALIBRATED", "Analysis status",
-               "Private LFM3 Intelligence", "Intelligence status"),
         "fair": ("Is the Polymarket price fair?",),
         "pulse": ("Current market pulse",),
         "spikes": ("Spike watch analytics", "Recent spike events"),
@@ -207,21 +193,9 @@ _FIELD_GROUPS = {
                    "Automatic shadow evaluation"),
         "money": ("Execution cost verification", "How accuracy is audited"),
     },
-    "ai": {
-        "limits": ("Private LFM3 Intelligence", "Intelligence status"),
-        "analysis": ("AI research · UNCALIBRATED", "Analysis status"),
-    },
 }
 
 
-
-def _answered_by(model: str) -> str:
-    """Which model actually produced the shown answer (not the configured one)."""
-    if model == LOCAL_MODEL:
-        return "RivaL Intelligence (LFM3 AI)"
-    if model == EVIDENCE_MODEL:
-        return "basic evidence summary (the AI was unavailable)"
-    return discord.utils.escape_markdown(str(model))[:80]
 
 class _SectionSelect(discord.ui.Select["ResearchDashboard"]):
     def __init__(self, screen: str, section: str) -> None:
@@ -394,7 +368,6 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str,
         description={
             "math": "What really happened on past contracts. Not a prediction or a trade signal.",
             "accuracy": "Predictions checked against what really happened. Profit is not yet proven.",
-            "ai": "Read-only AI research on source-verified market data.",
         }[screen] + f"\n**{label}** · Choose a section below for details.",
         color=full.color,
     )
@@ -577,7 +550,6 @@ class _AssetSelect(discord.ui.Select["ResearchDashboard"]):
         assert self.view is not None
         dashboard = self.view
         dashboard.asset = self.values[0]
-        dashboard.opinion = None
         dashboard.model = None
         dashboard.compare = []
         dashboard.message = None
@@ -796,9 +768,9 @@ class _ScreenButton(discord.ui.Button["ResearchDashboard"]):
     def __init__(self, screen: str) -> None:
         super().__init__(
             label={"opportunities": "Opportunities", "math": "Math & History",
-                   "ai": "AI Review", "accuracy": "Results"}[screen],
+                   "accuracy": "Results"}[screen],
             emoji={"opportunities": "🎯", "math": "📐",
-                   "ai": "✨", "accuracy": "📊"}[screen],
+                   "accuracy": "📊"}[screen],
             style=discord.ButtonStyle.primary,
             custom_id=f"rival:research:{screen}", row=0,
         )
@@ -862,44 +834,6 @@ class _QuickTargetButton(discord.ui.Button["ResearchDashboard"]):
             ok, message = False, "Could not start monitoring. Try /rival → Advanced → Manual Price Target."
         await interaction.followup.send(
             ("✅ " if ok else "⛔ ") + message, ephemeral=True,
-        )
-
-
-class _AskButton(discord.ui.Button["ResearchDashboard"]):
-    def __init__(self, enabled: bool) -> None:
-        super().__init__(
-            label="Analyze current data", emoji="🧠",
-            style=discord.ButtonStyle.primary,
-            custom_id="rival:research:analyze", row=2, disabled=not enabled,
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        # clear_items() in _rebuild() detaches this button from its View.
-        # Hold the owning View before awaiting or rebuilding; self.view becomes
-        # None after detachment and must not be consulted again.
-        dashboard = self.view
-        assert dashboard is not None
-        await interaction.response.defer()
-        dashboard.screen = "math"
-        dashboard.section = "ai"
-        dashboard.detail = None
-        dashboard.message = None
-        dashboard.opinion = None
-        try:
-            if dashboard.ai is None:
-                raise ResearchUnavailable("AI review is unavailable.")
-            dashboard.opinion = await dashboard.ai.ask(
-                asset=dashboard.asset, venues=dashboard.venues,
-                requester_id=interaction.user.id,
-            )
-        except (ResearchUnavailable, InsufficientEvidence) as exc:
-            dashboard.message = str(exc)
-        except Exception:  # noqa: BLE001 - don't leak API keys/database DSNs
-            _LOG.exception("RivaL research analysis failed")
-            dashboard.message = "Analysis unavailable. No prediction produced."
-        dashboard._rebuild()
-        await interaction.edit_original_response(
-            embed=await dashboard.render(), view=dashboard,
         )
 
 
@@ -1033,7 +967,6 @@ def _regime_line(family: str, horizon: int, proof: dict) -> str:
 class ResearchDashboard(discord.ui.View):
     def __init__(
         self, *, owner_id: int, market: PerpetualMarketStore | None,
-        ai: LocalFirstResearch | None,
         venues: tuple[str, ...],
         shadow_enabled: bool = False,
         target_service: DirectionTargetService | None = None,
@@ -1042,7 +975,6 @@ class ResearchDashboard(discord.ui.View):
         super().__init__(timeout=900)
         self.owner_id = owner_id
         self.market = market
-        self.ai = ai
         self.venues = venues
         self.shadow_enabled = shadow_enabled
         self.target_service = target_service
@@ -1063,7 +995,6 @@ class ResearchDashboard(discord.ui.View):
         self.selected_venue = venues[0] if venues else ""
         # Track Next defaults to Polymarket: that is where users place bets.
         self.track_platform = "polymarket"
-        self.opinion: AiResearch | None = None
         self.message: str | None = None
         # Six-month inventory is an expensive historical aggregate. Cache it
         # briefly per asset; ALWAYS read live source health and market pulse
@@ -1105,6 +1036,13 @@ class ResearchDashboard(discord.ui.View):
             self.screen = "accuracy"
             self.section = "better"
             self.detail = "shadow"
+        if self.screen == "ai" or (self.screen == "math" and self.section == "ai"):
+            # The AI Review screen/section was retired with the
+            # RivaL-Intelligence service; a stale view lands on the
+            # Math overview instead of a dead section.
+            self.screen = "math"
+            self.section = "overview"
+            self.detail = None
 
     def _rebuild(self) -> None:
         self._apply_merged_redirects()
@@ -1157,9 +1095,6 @@ class ResearchDashboard(discord.ui.View):
                or (self.screen == "math" and self.section == "history"))
                 and self.venues):
             self.add_item(_VenueSelect(self.venues, self.selected_venue))
-        if self.screen == "ai" or (self.screen == "math" and self.section == "ai"):
-            enabled = self.market is not None and self.ai is not None and self.ai.available
-            self.add_item(_AskButton(enabled))
 
     MODEL_CACHE_SECONDS = 600
 
@@ -1574,7 +1509,7 @@ class ResearchDashboard(discord.ui.View):
                     embed.add_field(name="Polymarket results",
                                     value="Settled Polymarket results could not be read.",
                                     inline=False)
-        if self.screen == "math" and self.section != "ai":
+        if self.screen == "math":
             if self.section == "history" and self.market is not None:
                 try:
                     state = await asyncio.to_thread(self._native_month_status)
@@ -2361,7 +2296,7 @@ class ResearchDashboard(discord.ui.View):
                     try:
                         latest = await asyncio.to_thread(
                             AutonomousResearch(
-                                self.market, ai=None, venues=self.venues,
+                                self.market, venues=self.venues,
                             ).learning_heartbeat,
                         )
                         if latest is None:
@@ -2834,29 +2769,6 @@ class ResearchDashboard(discord.ui.View):
                                             horizon, reliability, calibration_raw)),
                                     inline=False,
                                 )
-                            ai_status = details["historical_external_ai"]
-                            quality = (
-                                rate_or_too_few(
-                                    int(ai_status["decided"] or 0),
-                                    f"{ai_status['directional_accuracy'] * 100:.1f}%",
-                                    what="decided")
-                                if ai_status["directional_accuracy"] is not None
-                                else "not measurable"
-                            )
-                            embed.add_field(
-                                name="Historical external AI · forward outcomes",
-                                value=fit_embed_field_value(
-                                    f"Issued **{ai_status['issued']}**, "
-                                    f"settled **{ai_status['settled']}**, "
-                                    f"directional decisions **{ai_status['decided']}**, "
-                                    f"uncertain/abstain **{ai_status['abstained']}**.\n"
-                                    f"Observed hit rate **{quality}**. "
-                                    "Self-reported confidence is NOT calibrated. "
-                                    "Source health and provider availability may "
-                                    "cause skipped cycles."
-                                ),
-                                inline=False,
-                            )
                         if "method" in topics or single:
                             embed.add_field(
                                 name="How accuracy is audited",
@@ -2882,85 +2794,10 @@ class ResearchDashboard(discord.ui.View):
             )
             return embed
 
-        embed.add_field(
-            name="AI evidence",
-            value=(
-                "The optional AI reviewer reads **all healthy exchanges**, "
-                "for a **5-minute forecast**, with available 5m, 15m, "
-                "1h, 4h and 24h returns and volatility "
-                "features. Unavailable sources are excluded and disclosed."
-            ), inline=False,
-        )
-        if self.ai is not None:
-            try:
-                state = await self.ai.request_status()
-                configured = bool(state["ready"])
-                usage = (
-                    f"{state['requests_today']}/{state['rival_daily_limit']} requests today"
-                    if state['rival_daily_limit'] else
-                    f"{state['requests_today']} requests today; no daily cap"
-                )
-                embed.add_field(
-                    name="Private LFM3 Intelligence",
-                    value=fit_embed_field_value(
-                        f"Model: **{discord.utils.escape_markdown(state['model'])}**\n"
-                        + (
-                            "Configured for on-demand inference. **No paid tokens "
-                            "or external fallback.**\n"
-                            f"Local LFM3 usage: **{usage}**, "
-                            "60 s minimum spacing, 3 per requester per day. "
-                            "Background loops run only with operator opt-in.\n"
-                            "The inference service queues/limits CPU work. "
-                            "Live host readiness is not checked on this screen."
-                            if configured else
-                            "Private RIVAL_LOCAL_AI_TOKEN is not configured. "
-                            "AI research is unavailable; mathematical learning continues."
-                        )
-                    ),
-                    inline=False,
-                )
-            except Exception:  # noqa: BLE001
-                _LOG.warning("RivaL private Intelligence status unavailable")
-                embed.add_field(
-                    name="Intelligence status",
-                    value="Local AI configuration could not be read. No inference requested.",
-                    inline=False,
-                )
-        if self.opinion is not None and self.opinion.asset == self.asset:
-            answer = self.opinion
-            embed.add_field(
-                name="AI research · UNCALIBRATED",
-                value=fit_embed_field_value(
-                    f"Direction: **{answer.direction.title()}** · "
-                    f"{answer.confidence} self-reported confidence\n"
-                    f"Feeds: {answer.source_count} · "
-                    f"{'Database cache' if answer.from_cache else 'New response'}\n"
-                    f"Answered by: **{_answered_by(answer.model)}**\n"
-                    f"Reason: {discord.utils.escape_mentions(answer.thesis)}\n"
-                    f"Risk: {discord.utils.escape_mentions(answer.risk)}"
-                ), inline=False,
-            )
-        else:
-            embed.add_field(
-                name="Analysis status",
-                value=(
-                    self.message or (
-                        f"AI reviewer **{self.ai.model}** is configured for "
-                        "on-demand, cached analysis."
-                        if self.ai is not None and self.ai.available else
-                        "No AI reviewer key is visible to this RivaL process."
-                    )
-                ), inline=False,
-            )
-        embed.set_footer(
-            text="New candles invalidate cached evidence • Daily DB quota • Not financial advice"
-        )
-        return embed
-
     def _display_generation(self) -> ResearchDashboard:
         """Build new buttons without detaching the controls currently on Discord."""
         fresh = ResearchDashboard(
-            owner_id=self.owner_id, market=self.market, ai=self.ai,
+            owner_id=self.owner_id, market=self.market,
             venues=self.venues, shadow_enabled=self.shadow_enabled,
             target_service=self.target_service, watch_service=self.watch_service,
         )
@@ -2973,7 +2810,6 @@ class ResearchDashboard(discord.ui.View):
         fresh._model_cache = self._model_cache
         fresh.selected_venue = self.selected_venue
         fresh.track_platform = self.track_platform
-        fresh.opinion = self.opinion
         fresh.message = self.message
         fresh._history_cache = self._history_cache
         fresh._navigation_state = self._navigation_state

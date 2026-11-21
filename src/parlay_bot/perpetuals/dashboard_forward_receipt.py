@@ -92,7 +92,7 @@ def read_forward_calls(store, now: datetime) -> dict:
     next-target readiness per scope without pretending to be the full
     ledger. The receipt as a whole stays under the collector's 80KB cap
     only with the Delivery 4 section budget (20 RivaL PRs, 12 runs,
-    8 Intelligence PRs/runs, 80-char gate failures); a longer history
+    80-char gate failures); a longer history
     needs a separate history endpoint, not a bigger receipt. A missing
     table, invalid source, or database failure remains unavailable,
     never an observed zero. Connection is read-only at the application layer:

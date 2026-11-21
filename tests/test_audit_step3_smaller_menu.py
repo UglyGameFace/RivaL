@@ -80,7 +80,7 @@ def test_accuracy_menu_lists_five_sections_plus_technical():
         "technical": "Technical evidence",
     }
     dashboard = ResearchDashboard(
-        owner_id=42, market=None, ai=None, venues=("hyperliquid",),
+        owner_id=42, market=None, venues=("hyperliquid",),
     )
     try:
         dashboard.screen = "accuracy"
@@ -135,7 +135,7 @@ async def test_stale_section_assignment_lands_on_the_consolidated_card(monkeypat
 @pytest.mark.asyncio
 async def test_consolidated_cards_show_headline_answers_not_other_topics(monkeypatch):
     dashboard = ResearchDashboard(
-        owner_id=42, market=None, ai=None, venues=("hyperliquid",),
+        owner_id=42, market=None, venues=("hyperliquid",),
     )
     dashboard.screen = "accuracy"
     dashboard._rebuild()
@@ -172,7 +172,7 @@ async def test_consolidated_cards_show_headline_answers_not_other_topics(monkeyp
 
 def test_each_consolidated_card_has_one_detail_button_per_topic():
     dashboard = ResearchDashboard(
-        owner_id=42, market=None, ai=None, venues=("hyperliquid",),
+        owner_id=42, market=None, venues=("hyperliquid",),
     )
     try:
         dashboard.screen = "accuracy"
@@ -202,7 +202,7 @@ def test_each_consolidated_card_has_one_detail_button_per_topic():
 @pytest.mark.asyncio
 async def test_detail_button_opens_its_topic_and_back_returns(monkeypatch):
     dashboard = ResearchDashboard(
-        owner_id=42, market=None, ai=None, venues=("hyperliquid",),
+        owner_id=42, market=None, venues=("hyperliquid",),
     )
     dashboard.screen = "accuracy"
     dashboard.section = "accuracy"
@@ -238,7 +238,7 @@ async def test_detail_button_opens_its_topic_and_back_returns(monkeypatch):
 @pytest.mark.asyncio
 async def test_section_select_clears_the_open_detail(monkeypatch):
     dashboard = ResearchDashboard(
-        owner_id=42, market=None, ai=None, venues=("hyperliquid",),
+        owner_id=42, market=None, venues=("hyperliquid",),
     )
     dashboard.screen = "accuracy"
     dashboard.section = "better"
@@ -256,7 +256,7 @@ async def test_section_select_clears_the_open_detail(monkeypatch):
 
 def test_stale_detail_topic_from_another_section_is_ignored():
     dashboard = ResearchDashboard(
-        owner_id=42, market=None, ai=None, venues=("hyperliquid",),
+        owner_id=42, market=None, venues=("hyperliquid",),
     )
     try:
         dashboard.screen = "accuracy"

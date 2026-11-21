@@ -294,7 +294,7 @@ def test_explicit_sqlite_backend_remains_available_for_local_tests(tmp_path) -> 
 async def test_opportunities_are_default_not_history_on_research_view(tmp_path) -> None:
     from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 
-    view = ResearchDashboard(owner_id=123, market=None, ai=None, venues=())
+    view = ResearchDashboard(owner_id=123, market=None, venues=())
     assert view.screen == "opportunities"
     assert view.section == "overview"
     buttons = {getattr(item, "custom_id", "") for item in view.children}

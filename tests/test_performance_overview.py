@@ -307,7 +307,7 @@ async def test_polymarket_contest_table_shows_only_when_scores_exist(tmp_path, m
 async def test_persisted_learning_heartbeat_is_read_without_model_registry(tmp_path):
     bot = _client(tmp_path)
     market = PerpetualMarketStore(bot.store)
-    autonomous = AutonomousResearch(market, ai=None, venues=())
+    autonomous = AutonomousResearch(market, venues=())
     try:
         assert await autonomous.cycle() == (0, 0, 0)
         heartbeat = home_module._latest_learning_cycle(market)

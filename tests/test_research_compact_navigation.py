@@ -56,7 +56,7 @@ def expanded_report() -> discord.Embed:
     return old
 
 
-@pytest.mark.parametrize("screen", ["math", "ai", "accuracy"])
+@pytest.mark.parametrize("screen", ["math", "accuracy"])
 def test_no_research_screen_turns_into_an_entire_grocery_list(screen):
     old = expanded_report()
     for section, _ in _SECTIONS[screen]:
@@ -99,7 +99,7 @@ async def test_math_polymarket_section_is_a_pointer_to_bot_performance():
     # deep link lands on; the duplicate render is gone, and the removed
     # "Is RivaL learning?" section no longer appears in the selector.
     dashboard = ResearchDashboard(
-        owner_id=42, market=None, ai=None, venues=("hyperliquid",),
+        owner_id=42, market=None, venues=("hyperliquid",),
     )
     try:
         dashboard.screen = "math"
@@ -143,7 +143,7 @@ def control(view: ResearchDashboard, key: str):
 @pytest.mark.asyncio
 async def test_real_section_selector_and_tab_buttons_are_clickable(monkeypatch):
     view = ResearchDashboard(
-        owner_id=42, market=None, ai=None,
+        owner_id=42, market=None,
         venues=("hyperliquid", "dydx", "gate"),
     )
 
@@ -205,7 +205,7 @@ async def test_real_section_selector_and_tab_buttons_are_clickable(monkeypatch):
 @pytest.mark.asyncio
 async def test_database_error_surfaces_brief_unavailable_state(monkeypatch):
     dashboard = ResearchDashboard(
-        owner_id=42, market=None, ai=None, venues=(),
+        owner_id=42, market=None, venues=(),
     )
     dashboard.screen = "math"
     dashboard._rebuild()
@@ -225,9 +225,9 @@ async def test_database_error_surfaces_brief_unavailable_state(monkeypatch):
         dashboard.stop()
 
 
-def test_research_menu_consolidates_legacy_ai_and_keeps_all_four_assets():
+def test_research_menu_redirects_legacy_ai_and_keeps_all_four_assets():
     dashboard = ResearchDashboard(
-        owner_id=42, market=None, ai=None,
+        owner_id=42, market=None,
         venues=("hyperliquid", "okx", "gate"),
     )
     try:
@@ -251,8 +251,10 @@ def test_research_menu_consolidates_legacy_ai_and_keeps_all_four_assets():
         dashboard.screen = "math"
         dashboard.section = "ai"
         dashboard._rebuild()
-        assert control(dashboard, "rival:research:analyze").disabled
-        assert "AI Review" in [label for _, label in _SECTIONS["math"]]
+        # The retired AI section redirects to the Math overview; no
+        # AI Review section remains in the Math screen.
+        assert dashboard.section == "overview"
+        assert "AI Review" not in [label for _, label in _SECTIONS["math"]]
         assert not any(label == "Gemini results" for _, label in _SECTIONS["accuracy"])
         assert control(dashboard, "rival:research:section").row == 3
     finally:
@@ -260,32 +262,6 @@ def test_research_menu_consolidates_legacy_ai_and_keeps_all_four_assets():
 
 
 @pytest.mark.asyncio
-async def test_ai_review_is_reachable_inside_math_without_old_ai_tab(monkeypatch):
-    dashboard = ResearchDashboard(
-        owner_id=42, market=None, ai=None, venues=(),
-    )
-    dashboard.screen, dashboard.section = "math", "ai"
-    dashboard._rebuild()
-
-    async def detail():
-        embed = discord.Embed(title="RivaL Intelligence")
-        embed.add_field(name="Live collection status",
-                        value="No feed evidence", inline=False)
-        embed.add_field(name="Analysis status",
-                        value="Private AI reviewer not configured", inline=False)
-        return embed
-
-    monkeypatch.setattr(dashboard, "_render_full", detail)
-    try:
-        shown = await dashboard.render()
-        assert "AI Review" in shown.description
-        assert "Private AI reviewer not configured" in shown.fields[-1].value
-        assert "Gemini" not in str(shown.to_dict())
-        assert len(shown.fields) <= 3
-    finally:
-        dashboard.stop()
-
-
 def test_historical_learning_is_explained_without_claiming_improvement():
     proof = {
         "forecasts": 100,

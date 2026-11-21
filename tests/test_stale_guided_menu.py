@@ -90,7 +90,6 @@ def _guided_custom_ids(bot):
         assert {
             "rival:guided:cdna-auto",
             "rival:guided:cdna-quote",
-            "rival:guided:dk-independent-ai",
         } <= found
         # Discord does not route items with no explicit custom_id across
         # a restart; those are not persistent fallback IDs.

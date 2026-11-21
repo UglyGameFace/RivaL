@@ -31,12 +31,13 @@ async function main(){
   const signature=await webcrypto.subtle.sign('RSASSA-PKCS1-v1_5',keys.privateKey,new TextEncoder().encode(message));
   return message+'.'+Buffer.from(signature).toString('base64url');
  };
- const issued=new Date(Date.now()-120000).toISOString();
- const target=new Date(Date.now()+180000).toISOString();
- const opened=new Date(Date.now()-120000).toISOString();
- const oldTarget=new Date(Date.now()-120000).toISOString();
- const oldOpened=new Date(Date.now()-420000).toISOString();
- const olderIssue=new Date(Date.now()-300000).toISOString();
+ const base=Date.now();
+ const issued=new Date(base-120000).toISOString();
+ const target=new Date(base+180000).toISOString();
+ const opened=new Date(base-120000).toISOString();
+ const oldTarget=new Date(base-120000).toISOString();
+ const oldOpened=new Date(base-420000).toISOString();
+ const olderIssue=new Date(base-300000).toISOString();
  const payload={schema_version:1,captured_at:now,
   collection:{event:'schedule',run_id:'123456789',run_attempt:1,
    attempted_at:new Date(Date.now()-60000).toISOString(),coalesced:false,

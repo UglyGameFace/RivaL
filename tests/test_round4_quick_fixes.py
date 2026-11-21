@@ -1,30 +1,8 @@
 """Round-4 audit quick fixes: each one pinned by a behavioural test."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from parlay_bot.discord_app import auto_hunt
 from parlay_bot.discord_app.status_card import STARTUP_GRACE, STREAM_STARTUP_GRACE, plain
-from parlay_bot.perpetuals.market_store import PerpetualMarketStore
-from parlay_bot.storage.hot import SQLiteHotStore
-
-
-def test_xrp_ai_research_can_be_saved_and_read_back(tmp_path):
-    store = SQLiteHotStore(tmp_path / "xrp.sqlite")
-    market = PerpetualMarketStore(store)
-    try:
-        market.initialize()
-        now = datetime(2026, 11, 5, 23, 0, tzinfo=UTC)
-        market.save_ai_research(
-            asset="XRP", model="LiquidAI/LFM3-1.7B-GGUF:Q4_K_M", evidence_sha256="b" * 64,
-            issued_at=now, direction="uncertain", confidence="low",
-            thesis="Mixed venue returns.", risk="Thin depth.", source_count=3,
-        )
-        assert market.cached_ai_research(
-            asset="XRP", model="LiquidAI/LFM3-1.7B-GGUF:Q4_K_M", evidence_sha256="b" * 64,
-        ) is not None
-    finally:
-        store.close()
 
 
 def test_auto_hunt_alerts_are_off_unless_explicitly_enabled():

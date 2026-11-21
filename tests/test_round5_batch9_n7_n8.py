@@ -11,8 +11,6 @@ and rejects a Qwen profile.
 from __future__ import annotations
 
 import json
-import runpy
-import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -33,7 +31,6 @@ from parlay_bot.research.sports_results import (
 from parlay_bot.storage.hot import SQLiteHotStore
 
 ROOT = Path(__file__).resolve().parents[1]
-LLM_ROOT = ROOT / "services" / "rival-llm"
 
 
 # --- shared crypto seed scaffolding (mirrors test_rival_signal_decisions) ---
@@ -290,30 +287,3 @@ def test_sports_model_docstring_discloses_odds_not_an_input():
 
 
 # --- (iii) Qwen is gone from the catalog ---
-
-def _load_service():
-    sys.path.insert(0, str(LLM_ROOT))
-    sys.path.insert(0, str(ROOT / "src" / "parlay_bot" / "perpetuals"))
-    return runpy.run_path(str(LLM_ROOT / "service.py"))
-
-
-def test_llm_catalog_is_lfm3_only():
-    service = _load_service()
-    assert service["MODEL_CATALOG"] == {
-        "lfm3": ("LiquidAI/LFM3-1.7B-GGUF", "LFM3-1.7B-Q4_K_M.gguf"),
-    }
-    assert "qwen" not in (LLM_ROOT / "service.py").read_text().lower()
-
-
-def test_llm_gateway_rejects_qwen_profile():
-    service = _load_service()
-    with pytest.raises(ValueError, match="Unrecognized model profile"):
-        service["Gateway"](
-            "127.0.0.1", 0, token="<redacted>" * 48, model="qwen2b",
-        )
-
-
-def test_benchmark_no_longer_claims_a_qwen_comparison():
-    text = (LLM_ROOT / "benchmark.py").read_text()
-    assert "LFM3 vs Qwen" not in text
-    assert "was never run" in text

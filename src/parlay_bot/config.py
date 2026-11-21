@@ -88,20 +88,6 @@ class Settings(BaseSettings):
 
     # Low-cost local research; never auto-promotes models or places orders.
     rival_shadow_learning_enabled: bool = Field(default=True)
-    # One private, research-only feature suggestion every six hours at most.
-    # Requires the already-configured RIVAL_AI_PROVIDER=local and shared token.
-    # Default off since the 2026-11-19 price-first pivot: the hypothesis lab
-    # is not constructed, so no new LLM feature-mask experiments can be
-    # created even if the background opt-in below were flipped later.
-    rival_llm_hypotheses_enabled: bool = Field(default=False)
-    # Private CPU capacity, not third-party billing. Zero removes the obsolete
-    # default 18/day cap; explicit positive operator caps remain supported.
-    # Atomic 60 s spacing and the backend circuit breaker remain authoritative.
-    rival_llm_daily_max: int = Field(default=0, ge=0)
-    # Automatic LLM loops (_intelligence_loop, _hypothesis_loop) run only
-    # when Felix opts in. User-initiated asks still reserve quota but do
-    # not need the opt-in.
-    rival_llm_background_opt_in: bool = Field(default=False)
     # Deterministic research reconciliation uses Drive and never calls the LLM.
     rival_research_loop_enabled: bool = Field(default=True)
     # Price-first pivot (2026-11-19): stop feeding directional trials. The
@@ -113,11 +99,6 @@ class Settings(BaseSettings):
     # scheduled variants while this is off.
     rival_scheduled_variants_enabled: bool = Field(default=False)
     rival_shadow_eval_seconds: int = Field(default=3600, ge=900, le=21600)
-
-    # Sole private RivaL Intelligence provider. Old environment strings are
-    # accepted and ignored by the bot; they never activate external providers.
-    rival_ai_provider: str = Field(default="local")
-    rival_local_ai_token: SecretStr | None = Field(default=None)
 
     # Private bot: only these Discord user IDs (comma-separated) may use it.
     # Empty = the application's owner (or team members) from Discord.

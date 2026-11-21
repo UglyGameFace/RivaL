@@ -117,7 +117,7 @@ async def test_private_accuracy_calibration_page_reads_real_forward_rows(tmp_pat
                         ),
                     )
         view = ResearchDashboard(
-            owner_id=42, market=market, ai=None,
+            owner_id=42, market=market,
             venues=("hyperliquid",), shadow_enabled=True,
         )
         try:

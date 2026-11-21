@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "counts = database counts; render = text of every Research page; trials = trial table, best per timeframe and Model Lab vs the ledger; logs / intelligence-logs = bot or RivaL-Intelligence console lines"
+        description: "counts = database counts; render = text of every Research page; trials = trial table, best per timeframe and Model Lab vs the ledger; logs = bot console lines"
         type: choice
-        options: [counts, render, trials, logs, intelligence-logs]
+        options: [counts, render, trials, logs]
         default: counts
       since:
         description: "counts mode: only measure issue timing from this ISO time (UTC)"
@@ -33,7 +33,6 @@ jobs:
           SINCE: ${{ inputs.since }}
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
-          DISCLOUD_LLM_APP_ID: ${{ secrets.DISCLOUD_LLM_APP_ID }}
         run: |
           python3 - <<'PY'
           import base64, gzip, json, os, pathlib
@@ -86,13 +85,6 @@ jobs:
                   if marker in str(shell.get("stdout", "")):
                       return shell
               return {"stdout": "", "stderr": f"no result after 30 min ({tag})"}
-          if os.environ["MODE"] in ("logs", "intelligence-logs"):
-              # intelligence-logs reads the separate RivaL-Intelligence app.
-              if os.environ["MODE"] == "intelligence-logs":
-                  if not os.environ.get("DISCLOUD_LLM_APP_ID"):
-                      raise SystemExit("DISCLOUD_LLM_APP_ID secret is not set")
-                  os.environ["DISCLOUD_APP_ID"] = os.environ["DISCLOUD_LLM_APP_ID"]
-                  os.environ["MODE"] = "logs"
           if os.environ["MODE"] == "logs":
               import re
               req = request.Request(

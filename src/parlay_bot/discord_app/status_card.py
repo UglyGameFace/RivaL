@@ -55,12 +55,6 @@ class StatusFacts:
     problem_totals: dict = field(default_factory=dict)
     # Prediction health: [(stable key, text)]; None = not checked.
     research: list | None = None
-    # Whether the Intelligence review check (check 4 in research_alerts)
-    # actually ran. False when the Intelligence background task was never
-    # created (background opt-in off): an empty research list then proves
-    # only the other three checks, and the card must not claim a review.
-    # Default True keeps every existing constructor meaning "check 4 ran".
-    intelligence_checked: bool = True
     watchdog_checked_at: str | None = None
     watchdog_expected: bool = False
 
@@ -355,17 +349,11 @@ def _sub(lines) -> list[str]:
 
 
 def _predictions_line(facts: StatusFacts) -> str:
-    """One line that claims only what research_alerts' checks actually proved.
-
-    Check 4 (a fresh RivaL Intelligence review) is claimed only when it ran;
-    otherwise the reviews are said to be off, never given an invented time.
-    """
-    review = ("AI reviewed within the last 2 hours" if facts.intelligence_checked
-              else "AI reviews off (background opt-in off)")
+    """One line that claims only what research_alerts' checks actually proved."""
     return ("✅ **Predictions:** new ones in the last 20 min · 6-year model passed its "
             "gates and covers the last finished month · no in-use 6-year version "
             "significantly worse than the base-rate forecast over 3 days (needs 300+ graded "
-            f"results for a verdict) · {review}")
+            "results for a verdict)")
 
 
 def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]]:
@@ -536,8 +524,6 @@ def _plain(text: str) -> str:
     if "perp collection failed" in low:
         asset = _field(t, "asset")
         return f"{venue or 'An exchange'}{'/' + asset if asset else ''}: couldn't get prices this time"
-    if "intelligence review failed" in low:
-        return "RivaL Intelligence couldn't finish a review"
     if low.startswith("guided render timed out"):
         return "A /rival menu took too long to load"
     if "timeout" in low or "timed out" in low:

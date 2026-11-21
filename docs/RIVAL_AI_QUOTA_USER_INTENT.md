@@ -1,3 +1,0 @@
-# Retired external AI provider documentation
-
-Gemini, OpenRouter and Cloudflare inference routes were retired from RivaL. This document describes historical integrations only and is no longer operational guidance. Previously issued outcomes retain their provenance. The shared local capacity tables enforce 60 s spacing, 3 requests per requester per day and backend quarantine. Since November 12 the private LFM3 daily cap defaults to zero (unlimited); explicit positive operator limits remain supported. Background loops require opt-in. See [local-only Intelligence](RIVAL_INTELLIGENCE_LOCAL_ONLY.md).

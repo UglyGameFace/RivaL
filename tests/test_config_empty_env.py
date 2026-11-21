@@ -33,11 +33,6 @@ def test_retired_provider_env_is_ignored_by_settings(monkeypatch):
     monkeypatch.setenv("OPEN_ROUTER_API_KEY", "retired")
     monkeypatch.setenv("RIVAL_GEMINI_AUTO_ENABLED", "true")
     settings = Settings(_env_file=None)
-    assert settings.rival_ai_provider == "openrouter"
     assert not hasattr(settings, "open_router_api_key")
     assert not hasattr(settings, "rival_gemini_auto_enabled")
 
-
-def test_new_install_defaults_to_private_llm(monkeypatch):
-    monkeypatch.delenv("RIVAL_AI_PROVIDER", raising=False)
-    assert Settings(_env_file=None).rival_ai_provider == "local"

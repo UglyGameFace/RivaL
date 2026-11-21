@@ -1,21 +1,19 @@
-"""Bounded LFM3-generated feature hypotheses, never trading signals.
+"""Feature-hypothesis registry, proposal verification and trial records.
 
-The live bot records at most one research attempt per six-hour UTC slot.
-The six-hour rotation visits BTC, ETH, SOL, and XRP every day without using
-the 5-minute prediction worker or treating LLM text as training labels.
+The proposal registry and the deterministic verification/trial machinery
+(shared by the research loop and the offline drivers) live here. The
+LFM3 proposer that created new proposals was retired with the
+RivaL-Intelligence service; existing proposal and trial rows remain
+readable and gradeable through the functions below.
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
 import math
 import re
 from datetime import UTC, datetime, timedelta
-
-from parlay_bot.perpetuals.ai_types import ResearchUnavailable
-from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 
 _LOG = logging.getLogger(__name__)
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
@@ -60,216 +58,6 @@ def validate_proposal(data: object) -> bool:
             for key in ("rationale", "falsification")
         )
     )
-
-
-class FeatureHypothesisLab:
-    """Persistent, CPU-bounded LFM3 experiments independent of issuance."""
-
-    def __init__(self, store, ai, *, venues: tuple[str, ...]):
-        self.store, self.ai, self.venues = store, ai, venues
-        self._initialized = False
-
-    def initialize(self) -> None:
-        if self._initialized:
-            return
-        with self.store.connect() as conn:
-            conn.execute(HYPOTHESES_SCHEMA)
-            if "attempt_count" not in self.store.database.column_names(
-                conn, "rival_llm_feature_hypotheses",
-            ):
-                conn.execute(
-                    "ALTER TABLE rival_llm_feature_hypotheses "
-                    "ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 1"
-                )
-            if "feature_indices_json" not in self.store.database.column_names(
-                conn, "rival_llm_feature_hypotheses",
-            ):
-                conn.execute(
-                    "ALTER TABLE rival_llm_feature_hypotheses "
-                    "ADD COLUMN feature_indices_json TEXT"
-                )
-        self._initialized = True
-
-    def _slot_proposed(self, asset: str, slot: datetime) -> bool:
-        """True when this exact slot already produced a proposal.
-
-        Read before the D16 capacity check: capacity gates NEW
-        proposals, not duplicate polls of a slot that already has one.
-        """
-        with self.store.connect() as conn:
-            row = conn.execute(
-                """SELECT status FROM rival_llm_feature_hypotheses
-                   WHERE asset=? AND slot_utc=?""",
-                (asset, slot.isoformat()),
-            ).fetchone()
-        return bool(row) and row["status"] == "proposed"
-
-    def _claim_slot(self, asset: str, slot: datetime, stamp: datetime) -> bool:
-        with self.store.connect() as conn:
-            claimed = conn.execute(
-                """INSERT INTO rival_llm_feature_hypotheses
-                   (asset,slot_utc,attempted_at,status)
-                   VALUES (?,?,?,?)
-                   ON CONFLICT DO NOTHING""",
-                (asset, slot.isoformat(), stamp.isoformat(), "attempted"),
-            )
-        if claimed.rowcount == 1:
-            return True
-        # A temporary LFM3 outage or unavailable market source should
-        # not lose a whole six-hour slot. Reclaim atomically at most twice,
-        # no sooner than twenty minutes after the previous attempt.
-        cutoff = (stamp - timedelta(minutes=20)).isoformat()
-        with self.store.connect() as conn:
-            retry = conn.execute(
-                """UPDATE rival_llm_feature_hypotheses
-                   SET attempted_at=?,status='attempted',
-                       attempt_count=attempt_count+1
-                   WHERE asset=? AND slot_utc=? AND attempt_count<3
-                     AND attempted_at<=?
-                     AND status IN ('attempted','unavailable',
-                                    'local_research_not_configured')""",
-                (stamp.isoformat(), asset, slot.isoformat(), cutoff),
-            )
-        return retry.rowcount == 1
-
-    def _mark_status(self, asset: str, slot: datetime, status: str) -> None:
-        with self.store.connect() as conn:
-            conn.execute(
-                """UPDATE rival_llm_feature_hypotheses SET status=?
-                   WHERE asset=? AND slot_utc=? AND status='attempted'""",
-                (status, asset, slot.isoformat()),
-            )
-
-    def _store_proposal(
-        self, asset: str, slot: datetime, result: dict, digest: str,
-    ) -> None:
-        with self.store.connect() as conn:
-            conn.execute(
-                """UPDATE rival_llm_feature_hypotheses
-                   SET evidence_sha256=?, model=?, hypothesis=?,
-                       feature_indices_json=?, rationale=?, falsification=?,
-                       source_venues_json=?,record_sha256=?,status='proposed'
-                   WHERE asset=? AND slot_utc=? AND status='attempted'""",
-                (result["evidence_sha256"], MODEL, result["hypothesis"],
-                 json.dumps(result["feature_indices"], separators=(",", ":"))
-                 if result["hypothesis"] == "feature_subset_v2" else None,
-                 result["rationale"].strip(), result["falsification"].strip(),
-                 json.dumps(result["venues"], separators=(",", ":")),
-                 digest, asset, slot.isoformat()),
-            )
-
-    async def run_once(self, *, now: datetime | None = None) -> dict:
-        stamp = now or datetime.now(UTC)
-        if stamp.utcoffset() is None:
-            raise ValueError("UTC time must be timezone aware")
-        stamp = stamp.astimezone(UTC)
-        slot = stamp.replace(hour=stamp.hour // 6 * 6, minute=0,
-                             second=0, microsecond=0)
-        asset = ASSETS[slot.hour // 6]
-        await asyncio.to_thread(self.initialize)
-        # A slot that already produced a proposal reports already_attempted
-        # regardless of pool capacity: D16 gates NEW proposals, not
-        # duplicate polls of a slot that already has one.
-        if await asyncio.to_thread(self._slot_proposed, asset, slot):
-            return {"status": "already_attempted", "asset": asset}
-        # Spec D16: refuse a new LLM proposal while the offline pool
-        # (proposed/ablating/screened) is full. Checked before claiming
-        # the slot and before any LLM call, so a refused attempt burns
-        # neither the 6-hour slot nor the LLM budget. The slot stays
-        # claimable: the next poll retries once capacity frees.
-        from parlay_bot.perpetuals.research_loop import (
-            OFFLINE_POOL_MAX,
-            pool_counts,
-        )
-
-        counts = await asyncio.to_thread(pool_counts, self.store, now=stamp)
-        if counts["offline"] >= OFFLINE_POOL_MAX:
-            return {"status": "capacity_full", "asset": asset,
-                    "offline_open": counts["offline"]}
-        # Database work runs on a worker thread: a slow pool checkout must
-        # never freeze the Discord gateway heartbeat on the event loop.
-        if not await asyncio.to_thread(self._claim_slot, asset, slot, stamp):
-            return {"status": "already_attempted", "asset": asset}
-        if self.ai is None or not self.ai.available:
-            status = "local_research_not_configured"
-            result = None
-        else:
-            try:
-                # What earlier proposals scored on real data, so the next idea
-                # can avoid repeating ones that already failed: 60d trial
-                # summaries plus 90d experiment numeric outcomes (spec §3.2
-                # step 7). Numeric summaries only — the LLM is never told
-                # whether a proposal promoted.
-                from parlay_bot.perpetuals.research_loop import (
-                    prior_trials_context,
-                )
-
-                prior = await asyncio.to_thread(
-                    prior_trials_context, self.store, asset=asset, now=stamp)
-                result = await self.ai.propose_feature_hypothesis(
-                    asset=asset, venues=self.venues,
-                    **({"prior_trials": prior} if prior else {}),
-                )
-                status = "proposed"
-            except (InsufficientEvidence, ResearchUnavailable, ValueError):
-                result, status = None, "unavailable"
-        if result is None:
-            await asyncio.to_thread(self._mark_status, asset, slot, status)
-            return {"status": status, "asset": asset}
-        # All fields and the exact evidence SHA are checked before storage.
-        if (
-            result.get("asset") != asset
-            or result.get("model") != MODEL
-            or result.get("hypothesis") not in HYPOTHESES
-            or (not valid_feature_indices(result.get("feature_indices"))
-                if result.get("hypothesis") == "feature_subset_v2"
-                else result.get("feature_indices") is not None)
-            or not isinstance(result.get("evidence_sha256"), str)
-            or not re.fullmatch(r"[0-9a-f]{64}", result["evidence_sha256"])
-            or not isinstance(result.get("venues"), list)
-            or not all(v in self.venues for v in result["venues"])
-            or not result["venues"]
-            or result.get("research_only") is not True
-            or any(not isinstance(result.get(k), str)
-                   or not 5 <= len(result[k].strip()) <= 120
-                   for k in ("rationale", "falsification"))
-        ):
-            raise ValueError("invalid LFM3 hypothesis receipt")
-        record = {
-            "asset": asset, "slot_utc": slot.isoformat(),
-            "model": MODEL, "evidence_sha256": result["evidence_sha256"],
-            "hypothesis": result["hypothesis"], "venues": result["venues"],
-        }
-        if result["hypothesis"] == "feature_subset_v2":
-            record["feature_indices"] = result["feature_indices"]
-        digest = hashlib.sha256(
-            json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-        await asyncio.to_thread(
-            self._store_proposal, asset, slot, result, digest,
-        )
-        # Batch 2 Phase 3 (spec §3.2 step 1): open the experiment row for
-        # this proposal so the loop can track it through ablation, screen,
-        # shadow, and promotion. The hypotheses-table row stays the
-        # proposal of record; the experiment links it by record SHA.
-        from parlay_bot.perpetuals.research_loop import create_experiment
-
-        await asyncio.to_thread(
-            create_experiment, self.store, proposer="llm",
-            hypothesis=result["hypothesis"],
-            feature_indices=(result["feature_indices"]
-                             if result["hypothesis"] == "feature_subset_v2"
-                             else None),
-            design={"asset": asset, "slot_utc": slot.isoformat(),
-                    "venues": list(result["venues"]),
-                    "model_shape": "offline-live-contract-logistic-v3",
-                    "calibration_method": "platt-scaling-ece<=0.10"},
-            proposal_sha256=digest, now=stamp,
-        )
-        _LOG.info("RivaL Intelligence suggested bounded feature experiment asset=%s",
-                  asset)
-        return {"status": "proposed", "asset": asset,
-                "hypothesis": result["hypothesis"], "record_sha256": digest}
 
 
 def recent_hypotheses(store, *, venue: str, now: datetime | None = None) -> list[dict]:

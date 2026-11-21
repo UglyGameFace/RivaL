@@ -85,7 +85,7 @@ def test_book_quote_and_new_weights_cannot_flip_the_first_saved_forecast(tmp_pat
         hot.close()
 
 
-def test_first_model_call_keeps_priority_over_a_later_opposite_ai_review(tmp_path):
+def test_first_model_call_is_the_only_call_peek_can_return(tmp_path):
     hot = SQLiteHotStore(tmp_path / "calls.sqlite")
     research = PolymarketResearch(hot)
     now = datetime.now(UTC)
@@ -95,10 +95,11 @@ def test_first_model_call_keeps_priority_over_a_later_opposite_ai_review(tmp_pat
         expires=close, direction="DOWN", model=MODEL, thesis="first",
         risk="research", evidence_sha256="a" * 64, kind="model",
     )
-    later = replace(initial, direction="UP", issued_at=now, kind="AI")
     try:
         research._math_calls["s"] = initial
-        research._calls["s"] = later
+        # No AI-review store exists anymore: the first model call is the
+        # only call peek can ever return for the slug.
+        assert not hasattr(research, "_calls")
         assert research.peek("s") is initial
     finally:
         hot.close()

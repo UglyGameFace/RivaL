@@ -16,13 +16,10 @@ import time
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.advance_forecasts import AdvanceForecastMonitor
-from parlay_bot.perpetuals.ai_types import ResearchUnavailable
-from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence, build_evidence
 from parlay_bot.perpetuals.event_intelligence import EventIntelligence
 from parlay_bot.perpetuals.forward_audit import MODEL as FORWARD_MODEL
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.governance import score_paired_forward
-from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS, HORIZONS
 from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
@@ -67,7 +64,6 @@ AUTONOMOUS_MULTI_ISSUE_TIMEOUT_SECONDS = 90
 AUTONOMOUS_AI_SETTLE_TIMEOUT_SECONDS = 90
 AUTONOMOUS_REVIEW_TIMEOUT_SECONDS = 120
 AUTONOMOUS_PROMOTION_TIMEOUT_SECONDS = 120
-AUTONOMOUS_AUTO_AI_TIMEOUT_SECONDS = 240
 AUTONOMOUS_SAVE_TIMEOUT_SECONDS = 90
 AUTONOMOUS_EVENTS_TIMEOUT_SECONDS = 120
 
@@ -87,9 +83,8 @@ class AutonomousResearch:
 
     def __init__(
         self, market: PerpetualMarketStore,
-        *, ai: LocalFirstResearch | None, venues: tuple[str, ...],
+        *, venues: tuple[str, ...],
         assets: tuple[str, ...] = ASSETS,
-        auto_ai: bool = True,
     ) -> None:
         self.market = market
         self.store = market.store
@@ -97,10 +92,8 @@ class AutonomousResearch:
         self.advance_forward = AdvanceForecastMonitor(market)
         self.events = EventIntelligence(self.store)
         self.multi = MultiExchangeResearch(self.store)
-        self.ai = ai
         self.venues = venues
         self.assets = assets
-        self.auto_ai = auto_ai
         self._lock = asyncio.Lock()
         self._schema_lock = threading.Lock()
         self._schema_ready = False
@@ -250,128 +243,6 @@ class AutonomousResearch:
                 )
                 settled += int(updated.rowcount == 1)
         return settled
-
-    def _claim_slot(self, *, asset: str, model: str, now: datetime) -> bool:
-        """Persist before any paid call, making crashes/restarts fail closed."""
-        slot = now.replace(
-            hour=now.hour // SLOT_HOURS * SLOT_HOURS,
-            minute=0, second=0, microsecond=0,
-        ).isoformat()
-        with self.store.connect() as conn:
-            result = conn.execute(
-                """INSERT INTO perp_auto_ai_slots
-                   (asset,model,slot_utc,attempted_at) VALUES (?,?,?,?)
-                   ON CONFLICT DO NOTHING""",
-                (asset, model, slot, now.isoformat()),
-            )
-        return result.rowcount == 1
-
-    async def record_ai_forecast(self, *, asset: str, now: datetime) -> bool:
-        """Generate only from valid point-in-time current evidence."""
-        if self.ai is None or not self.ai.available:
-            return False
-        now = _utc(now)
-        await asyncio.to_thread(self.initialize)
-        evidence, digest = await asyncio.to_thread(
-            build_evidence, self.market, asset=asset, venues=self.venues, now=now,
-        )
-        sources = evidence["sources"]
-        # Anchor on a trustworthy same-venue contract for later scoring.
-        reference = next(
-            (
-                x for x in sources
-                if x.get("last_candle_close")
-                and x.get("contract") and x.get("quote")
-                and x.get("venue") and x.get("close")
-                and timedelta(0) <= now - _time(x["last_candle_close"])
-                <= timedelta(minutes=7)
-            ), None,
-        )
-        if reference is None:
-            return False
-        if not await asyncio.to_thread(
-            self._claim_slot, asset=asset, model=self.ai.model, now=now,
-        ):
-            return False
-        result = await self.ai.ask(asset=asset, venues=self.venues, busy_retry=True)
-        # Reject cache-only or delayed results that would be issued after
-        # the intended target candle. No retrospective paper predictions.
-        issued = datetime.now(UTC)
-        if result.evidence_sha256 != digest or result.asset != asset:
-            return False
-        if not timedelta(0) <= issued - result.generated_at <= timedelta(minutes=5):
-            return False
-        target_open = (_time(reference["last_candle_close"]) +
-                       timedelta(milliseconds=1))
-        target_close = target_open + timedelta(minutes=5)
-        if not (target_open <= issued < target_close):
-            return False
-        return await asyncio.to_thread(
-            self._insert_ai_forecast,
-            asset=asset, model=result.model, digest=result.evidence_sha256,
-            issued=issued, reference=reference, target_open=target_open,
-            direction=result.direction, count=len(sources),
-        )
-
-    def _insert_ai_forecast(
-        self, *, asset: str, model: str, digest: str,
-        issued: datetime, reference: dict, target_open: datetime,
-        direction: str, count: int,
-    ) -> bool:
-        with self.store.connect() as conn:
-            record = conn.execute(
-                """INSERT INTO perp_auto_ai_forecasts
-                   (asset,model,evidence_sha256,issued_at,venue,contract,quote,
-                    reference_opened_at,reference_price,target_opened_at,
-                    direction,source_count)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT DO NOTHING""",
-                (
-                    asset, model, digest, issued.isoformat(),
-                    reference["venue"], reference["contract"], reference["quote"],
-                    (target_open - timedelta(minutes=5)).isoformat(),
-                    float(reference["close"]), target_open.isoformat(),
-                    direction, count,
-                ),
-            )
-        return record.rowcount == 1
-
-    async def run_auto_ai(self, *, now: datetime | None = None) -> int:
-        """One bounded slot, max 18 potential AI requests/day for 3 assets."""
-        current = _utc(now or datetime.now(UTC))
-        in_slot = current.hour % SLOT_HOURS == 0 and current.minute % 20 < 5
-        if (
-            not self.auto_ai or self.ai is None or not self.ai.available
-            or not in_slot
-        ):
-            if in_slot:
-                _LOG.info(
-                    "RivaL retired auto AI slot blocked reason=%s",
-                    "auto_ai_disabled" if not self.auto_ai else "ai_unavailable",
-                )
-            return 0
-        # Auto-AI slots are spaced 15 minutes apart, so never dispatch BTC,
-        # ETH and SOL back-to-back. Use UTC minute 00/20/40 and persist
-        # one attempt per asset per four-hour slot across bot restarts.
-        position = current.minute // 20
-        if position >= len(self.assets):
-            return 0
-        successes = 0
-        async with self._lock:
-            for asset in self.assets[position:position + 1]:
-                try:
-                    if await self.record_ai_forecast(
-                        asset=asset, now=datetime.now(UTC),
-                    ):
-                        successes += 1
-                except (InsufficientEvidence, ResearchUnavailable, ValueError) as exc:
-                    _LOG.info(
-                        "RivaL optional legacy AI skipped asset=%s reason=%s",
-                        asset, type(exc).__name__,
-                    )
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL legacy AI audit failed asset=%s", asset)
-        return successes
 
     def review_model(self, *, now: datetime | None = None) -> int:
         """Evaluate shadow promotion on paired forward events, not bar volume.
@@ -698,22 +569,6 @@ class AutonomousResearch:
                 _LOG.exception("RivaL promotion evaluation failed")
         lap("hourly_review")
         try:
-            ai_count = await asyncio.wait_for(
-                self.run_auto_ai(), timeout=AUTONOMOUS_AUTO_AI_TIMEOUT_SECONDS,
-            )
-        except asyncio.CancelledError:
-            raise
-        except TimeoutError:
-            auto_ai_ok = False
-            _LOG.warning(
-                "RivaL automatic AI stage timed out after %ds, skipping",
-                AUTONOMOUS_AUTO_AI_TIMEOUT_SECONDS,
-            )
-        except Exception:  # noqa: BLE001
-            auto_ai_ok = False
-            _LOG.exception("RivaL automatic AI research cycle failed")
-        lap("auto_ai")
-        try:
             await self._in_thread(
                 "_save_cycle", functools.partial(
                     self._save_cycle, started=started,
@@ -732,7 +587,7 @@ class AutonomousResearch:
             )
         except Exception:  # noqa: BLE001
             _LOG.exception("RivaL automatic learning heartbeat failed to persist")
-        # Research news AFTER recording the regular math/AI cycle, so even a
+        # Research news AFTER recording the regular math cycle, so even a
         # slow official-source server cannot delay core forecast issuance.
         # Poll attempts are durably throttled per source across restarts.
         try:

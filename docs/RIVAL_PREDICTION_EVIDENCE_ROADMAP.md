@@ -42,14 +42,15 @@ qualification do not authorize bets, wallet access or real-order execution.
   automatic demotion on a failing recheck. Never claim authenticated
   real-money fills or start live execution from a paper success.
 
-## 4. Private LFM3 Intelligence hypothesis experiments
+## 4. Private LFM3 Intelligence hypothesis experiments — RETIRED 2026-11-21
 
-- The only AI provider is the separate, token-authenticated local LFM3 service.
-  No Gemini, OpenRouter or Cloudflare API fallback, daily provider budget,
-  or model-generated trade probabilities.
-- The LFM proposes bounded predetermined feature-family ablations, tied to
-  immutable source digests. Apply deterministic, training/validation-only
-  tests against the ordinary logistic baseline for BTC/ETH/SOL/XRP.
+- The RivaL-Intelligence service (the separate local LFM3 provider) was
+  deleted on 2026-11-21 and its proposer was removed from the bot. No new
+  LLM feature-mask experiments are created.
+- The deterministic side of the pipeline is unchanged: stored proposals
+  and trial records remain in their tables, and the research loop keeps
+  verifying, ablating, screening and grading them against the ordinary
+  logistic baseline for BTC/ETH/SOL/XRP.
 - Keep sealed holdout, incumbent weights, model imports and order execution
   untouched. No improvement is claimed until new independent future
   outcomes, including after-cost quote comparisons, prove it.
@@ -59,8 +60,7 @@ qualification do not authorize bets, wallet access or real-order execution.
 - Run Ruff and all Pytest checks, including PostgreSQL-backed storage,
   overlapping 15m target-window regression, forward timestamp/source identity
   checks, missing/invalid quote paths, cost stress and fail-closed model gating.
-- Verify PR CI then merged main CI, main Discloud deployment, separate
-  Intelligence release and authenticated hypothesis smoke.
+- Verify PR CI then merged main CI and main Discloud deployment.
 - Verify source-native archive manifest/readback SHA256 and first persisted
   post-issuance hypothesis plus actual comparative validation receipt.
 - **Cannot be completed by merging:** 150 new independent future results,

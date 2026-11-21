@@ -184,9 +184,8 @@ def create_experiment(store, *, proposer: str, hypothesis: str,
     from (spec §3.2 step 1), plus the scheduled grid's hypothesis
     (spec D9), which only open_scheduled_variant() may use. ``design``
     carries the train/validation/holdout windows, model shape, and
-    calibration method. The caller that stores the LLM proposal in
-    ``rival_llm_feature_hypotheses`` (``FeatureHypothesisLab``) passes
-    its ``proposal_sha256``.
+    calibration method. A caller that stores a proposal in
+    ``rival_llm_feature_hypotheses`` passes its ``proposal_sha256``.
     """
     if proposer not in PROPOSERS:
         raise ValueError(f"unknown proposer: {proposer!r}")
@@ -857,55 +856,6 @@ def run_shadow_promotion(store, experiment_id: str, *, family: str,
                                 outcome=numeric, now=stamp)
 
 
-async def run_propose(store, *, asset: str, venues: tuple[str, ...], ai,
-                      background: bool = False, background_opt_in: bool = False,
-                      now: datetime | None = None) -> dict:
-    """Loop step 1: propose via the LLM, gated by the background opt-in.
-
-    Background (automatic) proposals run only when
-    ``rival_llm_background_opt_in`` is True (spec §3.4; Phase 2
-    ``llm_background_enabled``). With the opt-in off, no LLM call is
-    made at all. User-initiated proposals (``background=False``) do not
-    consult the flag; they still reserve quota inside
-    ``propose_feature_hypothesis()``. The proposal is validated against
-    the fixed enum and stored as a ``proposed`` experiment; storing the
-    proposal row itself (6-hour slot claim) stays with
-    ``FeatureHypothesisLab``.
-    """
-    from parlay_bot.perpetuals.research_hypotheses import validate_proposal
-
-    stamp = _stamp(now)
-    if background and not background_opt_in:
-        _LOG.info("RivaL research loop background proposal skipped "
-                  "asset=%s reason=opt_in_disabled", asset)
-        return {"status": "opt_in_required", "asset": asset}
-    if ai is None or not getattr(ai, "available", False):
-        return {"status": "unavailable", "asset": asset}
-    prior = prior_trials_context(store, asset=asset, now=stamp)
-    result = await ai.propose_feature_hypothesis(
-        asset=asset, venues=venues,
-        **({"prior_trials": prior} if prior else {}),
-    )
-    if (not validate_proposal(result) or result.get("asset") != asset
-            or not isinstance(result.get("venues"), list)
-            or not result["venues"] or not all(v in venues for v in result["venues"])):
-        raise ValueError("invalid LFM3 hypothesis proposal")
-    # The proposal SHA is the hypotheses-table record digest, created by
-    # FeatureHypothesisLab when it stores the proposal row; the experiment
-    # links it there (see research_hypotheses.run_once).
-    experiment = create_experiment(
-        store, proposer="llm", hypothesis=result["hypothesis"],
-        feature_indices=(result.get("feature_indices")
-                         if result["hypothesis"] == "feature_subset_v2" else None),
-        design={"asset": asset, "venues": list(result["venues"]),
-                "model_shape": "offline-live-contract-logistic-v3",
-                "calibration_method": "platt-scaling-ece<=0.10"},
-        now=stamp)
-    return {"status": "proposed", "asset": asset,
-            "hypothesis": result["hypothesis"],
-            "experiment_id": experiment["experiment_id"]}
-
-
 class ResearchLoop:
     """Store-bound facade over the module-level loop functions."""
 
@@ -941,9 +891,6 @@ class ResearchLoop:
 
     def shadow(self, experiment_id: str, **kwargs) -> dict:
         return run_shadow_promotion(self.store, experiment_id, **kwargs)
-
-    async def propose(self, **kwargs) -> dict:
-        return await run_propose(self.store, **kwargs)
 
     def prior_trials(self, *, asset: str, now: datetime | None = None) -> list[dict]:
         return prior_trials_context(self.store, asset=asset, now=now)

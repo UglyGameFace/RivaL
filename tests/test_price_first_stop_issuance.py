@@ -45,7 +45,6 @@ def test_config_defaults_stop_the_intakes_only(monkeypatch):
     # The three intakes stop.
     assert settings.rival_lab_refill_enabled is False
     assert settings.rival_scheduled_variants_enabled is False
-    assert settings.rival_llm_hypotheses_enabled is False
     # Track 1 convergence collection stays on, untouched.
     assert settings.rival_convergence_quotes_enabled is True
     # The research loop still advances and closes open experiments.

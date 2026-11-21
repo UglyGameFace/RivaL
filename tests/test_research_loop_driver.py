@@ -26,7 +26,7 @@ from parlay_bot.perpetuals.model_checkpoints import (
     FEATURE_CONTRACT,
     TARGET_CONTRACT,
 )
-from parlay_bot.perpetuals.research_hypotheses import MODEL, FeatureHypothesisLab
+from parlay_bot.perpetuals.research_hypotheses import HYPOTHESES_SCHEMA, MODEL
 from parlay_bot.perpetuals.research_loop import (
     create_experiment,
     list_findings,
@@ -62,9 +62,8 @@ def _proposal_digest(*, slot: datetime, hypothesis: str = "volume_only") -> str:
 
 def _seed_proposal(store, *, digest: str, slot: datetime) -> None:
     """Write the hypotheses-table row the lab would have stored."""
-    lab = FeatureHypothesisLab(store, None, venues=("hyperliquid",))
-    lab.initialize()
     with store.connect() as conn:
+        conn.execute(HYPOTHESES_SCHEMA)
         conn.execute(
             """INSERT INTO rival_llm_feature_hypotheses
                (asset, slot_utc, attempted_at, evidence_sha256, model,

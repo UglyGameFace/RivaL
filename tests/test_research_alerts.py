@@ -96,12 +96,7 @@ def test_every_failure_mode_is_reported(tmp_path):
                    pooled_scores=[(.26, .25)] * 400)
     try:
         keys = {key for key, _ in research_alerts(store, now=NOW)}
-        assert keys == {"forecasts:stopped", "pooled:stale", "decay:5m",
-                        "intelligence:stale"}
-        # Intelligence switched off: no alert for it.
-        keys = {key for key, _ in research_alerts(store, now=NOW,
-                                                   intelligence_enabled=False)}
-        assert "intelligence:stale" not in keys
+        assert keys == {"forecasts:stopped", "pooled:stale", "decay:5m"}
     finally:
         store.close()
 
@@ -120,8 +115,7 @@ def test_unreadable_tables_say_so_instead_of_claiming_missing(tmp_path):
     store = SQLiteHotStore(tmp_path / "empty.sqlite")  # no tables at all
     try:
         keys = {key for key, _ in research_alerts(store, now=NOW)}
-        assert keys == {"forecasts:unreadable", "pooled:unreadable",
-                        "intelligence:unreadable"}
+        assert keys == {"forecasts:unreadable", "pooled:unreadable"}
     finally:
         store.close()
 
@@ -242,12 +236,12 @@ def test_decay_judges_only_the_version_in_use(tmp_path):
                              "training_sha256,issued_at,target_opened_at) "
                              "VALUES (?,?,?,?,?,?,?,?,?)",
                              (*row, (NOW - timedelta(minutes=5 * (i % 400))).isoformat()))
-        alerts = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
+        alerts = dict(research_alerts(store, now=NOW))
         assert "decay:5m" not in alerts  # the losing version is no longer in use
         with store.connect() as conn:  # now the version in use loses too
             conn.execute("UPDATE rival_model_shadow_forecasts SET model_brier=.27 "
                          "WHERE training_sha256=?", ("b" * 64,))
-        alerts = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
+        alerts = dict(research_alerts(store, now=NOW))
         assert alerts["decay:5m"].startswith("⚠️ The 5-min 6-year model has done worse")
         assert "Version bbbbbbbbbbbb" in alerts["decay:5m"]
         assert "(400 results" in alerts["decay:5m"]
@@ -283,12 +277,12 @@ def test_a_gap_within_random_noise_is_not_called_decay(tmp_path):
                                   recent, (NOW - timedelta(minutes=5 * i)).isoformat()))
 
             insert(0.0009, "c")
-        alerts = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
+        alerts = dict(research_alerts(store, now=NOW))
         assert "decay:15m" not in alerts
         with store.connect() as conn:
             conn.execute("DELETE FROM rival_model_shadow_forecasts")
             insert(0.02, "d")  # a real, sustained loss still alerts
-        alerts = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
+        alerts = dict(research_alerts(store, now=NOW))
         assert alerts["decay:15m"].startswith("⚠️ The 15-min 6-year model has done worse")
         assert "Version dddddddddddd" in alerts["decay:15m"]
         assert "× bigger than chance" in alerts["decay:15m"]
@@ -332,23 +326,23 @@ def test_live_clock_reuses_decay_scores_but_explicit_now_reads_fresh(tmp_path, m
         monkeypatch.setattr(module, "DECAY_RECHECK", timedelta(minutes=10))
         monkeypatch.setattr(module, "_decay_rows",
                             lambda conn, stamp: calls.append(stamp) or real(conn, stamp))
-        fresh = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
+        fresh = dict(research_alerts(store, now=NOW))
         assert "decay:5m" in fresh and len(calls) == 1
 
-        first = dict(research_alerts(store, intelligence_enabled=False))
+        first = dict(research_alerts(store))
         clock[0] = NOW + timedelta(minutes=9)
-        second = dict(research_alerts(store, intelligence_enabled=False))
+        second = dict(research_alerts(store))
         assert len(calls) == 2  # one live read, then reused
         assert first["decay:5m"] == second["decay:5m"] == fresh["decay:5m"]
 
         clock[0] = NOW + timedelta(minutes=10)
-        research_alerts(store, intelligence_enabled=False)
+        research_alerts(store)
         assert len(calls) == 3  # re-read after DECAY_RECHECK
         clock[0] = NOW + timedelta(minutes=19)
-        stale = dict(research_alerts(store, intelligence_enabled=False))
+        stale = dict(research_alerts(store))
         assert len(calls) == 3 and "decay:5m" in stale
         # Explicit `now` never uses the cache.
-        research_alerts(store, now=NOW, intelligence_enabled=False)
+        research_alerts(store, now=NOW)
         assert len(calls) == 4
     finally:
         store.close()
@@ -368,7 +362,7 @@ def test_cached_decay_rows_are_judged_against_the_current_clock():
             raise AssertionError("cached rows must not be re-read")
 
     def run(stamp):
-        alerts = module._checks(NoConn(), stamp, False, cache)
+        alerts = module._checks(NoConn(), stamp, cache)
         return {key for key, _ in alerts}
 
     assert "decay:5m" in run(NOW + timedelta(minutes=4))

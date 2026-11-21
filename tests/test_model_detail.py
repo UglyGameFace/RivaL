@@ -227,7 +227,7 @@ class _Edit:
 @pytest.mark.asyncio
 async def test_detailed_research_opens_a_models_page_and_back(store):
     _seed(store)
-    view = ResearchDashboard(owner_id=1, market=SimpleNamespace(store=store), ai=None,
+    view = ResearchDashboard(owner_id=1, market=SimpleNamespace(store=store),
                              venues=("okx",))
     view.screen, view.section = "accuracy", "better"
     view._rebuild()

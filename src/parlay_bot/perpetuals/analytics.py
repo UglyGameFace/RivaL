@@ -70,7 +70,7 @@ def analytics_snapshot(
     if asset not in ("BTC", "ETH", "SOL", "XRP"):
         raise ValueError("unsupported asset")
     clock = _utc(now or datetime.now(UTC))
-    AutonomousResearch(market, ai=None, venues=()).initialize()
+    AutonomousResearch(market, venues=()).initialize()
     start_recent = clock - timedelta(days=7)
     start_earlier = clock - timedelta(days=14)
     with market.store.connect() as conn:
@@ -110,13 +110,6 @@ def analytics_snapshot(
                ORDER BY target_opened_at DESC LIMIT 9000""",
             (asset, FORWARD_MODEL, clock.isoformat(), clock.isoformat(),
              start_earlier.isoformat(), clock.isoformat()),
-        ).fetchall()
-        ai_rows = conn.execute(
-            """SELECT model,issued_at,direction,settled_at,correct
-               FROM perp_auto_ai_forecasts
-               WHERE asset=? AND issued_at>=? AND issued_at<=?
-               ORDER BY issued_at DESC LIMIT 150""",
-            (asset, start_earlier.isoformat(), clock.isoformat()),
         ).fetchall()
         governors = conn.execute(
             """SELECT horizon_minutes,status,reason,unique_target_windows,
@@ -243,28 +236,12 @@ def analytics_snapshot(
         if h not in seen:
             governance[h] = dict(row)
             seen.add(h)
-    recent_ai = [
-        r for r in ai_rows
-        if str(r["issued_at"]) >= start_recent.isoformat()
-    ]
-    settled = [r for r in recent_ai if r["settled_at"] is not None]
-    decided = [r for r in settled if r["correct"] is not None]
     return {
         "asset": asset, "as_of": clock.isoformat(),
         "math": by_horizon,
         "model_governance": governance,
         "math_pending": int(pending["n"]),
         "issued_after_window_opened_7d": late,
-        "historical_external_ai": {
-            "issued": len(recent_ai),
-            "settled": len(settled),
-            "decided": len(decided),
-            "abstained": sum(x["direction"] == "uncertain" for x in settled),
-            "directional_accuracy": (
-                round(sum(int(x["correct"]) for x in decided) / len(decided), 4)
-                if decided else None
-            ),
-        },
         "min_trend_events": MIN_TREND_EVENTS,
         "min_trend_days": MIN_TREND_DAYS,
         "linked_venue_outcomes": True,

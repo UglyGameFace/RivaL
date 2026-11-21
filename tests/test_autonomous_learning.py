@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-import parlay_bot.perpetuals.autonomous as autonomous_module
 from parlay_bot.perpetuals.ai_types import AiResearch
 from parlay_bot.perpetuals.analytics import _bucket, analytics_snapshot
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
@@ -52,103 +51,11 @@ def fake_evidence(market, *, asset, venues, now):
 
 
 @pytest.mark.asyncio
-async def test_background_ai_prediction_is_unique_persisted_and_later_settled(
-    tmp_path, monkeypatch,
-):
-    store = SQLiteHotStore(tmp_path / "autonomous.sqlite")
-    market = PerpetualMarketStore(store)
-    ai = StubGemini()
-    monitor = AutonomousResearch(
-        market, ai=ai, venues=("hyperliquid", "dydx", "bitget"),
-    )
-    monkeypatch.setattr(autonomous_module, "build_evidence", fake_evidence)
-    now = datetime.now(UTC)
-    try:
-        assert await monitor.record_ai_forecast(asset="BTC", now=now)
-        assert not await monitor.record_ai_forecast(asset="BTC", now=now)
-        assert ai.requests == 1
-        with store.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM perp_auto_ai_forecasts WHERE asset='BTC'"
-            ).fetchone()
-            assert row is not None
-            assert row["settled_at"] is None
-            target = datetime.fromisoformat(row["target_opened_at"])
-            issued = datetime.fromisoformat(row["issued_at"])
-            assert issued < target + timedelta(minutes=5)
-            assert row["direction"] == "up"
-            assert conn.execute(
-                "SELECT COUNT(*) AS n FROM perp_auto_ai_slots"
-            ).fetchone()["n"] == 1
-            conn.execute(
-                """INSERT INTO perp_market_candles
-                   (venue,contract,quote,interval_minutes,opened_at,closed_at,
-                    first_observed_at,open_price,high_price,low_price,close_price,
-                    volume_base,trades)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                ("hyperliquid", "BTC", "USDC", 5, target.isoformat(),
-                 (target + timedelta(minutes=5, milliseconds=-1)).isoformat(),
-                 (target + timedelta(minutes=5, seconds=4)).isoformat(),
-                 100, 103, 99, 102, 2, 12),
-            )
-        assert monitor.settle_ai(
-            now=target + timedelta(minutes=6)
-        ) == 1
-        assert monitor.settle_ai(
-            now=target + timedelta(minutes=6)
-        ) == 0
-        with store.connect() as conn:
-            result = conn.execute(
-                "SELECT * FROM perp_auto_ai_forecasts WHERE asset='BTC'"
-            ).fetchone()
-            assert result["outcome_up"] == 1
-            assert result["correct"] == 1
-        report = analytics_snapshot(
-            market, asset="BTC", now=target + timedelta(minutes=6),
-        )
-        assert report["historical_external_ai"]["issued"] == 1
-        assert report["historical_external_ai"]["settled"] == 1
-        assert report["historical_external_ai"]["directional_accuracy"] == 1.
-    finally:
-        store.close()
-
-
 @pytest.mark.asyncio
-async def test_stale_source_cannot_claim_slot_or_predict(tmp_path, monkeypatch):
-    store = SQLiteHotStore(tmp_path / "stale.sqlite")
-    market = PerpetualMarketStore(store)
-    ai = StubGemini()
-    monitor = AutonomousResearch(
-        market, ai=ai, venues=("hyperliquid", "dydx", "bitget"),
-    )
-
-    def stale(market, *, asset, venues, now):
-        evidence, digest = fake_evidence(
-            market, asset=asset, venues=venues, now=now,
-        )
-        evidence["sources"][0]["last_candle_close"] = (
-            now - timedelta(minutes=30)
-        ).isoformat()
-        return evidence, digest
-
-    monkeypatch.setattr(autonomous_module, "build_evidence", stale)
-    try:
-        assert not await monitor.record_ai_forecast(
-            asset="BTC", now=datetime.now(UTC),
-        )
-        assert ai.requests == 0
-        with store.connect() as conn:
-            assert conn.execute(
-                "SELECT COUNT(*) AS n FROM perp_auto_ai_slots"
-            ).fetchone()["n"] == 0
-    finally:
-        store.close()
-
-
 def test_autonomous_governance_counts_correlated_exchanges_once(tmp_path):
     store = SQLiteHotStore(tmp_path / "governance.sqlite")
     market = PerpetualMarketStore(store)
-    supervisor = AutonomousResearch(market, ai=None, venues=())
+    supervisor = AutonomousResearch(market, venues=())
     supervisor.initialize()
     now = datetime.now(UTC)
     # 105 distinct 5m targets on 7 UTC dates, two correlated venues each.
@@ -210,7 +117,6 @@ def test_zero_scores_are_not_claimed_as_predictive_skill(tmp_path):
         assert report["math"][5]["last_7d"]["events"] == 0
         assert report["math"][5]["trend"] == "insufficient"
         assert report["math"][5]["last_7d"]["simulated_net_bps"] is None
-        assert report["historical_external_ai"]["directional_accuracy"] is None
         assert report["model_governance"] == {}
     finally:
         store.close()
@@ -230,32 +136,3 @@ def test_calibration_uses_probability_bins_not_absolute_outcome_error():
     assert report["brier"] == .25
     assert report["decided_events"] == 0
     assert report["simulated_net_bps"] is None
-
-
-@pytest.mark.asyncio
-async def test_auto_ai_staggers_assets_to_respect_global_model_cooldown(
-    tmp_path, monkeypatch,
-):
-    store = SQLiteHotStore(tmp_path / "slots.sqlite")
-    market = PerpetualMarketStore(store)
-    monitor = AutonomousResearch(
-        market, ai=StubGemini(),
-        venues=("hyperliquid", "dydx", "bitget"),
-    )
-    called = []
-
-    async def fake_forecast(*, asset, now):
-        called.append(asset)
-        return True
-
-    monkeypatch.setattr(monitor, "record_ai_forecast", fake_forecast)
-    day = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
-    try:
-        assert await monitor.run_auto_ai(now=day + timedelta(minutes=1)) == 1
-        assert await monitor.run_auto_ai(now=day + timedelta(minutes=21)) == 1
-        assert await monitor.run_auto_ai(now=day + timedelta(minutes=41)) == 1
-        assert await monitor.run_auto_ai(now=day + timedelta(minutes=6)) == 0
-        assert await monitor.run_auto_ai(now=day + timedelta(hours=1)) == 0
-        assert called == ["BTC", "ETH", "SOL"]
-    finally:
-        store.close()

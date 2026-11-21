@@ -4,7 +4,7 @@ Each completed UTC day of each table becomes one gzipped NDJSON file
 (`rival-records__<table>__<YYYY-MM-DD>.ndjson.gz`). These records exist
 nowhere else: the live order-book/flow recordings, every exchange candle the
 bot saw, the Polymarket prices and contract features it learned from, every
-graded forecast and every RivaL Intelligence review. Idempotent: a day that
+graded forecast and every recorded AI review. Idempotent: a day that
 was saved is never rewritten. Read-only on the database.
 """
 from __future__ import annotations

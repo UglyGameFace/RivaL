@@ -54,7 +54,6 @@ from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.observability import heartbeat
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.perpetuals import host_memory
-from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 from parlay_bot.perpetuals.archive_model import (
     ArchiveModelSet,
     is_archive_document,
@@ -84,8 +83,6 @@ from parlay_bot.perpetuals.live_quotes import (
     QuoteUnavailable,
     quote_embed,
 )
-from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
-from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
 from parlay_bot.perpetuals.options_surface import OptionsSurfaceRecorder
 from parlay_bot.perpetuals.paper_ledger import PaperLedger
@@ -96,7 +93,6 @@ from parlay_bot.perpetuals.pooled_model import PooledModelSet
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
 from parlay_bot.perpetuals.regime2_model import Regime2ModelSet, is_regime2_document
-from parlay_bot.perpetuals.research_hypotheses import FeatureHypothesisLab
 from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor
 from parlay_bot.perpetuals.settlement_index import (
     IndexTick,
@@ -254,17 +250,6 @@ async def _resolve_closed_pm_reference(quotes, reader, notice, *, now: datetime)
     return True
 
 
-def llm_background_enabled(settings) -> bool:
-    """Automatic LLM loops run only with an explicit operator opt-in.
-
-    Batch 2 §3.4 / D5: rival_llm_background_opt_in defaults False. The
-    gate is checked at task creation, at each loop head, and in the
-    watchdog, so a loop never starts — or restarts — while opted out.
-    User-initiated asks do not consult this flag; they reserve quota.
-    """
-    return bool(getattr(settings, "rival_llm_background_opt_in", False))
-
-
 class RivalDiscordClient(discord.Client):
     def __init__(self, settings: Settings) -> None:
         # Guilds is a non-privileged gateway intent needed for guild state,
@@ -279,7 +264,6 @@ class RivalDiscordClient(discord.Client):
         self.problem_log = error_log.install()
         self._status_task: asyncio.Task[None] | None = None
         self._benefit_task: asyncio.Task[None] | None = None
-        self._intelligence_task: asyncio.Task[None] | None = None
         self._loop_watch_task: asyncio.Task[None] | None = None
         self._memory_task: asyncio.Task[None] | None = None
         self._context_task: asyncio.Task[None] | None = None
@@ -602,42 +586,12 @@ class RivalDiscordClient(discord.Client):
         )
         if self.perp_collector is not None:
             self.perp_collector.market.research_spike_watcher = self.spike_watch
-        # Single owner-hosted LFM3 only. Legacy provider values never make
-        # external requests and are ignored to keep old Discloud envs bootable.
-        if settings.rival_ai_provider not in ("local", "disabled"):
-            _LOG.warning("Retired RIVAL_AI_PROVIDER ignored; using local LFM3 only")
-        self.intelligence_research: LocalFirstResearch | None = (
-            LocalFirstResearch(
-                self.perp_collector.market if self.perp_collector is not None
-                else PerpetualMarketStore(self.store),
-                local_key=(
-                    settings.rival_local_ai_token.get_secret_value()
-                    if settings.rival_local_ai_token is not None else None
-                ),
-                daily_max=settings.rival_llm_daily_max,
-            )
-            if settings.rival_ai_provider != "disabled" else None
-        )
-        self.hypothesis_lab: FeatureHypothesisLab | None = (
-            FeatureHypothesisLab(
-                self.store, self.intelligence_research,
-                venues=tuple(self.perp_collector.providers),
-            )
-            if (settings.rival_llm_hypotheses_enabled
-                and isinstance(self.intelligence_research, LocalFirstResearch)
-                and self.perp_collector is not None
-                and settings.rival_storage_backend == "postgres")
-            else None
-        )
-        self._hypothesis_task: asyncio.Task[None] | None = None
         self._research_loop_task: asyncio.Task[None] | None = None
         self.autonomous: AutonomousResearch | None = (
             AutonomousResearch(
                 self.perp_collector.market,
-                ai=self.intelligence_research,
                 venues=tuple(self.perp_collector.providers),
                 assets=self.perp_collector.assets,
-                auto_ai=False,  # Historic AI forecast ledger remains readable.
             )
             if self.forward_audit is not None and self.perp_collector is not None
             else None
@@ -688,9 +642,7 @@ class RivalDiscordClient(discord.Client):
             # Single-card Polymarket and forecast tracking remain available.
             alerts_enabled=False,
         )
-        self.polymarket_research = PolymarketResearch(
-            self.store, ai=None,  # Retired external contract AI route.
-        )
+        self.polymarket_research = PolymarketResearch(self.store)
         self.auto_hunt.contract_research = self.polymarket_research
         if self.perp_collector is not None:
             from parlay_bot.perpetuals.polymarket_pooled import PolymarketPooledForecaster
@@ -798,7 +750,6 @@ class RivalDiscordClient(discord.Client):
             return ResearchDashboard(
                 owner_id=owner_id,
                 market=collector.market if collector is not None else None,
-                ai=self.intelligence_research,
                 venues=tuple(collector.providers) if collector is not None else (),
                 shadow_enabled=self.shadow_monitor is not None,
                 target_service=self.direction_targets,
@@ -835,7 +786,6 @@ class RivalDiscordClient(discord.Client):
         return ResearchDashboard(
             owner_id=owner_id,
             market=collector.market if collector is not None else None,
-            ai=self.intelligence_research,
             venues=tuple(collector.providers) if collector is not None else (),
             shadow_enabled=self.shadow_monitor is not None,
             target_service=self.direction_targets,
@@ -1035,7 +985,6 @@ class RivalDiscordClient(discord.Client):
                 ("Sport results", self._sports_results_task),
                 ("Perpetual data", self._perp_task),
                 ("Model evaluation", self._shadow_task),
-                ("LFM3 feature lab", self._hypothesis_task),
                 ("Polymarket oracle", self._polybolt_task),
                 ("Kalshi learning", self._kalshi_research_task),
                 ("Convergence quotes", self._convergence_task),
@@ -1610,11 +1559,6 @@ class RivalDiscordClient(discord.Client):
         await asyncio.to_thread(self.polymarket_research.initialize)
         await asyncio.to_thread(self.formula_test.initialize)
         await asyncio.to_thread(self.kalshi_forward.initialize)
-        _LOG.info(
-            "RivaL Polymarket contract AI wired free_key_configured=%s; "
-            "exact 5m/15m/1h contracts, experimental calls only",
-            self.polymarket_research.ai is not None and self.polymarket_research.ai.available,
-        )
         # Install read/forecast schemas before starting any collection,
         # notification or learning workers. Creating indexes while another
         # worker inserts predictions caused live PostgreSQL deadlocks.
@@ -1796,33 +1740,6 @@ class RivalDiscordClient(discord.Client):
                 self._records_task = self._spawn_worker(
                     self._records_loop(), name="rival-records-backup",
                 )
-            if (self._intelligence_task is None
-                    and isinstance(self.intelligence_research, LocalFirstResearch)
-                    and self.intelligence_research.available
-                    and llm_background_enabled(self.settings)):
-                self._intelligence_task = self._spawn_worker(
-                    self._intelligence_loop(), name="rival-intelligence-review",
-                )
-            elif (self._intelligence_task is None
-                    and isinstance(self.intelligence_research, LocalFirstResearch)
-                    and self.intelligence_research.available):
-                # Off by design, NOT a failure: the review loop runs only
-                # with the RIVAL_LLM_BACKGROUND_OPT_IN opt-in
-                # (llm_background_enabled above; default False), and the
-                # stored Discloud env does not set it, so this task is never
-                # created, the loop never runs, and the heartbeat — which
-                # fires only on a completed review — never checks in. Zero
-                # check-ins on the rival-intelligence-reviews monitor is the
-                # expected consequence. The monitor cannot be paused from
-                # code; that is a Sentry UI action. Do NOT "fix" this by
-                # enabling the opt-in here. (RIVAL_AI_BACKGROUND_OPT_IN,
-                # still present in the stored env, is read by no code.)
-                _LOG.info(
-                    "RivaL Intelligence background reviews off by opt-in "
-                    "(rival_llm_background_opt_in=False); no reviews expected "
-                    "and the rival-intelligence-reviews Sentry monitor will "
-                    "show zero check-ins by design")
-
         if (
             (self.history_auditor is not None
              or self.history_recovery is not None
@@ -1840,11 +1757,6 @@ class RivalDiscordClient(discord.Client):
                 self._history_loop(), name="rival-perp-history-recovery"
             )
 
-        if (self.hypothesis_lab is not None and self._hypothesis_task is None
-                and llm_background_enabled(self.settings)):
-            self._hypothesis_task = self._spawn_worker(
-                self._hypothesis_loop(), name="rival-llm-feature-research",
-            )
         if (self._research_loop_task is None and self.settings.rival_research_loop_enabled
                 and self.research_loop_drive is not None):
             self._research_loop_task = self._spawn_worker(
@@ -2023,15 +1935,10 @@ class RivalDiscordClient(discord.Client):
                 "consecutive_problems": self.heartbeat.consecutive_problems,
             }
         research = None
-        # The Intelligence review check runs only when its background task
-        # exists; the card records the same fact so an empty alert list is
-        # never read as a review that never happened.
-        intelligence_enabled = getattr(self, "_intelligence_task", None) is not None
         try:
             from parlay_bot.discord_app.research_alerts import research_alerts
             research = await asyncio.wait_for(asyncio.to_thread(
                 research_alerts, self.store,
-                intelligence_enabled=intelligence_enabled,
             ), timeout=15)
         except Exception:  # noqa: BLE001
             _LOG.warning("RivaL status card could not check prediction health")
@@ -2060,7 +1967,6 @@ class RivalDiscordClient(discord.Client):
             problems=problems,
             problem_totals=problem_totals,
             research=research,
-            intelligence_checked=intelligence_enabled,
             watchdog_checked_at=watchdog_checked_at, watchdog_expected=True,
         )
 
@@ -3124,114 +3030,6 @@ class RivalDiscordClient(discord.Client):
             market.regime2_models = Regime2ModelSet(self.store)
         return market.regime2_models
 
-    async def _intelligence_loop(self) -> None:
-        """RivaL Intelligence reviews the models' calls every 5-minute slot.
-
-        One coin per slot (rotating), 2.5 minutes after the slot opens so the
-        models' forecasts for it already exist. Each stance is stored against
-        that slot's forecasts and graded later.
-
-        Runs only with the background opt-in (batch 2 §3.4). A cap hit
-        inside explain_models raises ResearchUnavailable; the slot is
-        skipped and logged, never retried unmetered.
-        """
-        if not llm_background_enabled(self.settings):
-            _LOG.info("RivaL Intelligence background reviews disabled: "
-                      "rival_llm_background_opt_in=False; loop not running")
-            return
-        from parlay_bot.perpetuals.ai_types import ResearchUnavailable
-        from parlay_bot.perpetuals.intelligence import (
-            IntelligenceLedger,
-            market_context,
-            model_calls,
-        )
-        from parlay_bot.perpetuals.local_first_research import LocalBusy
-
-        await self.wait_until_ready()
-        ledger = IntelligenceLedger(self.store)
-        assets = tuple(a for a in self.perp_collector.assets
-                       if a in ("BTC", "ETH", "SOL", "XRP"))
-        turn = 0
-        # Hourly tally of what happened to each slot's review. Skips are
-        # INFO lines (expected, transient), so without this a run of missed
-        # reviews was invisible outside the console buffer.
-        tally: dict[str, int] = {}
-        tally_started = datetime.now(UTC)
-        while not self.is_closed():
-            now = datetime.now(UTC)
-            if now - tally_started >= timedelta(hours=1):
-                if tally.get("reviewed", 0) < sum(tally.values()):
-                    _LOG.warning("RivaL Intelligence review outcomes last hour: %s",
-                                 ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
-                tally, tally_started = {}, now
-            slot = now.replace(second=0, microsecond=0, minute=now.minute // 5 * 5)
-            target = slot + timedelta(seconds=150)
-            if target <= now:
-                target += timedelta(minutes=5)
-                slot += timedelta(minutes=5)
-            await asyncio.sleep((target - now).total_seconds())
-            if host_memory.snapshot().pressure or not assets:
-                tally["memory_pressure"] = tally.get("memory_pressure", 0) + 1
-                continue
-            asset = assets[turn % len(assets)]
-            turn += 1
-            outcome = "failed"
-            try:
-                calls = await asyncio.to_thread(
-                    model_calls, self.perp_collector.market, asset=asset,
-                )
-                feed = getattr(self.perp_collector.market, "binance_context", None)
-                context = feed.numbers(asset) if feed else {}
-                if context:
-                    context = {**context, "source": "binance"}
-                else:  # Binance blocks this host: use RivaL's own feeds
-                    # As of the slot open (the forecasts' reference close):
-                    # anything observed later is inside the windows being
-                    # graded and must not inform the stance.
-                    context = await asyncio.to_thread(
-                        market_context, self.perp_collector.market, asset=asset,
-                        now=slot)
-                    if context:
-                        context["source"] = "hyperliquid_okx"
-                review = await self.intelligence_research.explain_models(
-                    asset=asset, venues=tuple(self.perp_collector.providers), calls=calls,
-                    market_context=context or None,
-                )
-                saved = await asyncio.to_thread(
-                    ledger.record, asset=asset, calls=calls, review=review,
-                    model=str(review.get("model")), issued_at=datetime.now(UTC),
-                )
-                _LOG.info("RivaL Intelligence reviewed %s saved=%d", asset, saved)
-                # RIVAL-B: the cron monitor measures liveness, not landing.
-                # A completed review proves the loop is alive even when the
-                # save window has closed (saved=0); the landing signal stays
-                # in the saved=%d log line and the hourly tally. Skips and
-                # failures never reach this line, so they still do not check in.
-                heartbeat("rival-intelligence-reviews")
-                outcome = "reviewed" if saved else "nothing_saved"
-            except asyncio.CancelledError:
-                raise
-            except ResearchUnavailable as exc:
-                outcome = "busy" if isinstance(exc, LocalBusy) else "unavailable"
-                if "budget exhausted" in str(exc):
-                    # Batch 2 §3.4: cap hit — skip the slot and log it.
-                    outcome = "budget_exhausted"
-                    _LOG.info("RivaL Intelligence review skipped %s: %s", asset, exc)
-                elif "needs the review update" in str(exc):
-                    _LOG.warning("RivaL Intelligence service lacks the model-review "
-                                 "endpoint; upload the latest LLM package")
-                    await asyncio.sleep(3600)
-                else:
-                    _LOG.info("RivaL Intelligence review skipped %s: %s", asset, exc)
-            except InsufficientEvidence as exc:
-                # Fewer than three healthy venues right now: the reviewer is
-                # correctly refusing to explain thin evidence. A skip, not a fault.
-                outcome = "thin_evidence"
-                _LOG.info("RivaL Intelligence review skipped %s: %s", asset, exc)
-            except Exception:  # noqa: BLE001 - optional reviewer never breaks the bot
-                _LOG.exception("RivaL Intelligence review failed %s", asset)
-            tally[outcome] = tally.get(outcome, 0) + 1
-
     async def _benefit_loop(self) -> None:
         """Keep Bot Performance's slow scorecards ready.
 
@@ -3591,42 +3389,6 @@ class RivalDiscordClient(discord.Client):
                     except Exception:  # noqa: BLE001
                         _LOG.exception("RivaL six-month history audit failed safely")
             await asyncio.sleep(self.settings.rival_history_recovery_seconds)
-
-    async def _hypothesis_loop(self) -> None:
-        """Optional low-priority LFM3 feature ideas, no impact on live forecasts.
-
-        Runs only with the background opt-in (batch 2 §3.4). A cap hit
-        inside run_once returns status "unavailable"; the slot is skipped
-        and logged, never retried unmetered.
-        """
-        if not llm_background_enabled(self.settings):
-            _LOG.info("RivaL hypothesis background loop disabled: "
-                      "rival_llm_background_opt_in=False; loop not running")
-            return
-        await self.wait_until_ready()
-        await asyncio.sleep(40)
-        assert self.hypothesis_lab is not None
-        while not self.is_closed():
-            if host_memory.snapshot().pressure:
-                await asyncio.sleep(300)
-                continue
-            try:
-                result = await self.hypothesis_lab.run_once()
-                if result["status"] == "proposed":
-                    _LOG.info(
-                        "RivaL bounded AI hypothesis recorded asset=%s kind=%s",
-                        result["asset"], result["hypothesis"],
-                    )
-                else:
-                    _LOG.info(
-                        "RivaL hypothesis slot skipped status=%s asset=%s",
-                        result["status"], result["asset"],
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - optional ML research only
-                _LOG.exception("RivaL independent AI feature laboratory unavailable")
-            await asyncio.sleep(300)
 
     async def _research_loop_driver(self) -> None:
         """Autonomous loop Phase 1: advance research experiments, unassisted.
@@ -4003,10 +3765,6 @@ class RivalDiscordClient(discord.Client):
             workers = (
                 ("_perp_task", self._perp_loop, "rival-perp-auto-collector"),
                 ("_shadow_task", self._shadow_loop, "rival-shadow-learning"),
-                ("_hypothesis_task", self._hypothesis_loop,
-                 "rival-llm-feature-research"),
-                ("_intelligence_task", self._intelligence_loop,
-                 "rival-intelligence-review"),
                 ("_research_loop_task", self._research_loop_driver,
                  "rival-research-loop-driver"),
                 ("_history_task", self._history_loop, "rival-perp-history-recovery"),
@@ -4043,10 +3801,6 @@ class RivalDiscordClient(discord.Client):
             for attr, method, name in workers:
                 task = getattr(self, attr)
                 if task is None or not task.done():
-                    continue
-                if attr == "_hypothesis_task" and not llm_background_enabled(self.settings):
-                    continue
-                if attr == "_intelligence_task" and not llm_background_enabled(self.settings):
                     continue
                 if attr == "_research_loop_task" and not self.settings.rival_research_loop_enabled:
                     continue
@@ -4376,10 +4130,10 @@ class RivalDiscordClient(discord.Client):
         "_liquidity_task",
         "_target_task", "_call_board_task", "_sports_results_task", "_sports_task",
         "_sports_manual_task", "_history_task", "_shadow_task", "_perp_task",
-        "_hypothesis_task", "_research_loop_task", "_candidate_task",
+        "_research_loop_task", "_candidate_task",
         "_archive_task", "_context_task",
         "_records_task", "_kalshi_updown_task",
-        "_heartbeat_task", "_status_task", "_benefit_task", "_intelligence_task",
+        "_heartbeat_task", "_status_task", "_benefit_task",
         "_loop_watch_task", "_memory_task",
     )
     _AUXILIARY_TASK_ATTRS = (
@@ -4415,7 +4169,6 @@ class RivalDiscordClient(discord.Client):
             ("bitget_history_recovery", getattr(self, "bitget_history_recovery", None)),
             ("okx_history_recovery", getattr(self, "okx_history_recovery", None)),
             ("perp_collector", getattr(self, "perp_collector", None)),
-            ("intelligence_research", getattr(self, "intelligence_research", None)),
             ("research_drive", getattr(self, "research_drive", None)),
             ("research_loop_drive", getattr(self, "research_loop_drive", None)),
             ("archive_drive", archive_drive),

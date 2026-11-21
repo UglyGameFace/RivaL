@@ -17,7 +17,7 @@ def test_postgres_auto_ai_forecast_settles_exact_once_and_survives_restart():
         pytest.skip("Postgres integration database unavailable")
     store = PostgresHotStore(dsn)
     market = PerpetualMarketStore(store)
-    system = AutonomousResearch(market, ai=None, venues=())
+    system = AutonomousResearch(market, venues=())
     now = datetime.now(UTC)
     boundary = now.replace(
         minute=now.minute // 5 * 5, second=0, microsecond=0,
@@ -27,24 +27,29 @@ def test_postgres_auto_ai_forecast_settles_exact_once_and_survives_restart():
     digest = "d" * 64
     contract = "SOL-PROSPECTIVE-CI"
     model = "gemini-ci-forecast"
+    def insert_forecast() -> bool:
+        # Seed the historic ledger directly: the AI issuance path that
+        # used to write these rows was retired with the LLM service;
+        # settle_ai still grades the rows that exist.
+        with store.connect() as conn:
+            record = conn.execute(
+                """INSERT INTO perp_auto_ai_forecasts
+                   (asset,model,evidence_sha256,issued_at,venue,contract,quote,
+                    reference_opened_at,reference_price,target_opened_at,
+                    direction,source_count)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT DO NOTHING""",
+                ("SOL", model, digest, issued.isoformat(),
+                 "ci-auto-ai", contract, "USDT",
+                 (target - timedelta(minutes=5)).isoformat(), 100.0,
+                 target.isoformat(), "down", 3),
+            )
+        return record.rowcount == 1
+
     try:
         system.initialize()
-        assert system._insert_ai_forecast(
-            asset="SOL", model=model, digest=digest, issued=issued,
-            target_open=target, direction="down", count=3,
-            reference={
-                "venue": "ci-auto-ai", "contract": contract,
-                "quote": "USDT", "close": 100,
-            },
-        )
-        assert not system._insert_ai_forecast(
-            asset="SOL", model=model, digest=digest, issued=issued,
-            target_open=target, direction="down", count=3,
-            reference={
-                "venue": "ci-auto-ai", "contract": contract,
-                "quote": "USDT", "close": 100,
-            },
-        )
+        assert insert_forecast()
+        assert not insert_forecast()
         observed = target + timedelta(minutes=5, seconds=3)
         with store.connect() as conn:
             conn.execute(
@@ -60,7 +65,7 @@ def test_postgres_auto_ai_forecast_settles_exact_once_and_survives_restart():
                  observed.isoformat(), 100, 101, 96, 98, 5, 20),
             )
         restarted = AutonomousResearch(
-            PerpetualMarketStore(store), ai=None, venues=(),
+            PerpetualMarketStore(store), venues=(),
         )
         assert restarted.settle_ai(now=target + timedelta(minutes=6)) == 1
         assert restarted.settle_ai(now=target + timedelta(minutes=6)) == 0

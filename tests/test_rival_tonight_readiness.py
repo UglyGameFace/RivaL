@@ -40,7 +40,7 @@ async def test_accuracy_tab_shows_live_per_exchange_blocker_and_no_unverified_be
     store = SQLiteHotStore(tmp_path / "tonight.sqlite")
     market = PerpetualMarketStore(store)
     view = ResearchDashboard(
-        owner_id=42, market=market, ai=None,
+        owner_id=42, market=market,
         venues=("hyperliquid", "dydx", "binance"),
         shadow_enabled=True,
     )

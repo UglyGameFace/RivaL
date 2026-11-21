@@ -587,13 +587,12 @@ def warm_polymarket_cache(status_fn: Callable[[str, int], dict]) -> int:
 
 
 # The rest of the page's per-timeframe readers (the test-model rows, the
-# AI review grades, the history-lineage line) had no cache. They ran live
+# history-lineage line) had no cache. They ran live
 # on every page load, in parallel with each other and with the 5-minute
 # cycle, against an 8-connection pool and a 7 s limit per read. When a read
 # lost that race its section was left off the page without a word: the
-# 15-minute page in the Nov 10 video showed no test-model rows and
-# "RivaL Intelligence: couldn't check right now" while the 5-minute page,
-# loaded minutes earlier, showed both. They now get the same cache and
+# 15-minute page in the Nov 10 video showed no test-model rows while the
+# 5-minute page, loaded minutes earlier, showed them. They now get the same cache and
 # background refresh as the three scorecards above, for every coin and
 # timeframe, so no timeframe depends on winning that race.
 PAGE_READ_CACHE_SECONDS = 35 * 60  # outlives the 30-minute background refresh
@@ -650,7 +649,7 @@ def _cached_page_read(reader: Callable, market: object, asset: str, horizon: int
 
 def _page_readers() -> tuple[Callable, ...]:
     """Looked up at call time, so a patched reader is the one that runs."""
-    return (_trial_board_record, _calibration_record, _intelligence_report)
+    return (_trial_board_record, _calibration_record)
 
 
 def warm_page_reads(market: object) -> int:
@@ -729,7 +728,7 @@ def rate_or_too_few(n: int, rate: str, *, what: str) -> str:
     """A measured rate, or "too few to judge" on a tiny sample.
 
     A rate on fewer than 20 results reads as evidence when it is noise —
-    0% on 2 sat-out Intelligence calls is the case that prompted this.
+    0% on 2 sat-out calls is the case that prompted this.
     The count stays; only the rate goes.
     """
     if int(n) >= MIN_SAMPLE_FOR_RATE:
@@ -787,10 +786,6 @@ def _trial_detail_line(label, record):
     return f"**{label}:** " + " · ".join(details)
 
 
-
-
-# A review older than its timeframe plus this is not a call for the next candle.
-INTELLIGENCE_CALL_GRACE_MINUTES = 10
 
 
 def _age_words(age: timedelta) -> str:
@@ -1382,42 +1377,6 @@ def _health_text(coin: str, horizon: int, reports: dict, now: datetime,
     else:
         lines.append("**Baseline skill:** couldn't check right now")
 
-    intelligence = reports.get("intelligence")
-    if isinstance(intelligence, dict):
-        report, latest = intelligence["report"], intelligence["latest"]
-        stance, direction = latest["stances"].get(horizon, ("—", "none"))
-        try:
-            age = now - datetime.fromisoformat(str(latest.get("issued_at"))).astimezone(UTC)
-        except (TypeError, ValueError):
-            age = None
-        current = age is not None and timedelta(0) <= age <= timedelta(
-            minutes=horizon + INTELLIGENCE_CALL_GRACE_MINUTES)
-        if current and stance == "follow" and direction != "none":
-            call = {"up": "says UP (price rising) for the next candle",
-                    "down": "says DOWN (price falling) for the next candle"}.get(
-                        direction.lower(), direction.upper())
-        elif current:
-            call = "makes no call for the next candle"
-        elif age is not None and age > timedelta(hours=1):
-            # Nov 11 audit: "no current call (last review 4 days ago)" read as
-            # broken. The automatic reviews are switched off on this server;
-            # the AI service itself still answers when asked.
-            call = (f"automatic reviews are paused (last one {_age_words(age)} ago); "
-                    "it still answers when asked")
-        elif age is not None and age > timedelta(0):
-            call = f"no current call (last review {_age_words(age)} ago)"
-        else:
-            call = "no current call"
-        followed = int(report["followed"] or 0)
-        rate = report["followed_hit_rate"]
-        record = (rate_or_too_few(followed, f"right {rate:.0%}", what="followed")
-                  if followed and rate is not None else "none scored yet")
-        lines.append(f"**AI reviewer:** {call} · 7 days: agreed {followed} times ({record}), "
-                     f"sat out {int(report['abstained'] or 0)}")
-    elif isinstance(intelligence, Exception):
-        lines.append("**AI reviewer:** couldn't check right now")
-    elif "intelligence" in reports:
-        lines.append("**AI reviewer:** hasn't reviewed anything yet")
     return "\n".join(lines)
 
 
@@ -1557,27 +1516,6 @@ def performance_embed(coin: str, horizon: int, reports: dict, *, now: datetime,
     all three via :func:`performance_embeds`.
     """
     return performance_embeds(coin, horizon, reports, now=now, venues=venues)[0]
-
-
-def _intelligence_status(market: object, asset: str, horizon: int, *,
-                         refresh: bool = False) -> dict | None:
-    """RivaL Intelligence's graded reviews of the models (None if never run)."""
-    from parlay_bot.perpetuals.intelligence import IntelligenceLedger
-
-    ledger = IntelligenceLedger(market.store)
-    latest = ledger.latest(asset=asset)  # the current call: read live, it is cheap
-    if latest is None:
-        return None
-    return {"latest": latest,
-            "report": _cached_page_read(_intelligence_report, market, asset, horizon,
-                                        refresh=refresh)}
-
-
-def _intelligence_report(market: object, asset: str, horizon: int) -> dict:
-    """The 7-day grades of RivaL Intelligence's reviews (the slow part)."""
-    from parlay_bot.perpetuals.intelligence import IntelligenceLedger
-
-    return IntelligenceLedger(market.store).report(asset=asset, horizon=horizon)
 
 
 def _cycle_coverage(market: object) -> dict | None:
@@ -2744,7 +2682,7 @@ class GuidedHome(discord.ui.View):
             "models": {"trials", "best", "xmarket", "workbench"},
             "accuracy": {"exchange", "calibration"},
             "polymarket": {"polymarket", "contest"},
-            "health": {"benefit", "cycles", "coverage", "feeds", "intelligence", "xmarket"},
+            "health": {"benefit", "cycles", "coverage", "feeds", "xmarket"},
         }.get(self.performance_section)
         refresh = {"refresh": True} if self._performance_refresh else {}
         self._performance_refresh = False
@@ -2762,8 +2700,6 @@ class GuidedHome(discord.ui.View):
                     (_workbench_record, self.market, self.coin, 0), refresh),
                 "xmarket": (_cached_page_read, (_xmarket_record, self.market, self.coin, 0),
                     {**refresh, "max_age_seconds": 60}),
-                "intelligence": (_intelligence_status,
-                    (self.market, self.coin, self.horizon), refresh),
                 "coverage": (_cycle_coverage, (self.market,), {}),
                 "cycles": (_performance_cycles, (self.market,), {}),
             }
@@ -3350,35 +3286,7 @@ class GuidedHome(discord.ui.View):
                 self.note = "Choose a market first. No call was requested."
             elif self.live_source == "exchange":
                 self.navigate("forecast")
-            elif self.live_source == "polymarket":
-                self.navigate("live")
-                board = getattr(
-                    getattr(self.auto_hunt, "bot", None),
-                    "polymarket_board", None,
-                )
-                if callable(getattr(board, "request_contract_ai", None)):
-                    try:
-                        started = await asyncio.wait_for(
-                            board.request_contract_ai(self.coin, self.horizon),
-                            timeout=2.5,
-                        )
-                        if started:
-                            self.note = (
-                                "Requested one optional free AI contract review. "
-                                "Mathematical learning remains independent."
-                            )
-                        else:
-                            self.note = (
-                                "No fresh contract available for an AI review. "
-                                "No AI request was made."
-                            )
-                    except Exception:  # noqa: BLE001
-                        _LOG.exception("User-initiated contract AI review unavailable")
-                        self.note = (
-                            "Could not confirm a contract-specific AI request. "
-                            "The market and math remain available."
-                        )
-            elif self.live_source == "kalshi":
+            elif self.live_source == "polymarket" or self.live_source == "kalshi":
                 self.navigate("live")
             else:
                 self.note = (

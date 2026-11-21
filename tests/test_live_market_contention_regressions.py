@@ -114,8 +114,7 @@ def test_autonomous_schema_is_initialized_once_even_across_threads(tmp_path, mon
     store = SQLiteHotStore(tmp_path / "autonomous.sqlite")
     market = PerpetualMarketStore(store)
     research = AutonomousResearch(
-        market, ai=None, venues=("hyperliquid",), assets=("BTC",),
-        auto_ai=False,
+        market, venues=("hyperliquid",), assets=("BTC",),
     )
     original_connect = store.connect
     calls = []

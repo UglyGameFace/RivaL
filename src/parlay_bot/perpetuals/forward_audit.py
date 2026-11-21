@@ -2289,7 +2289,7 @@ class ForwardAccuracyMonitor:
     def summary(self, *, asset: str, now: datetime | None = None) -> dict:
         """The 14-day scorecard, shared for SUMMARY_TTL across live readers.
 
-        Every Research and Performance page and each Intelligence review read
+        Every Research and Performance page read
         this 2-5 s aggregate separately; under load the first Performance
         render hit its 7 s read limit ("Score read unavailable") while the
         same query ran several times at once. A call for "now" reuses a

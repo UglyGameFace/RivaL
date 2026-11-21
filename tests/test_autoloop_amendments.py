@@ -17,8 +17,8 @@ import pytest
 
 from parlay_bot.discord_app.research_alerts import research_alerts
 from parlay_bot.perpetuals.research_hypotheses import (
+    HYPOTHESES_SCHEMA,
     MODEL,
-    FeatureHypothesisLab,
     list_blocked_receipts,
     recent_hypotheses,
     record_blocked_receipt,
@@ -61,9 +61,8 @@ def _digest(*, slot: datetime, hypothesis: str = "volume_only") -> str:
 
 
 def _seed_proposal(store, *, digest: str, slot: datetime) -> None:
-    lab = FeatureHypothesisLab(store, None, venues=("hyperliquid",))
-    lab.initialize()
     with store.connect() as conn:
+        conn.execute(HYPOTHESES_SCHEMA)
         conn.execute(
             """INSERT INTO rival_llm_feature_hypotheses
                (asset, slot_utc, attempted_at, evidence_sha256, model,
@@ -277,29 +276,6 @@ def test_pool_counts_split_offline_and_shadow(tmp_path):
         _to_shadow(store, exps[3]["experiment_id"])
         # exps[4], exps[5] stay proposed.
         assert pool_counts(store, now=NOW) == {"offline": 4, "shadow": 2}
-    finally:
-        store.close()
-
-
-async def test_lab_refuses_new_proposal_when_offline_pool_full(tmp_path):
-    store = _store(tmp_path)
-    try:
-        for i in range(4):
-            _experiment(store, digest=hashlib.sha256(
-                f"pool-{i}".encode()).hexdigest(), now=NOW)
-
-        class _ExplodingAI:
-            available = True
-
-            async def propose_feature_hypothesis(self, **kwargs):
-                raise AssertionError(
-                    "LLM must not be called while the offline pool is full")
-
-        lab = FeatureHypothesisLab(store, _ExplodingAI(),
-                                   venues=("hyperliquid",))
-        out = await lab.run_once(now=NOW)
-        assert out["status"] == "capacity_full", out
-        assert out["offline_open"] == 4
     finally:
         store.close()
 

@@ -9,7 +9,6 @@ test_llm_hypothesis_pipeline.py and test_research_candidate_registry.py.
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
@@ -18,10 +17,7 @@ from pathlib import Path
 import pytest
 
 from parlay_bot.discord_app.research_alerts import research_alerts
-from parlay_bot.perpetuals.research_hypotheses import (
-    MODEL,
-    FeatureHypothesisLab,
-)
+from parlay_bot.perpetuals.research_hypotheses import MODEL
 from parlay_bot.perpetuals.research_loop import (
     ResearchLoop,
     create_experiment,
@@ -32,7 +28,6 @@ from parlay_bot.perpetuals.research_loop import (
     record_finding,
     record_stage_outcome,
     run_ablation,
-    run_propose,
     run_screen,
     run_shadow_promotion,
     run_verify,
@@ -419,64 +414,6 @@ class _FakeAI:
     async def propose_feature_hypothesis(self, **kwargs):
         self.calls += 1
         return dict(self.reply)
-
-
-def test_opt_in_false_blocks_automatic_loop_llm_calls(tmp_path):
-    store = _store(tmp_path)
-    try:
-        ai = _FakeAI()
-        out = asyncio.run(run_propose(
-            store, asset="BTC", venues=("hyperliquid",), ai=ai,
-            background=True, background_opt_in=False, now=NOW))
-        assert out["status"] == "opt_in_required"
-        assert ai.calls == 0
-        # Opted in: the call happens and an experiment opens.
-        out = asyncio.run(run_propose(
-            store, asset="BTC", venues=("hyperliquid",), ai=ai,
-            background=True, background_opt_in=True, now=NOW))
-        assert out["status"] == "proposed" and ai.calls == 1
-        assert get_experiment(store, out["experiment_id"])["status"] == "proposed"
-        # User-initiated proposals do not consult the opt-in flag.
-        ai2 = _FakeAI(asset="ETH")
-        out = asyncio.run(run_propose(
-            store, asset="ETH", venues=("hyperliquid",), ai=ai2,
-            background=False, background_opt_in=False, now=NOW))
-        assert out["status"] == "proposed" and ai2.calls == 1
-        # An invalid proposal is refused, never stored.
-        bad = _FakeAI(reply={"model": MODEL, "asset": "BTC",
-                             "hypothesis": "not_a_hypothesis",
-                             "rationale": "x" * 10, "falsification": "y" * 10,
-                             "research_only": True,
-                             "retrospective_screen": "not_tested",
-                             "live_model_promoted": False, "prediction": None,
-                             "venues": ["hyperliquid"]})
-        with pytest.raises(ValueError, match="invalid LFM3 hypothesis"):
-            asyncio.run(run_propose(
-                store, asset="BTC", venues=("hyperliquid",), ai=bad,
-                background=False, background_opt_in=False, now=NOW))
-        assert bad.calls == 1
-    finally:
-        store.close()
-
-
-def test_lab_proposal_opens_an_experiment(tmp_path):
-    store = _store(tmp_path)
-    try:
-        ai = _FakeAI()
-        lab = FeatureHypothesisLab(store, ai, venues=("hyperliquid",))
-        result = asyncio.run(lab.run_once(now=datetime(2026, 11, 6, 0, 0,
-                                                       tzinfo=UTC)))
-        assert result["status"] == "proposed"
-        assert result["asset"] == "BTC"  # 00:00 UTC slot rotates to BTC
-        with store.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM rival_research_experiments").fetchall()
-        assert len(rows) == 1
-        assert rows[0]["proposal_sha256"] == result["record_sha256"]
-        assert rows[0]["status"] == "proposed"
-        assert json.loads(rows[0]["design_json"])["asset"] == "BTC"
-    finally:
-        store.close()
 
 
 def test_status_card_surfaces_promoted_experiments(tmp_path):

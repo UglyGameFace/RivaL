@@ -72,7 +72,7 @@ async def test_results_page_shows_actual_training_provenance_without_claiming_ac
     store = SQLiteHotStore(tmp_path / "results-lineage.sqlite")
     market = PerpetualMarketStore(store)
     view = ResearchDashboard(
-        owner_id=24, market=market, ai=None,
+        owner_id=24, market=market,
         venues=("hyperliquid",), shadow_enabled=True,
     )
     try:

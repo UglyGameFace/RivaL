@@ -15,13 +15,13 @@ from parlay_bot.storage.hot import SQLiteHotStore
 async def test_automatic_cycle_records_real_restart_safe_heartbeat(tmp_path):
     store = SQLiteHotStore(tmp_path / "autonomous.sqlite")
     market = PerpetualMarketStore(store)
-    system = AutonomousResearch(market, ai=None, venues=())
+    system = AutonomousResearch(market, venues=())
     try:
         assert system.learning_heartbeat() is None
         issued, settled, ai_count = await system.cycle()
         assert (issued, settled, ai_count) == (0, 0, 0)
         restarted = AutonomousResearch(
-            PerpetualMarketStore(store), ai=None, venues=(),
+            PerpetualMarketStore(store), venues=(),
         )
         latest = restarted.learning_heartbeat()
         assert latest is not None
@@ -43,7 +43,7 @@ async def test_automatic_cycle_records_real_restart_safe_heartbeat(tmp_path):
 async def test_learning_cycle_stage_failure_is_visible_not_silenced(tmp_path, monkeypatch):
     store = SQLiteHotStore(tmp_path / "errors.sqlite")
     market = PerpetualMarketStore(store)
-    system = AutonomousResearch(market, ai=None, venues=())
+    system = AutonomousResearch(market, venues=())
     try:
         def failing_math():
             raise RuntimeError("simulated model failure")
@@ -64,11 +64,11 @@ async def test_learning_cycle_stage_failure_is_visible_not_silenced(tmp_path, mo
 async def test_accuracy_screen_reads_persisted_learning_cycle(tmp_path):
     store = SQLiteHotStore(tmp_path / "view.sqlite")
     market = PerpetualMarketStore(store)
-    system = AutonomousResearch(market, ai=None, venues=())
+    system = AutonomousResearch(market, venues=())
     try:
         await system.cycle()
         panel = ResearchDashboard(
-            owner_id=42, market=market, ai=None, venues=("hyperliquid",),
+            owner_id=42, market=market, venues=("hyperliquid",),
             shadow_enabled=True,
         )
         panel.screen = "accuracy"
@@ -92,7 +92,7 @@ async def test_accuracy_screen_reads_persisted_learning_cycle(tmp_path):
         with store.connect() as conn:
             conn.execute("UPDATE perp_learning_cycle_health SET auto_ai_ok=0")
         panel = ResearchDashboard(
-            owner_id=42, market=market, ai=None, venues=("hyperliquid",),
+            owner_id=42, market=market, venues=("hyperliquid",),
             shadow_enabled=True,
         )
         panel.screen = "accuracy"

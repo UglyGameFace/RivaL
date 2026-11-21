@@ -1,6 +1,6 @@
 # RivaL opportunity-first operating guide
 
-> **Retirement notice (2026-11-06):** Gemini, OpenRouter and Cloudflare inference were retired from RivaL; the private local LFM3 gateway is the sole AI provider (see [local-only Intelligence](RIVAL_INTELLIGENCE_LOCAL_ONLY.md)). The "Gemini research … automatically enabled" line below is false: no Gemini research runs.
+> **Retirement notice (2026-11-06):** Gemini, OpenRouter and Cloudflare inference were retired from RivaL; the private local LFM3 gateway was the sole AI provider until it too was retired on 2026-11-21, when the RivaL-Intelligence service was removed. The "Gemini research … automatically enabled" line below is false: no Gemini research runs.
 
 The intended output is a **current, eligible price opportunity with measurable
 market-estimated edge** or an explicit **PASS**, not a long introduction to

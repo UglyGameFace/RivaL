@@ -25,17 +25,13 @@ Before calling the connection continuous, merge the source PR with explicit depl
 
 ## GitHub reliability and refresh
 
-The public dashboard does not call GitHub's anonymous REST API to build its primary PR/CI view. Anonymous GitHub requests can return HTTP 403 after rate limits, so retrying from a browser was not a meaningful repair. The evidence workflow uses the ephemeral built-in `GITHUB_TOKEN` with **read-only** `actions:read` and `pull-requests:read` permissions. It gathers a bounded, allowlisted snapshot of public RivaL PR merge records and recent Actions runs. No PR bodies, private Intelligence repository metadata, user emails, logs, or secrets are published.
+The public dashboard does not call GitHub's anonymous REST API to build its primary PR/CI view. Anonymous GitHub requests can return HTTP 403 after rate limits, so retrying from a browser was not a meaningful repair. The evidence workflow uses the ephemeral built-in `GITHUB_TOKEN` with **read-only** `actions:read` and `pull-requests:read` permissions. It gathers a bounded, allowlisted snapshot of public RivaL PR merge records and recent Actions runs. No PR bodies, private repository metadata, user emails, logs, or secrets are published.
 
 The same signed GitHub Actions OIDC receipt is authenticated and scrubbed again by the Cloudflare collector, then atomically replaces the public GitHub snapshot cache. A failed source read does not erase the previous verified snapshot. The site shows the capture time and explicitly calls it a snapshot rather than live status. GitHub run links remain available for job logs and artifacts that require additional permissions; missing detailed logs are not treated as nonexistent artifacts.
 
-RivaL Intelligence's repository is public. The publisher reads a bounded public snapshot (8 PRs, 8 runs, latest commit SHA) plus the separate Discloud container status; it never reads private inference requests, model weights, logs or secrets. An online container does not prove model inference quality, deployment SHA, or economic edge.
-
-## Immediate first run and RivaL Intelligence
+## Immediate first run
 
 The evidence job has a path-scoped push trigger on main for its own workflow and collector files. This permits an immediate signed receipt after a verified merge, alongside the scheduled hourly run and manual dispatch. The receiver authenticates GitHub OIDC signature, expected repository, exact workflow, main ref, event and token expiry. A fork or PR identity cannot publish.
-
-RivaL Intelligence's repository is presently public. The existing ephemeral GitHub token reads a bounded public commit/PR/CI snapshot, not private inference requests, model weights, logs or secrets. The optional Discloud status API GET reads the separate Intelligence container state using existing protected secrets. An online container does not prove model inference quality, deployment SHA, or economic edge.
 
 ## Real paired model score evidence
 

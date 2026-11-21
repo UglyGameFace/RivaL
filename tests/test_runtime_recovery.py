@@ -10,7 +10,6 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import discord
-import httpx
 import pytest
 
 from parlay_bot.discord_app.error_log import ProblemGroup
@@ -23,7 +22,6 @@ from parlay_bot.discord_app.status_card import (
     problem_state,
 )
 from parlay_bot.discord_app.status_publisher import StatusPublisher
-from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.research_hypotheses import list_blocked_receipts, record_blocked_receipt
 from parlay_bot.research.source_runs import record_source_run, source_run_receipt
 from parlay_bot.research.training_outcomes import summarize
@@ -195,69 +193,6 @@ def test_cold_read_burst_is_computed_once_and_failures_are_not_cached():
 
 
 @pytest.mark.asyncio
-async def test_btc_then_xrp_waits_for_real_capacity_and_persists_both(tmp_path, monkeypatch):
-    from parlay_bot.perpetuals import local_first_research as module
-
-    class Clock(datetime):
-        value = NOW
-
-        @classmethod
-        def now(cls, tz=None):
-            return cls.value
-
-    sleeps = []
-
-    async def wait(seconds):
-        sleeps.append(seconds)
-        Clock.value += timedelta(seconds=seconds)
-
-    def evidence(_market, *, asset, **kwargs):
-        return ({'asset': asset, 'sources': [{'venue': v} for v in ('okx', 'gate', 'bitget')],
-                 'analysis': 'unvalidated_research', 'horizon_minutes': 5},
-                ('a' if asset == 'BTC' else 'b') * 64)
-
-    def response(_request):
-        return httpx.Response(200, json={
-            'model': module.LOCAL_MODEL, 'direction': 'uncertain', 'confidence': 'low',
-            'thesis': 'Insufficient future evidence', 'risk': 'No verified edge',
-            'uncalibrated': True, 'informational_only': True})
-
-    monkeypatch.setattr(module, 'datetime', Clock)
-    monkeypatch.setattr(module.asyncio, 'sleep', wait)
-    monkeypatch.setattr(module, 'build_evidence', evidence)
-    store = SQLiteHotStore(tmp_path / 'cpu.sqlite')
-    market = PerpetualMarketStore(store)
-    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
-        ai = module.LocalFirstResearch(market, local_key='test', client=client)
-        try:
-            btc = await ai.ask(asset='BTC', venues=('okx', 'gate', 'bitget'), busy_retry=True)
-            xrp = await ai.ask(asset='XRP', venues=('okx', 'gate', 'bitget'), busy_retry=True)
-            assert sleeps and sleeps[0] >= 60
-            for result in (btc, xrp):
-                assert market.cached_ai_research(asset=result.asset, model=result.model,
-                                                 evidence_sha256=result.evidence_sha256)
-        finally:
-            store.close()
-
-
-def test_unmetered_private_calls_keep_spacing_and_explicit_caps(tmp_path):
-    store = SQLiteHotStore(tmp_path / 'quota.sqlite')
-    market = PerpetualMarketStore(store)
-    try:
-        for i in range(25):
-            assert market.reserve_ai_request(model='local', now=NOW + timedelta(seconds=61*i),
-                                             daily_max=0, cooldown_seconds=60)
-        assert not market.reserve_ai_request(model='local', now=NOW + timedelta(seconds=61*24+1),
-                                             daily_max=0, cooldown_seconds=60)
-        for i in range(2):
-            assert market.reserve_ai_request(model='capped', now=NOW + timedelta(seconds=61*i),
-                                             daily_max=2, cooldown_seconds=60)
-        assert not market.reserve_ai_request(model='capped', now=NOW + timedelta(minutes=5),
-                                             daily_max=2, cooldown_seconds=60)
-    finally:
-        store.close()
-
-
 def complete_source(months=MONTHS):
     return {'venue': 'gate', 'months': months, 'status': 'verified_research_archived_no_qualified_models',
             'source_scopes': [{'contract': f'{a}_USDT', 'quote': 'USDT', 'interval': 5}

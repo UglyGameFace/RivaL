@@ -123,7 +123,7 @@ async def test_live_accuracy_screen_explains_shortage_in_actual_database(tmp_pat
     try:
         _populate(market, now=now, count=25)
         view = ResearchDashboard(
-            owner_id=42, market=market, ai=None,
+            owner_id=42, market=market,
             venues=("hyperliquid", "binance"), shadow_enabled=True,
         )
         view.screen = "accuracy"

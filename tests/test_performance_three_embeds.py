@@ -207,9 +207,6 @@ def test_three_embeds_carry_every_number_from_the_old_card():
     assert "⚠️ 279/288 cycles in 24h, 458 predictions skipped (ran late)" in health
     assert ("**Baseline skill:** has not passed the base-rate and coin-flip checks "
             "(3,263 results over 12 days)") in health
-    assert ("**AI reviewer:** automatic reviews are paused (last one 4 days ago); "
-            "it still answers when asked") in health
-    assert "agreed 95 times (right 54%), sat out 2" in health
 
 
 def test_three_embeds_fit_discord_limits_with_no_mid_word_cut():

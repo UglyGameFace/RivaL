@@ -37,9 +37,9 @@ def controls(view):
     return {item.custom_id: item for item in view.children}
 
 
-def test_research_three_tabs_and_nested_ai_review_keep_refresh():
+def test_research_three_tabs_and_legacy_ai_section_redirects():
     dashboard = ResearchDashboard(
-        owner_id=21, market=None, ai=None,
+        owner_id=21, market=None,
         venues=("hyperliquid", "dydx"),
     )
     dashboard.screen = "math"
@@ -54,7 +54,8 @@ def test_research_three_tabs_and_nested_ai_review_keep_refresh():
         assert not buttons["rival:research:refresh"].disabled
         dashboard.section = "ai"
         dashboard._rebuild()
-        assert controls(dashboard)["rival:research:analyze"].disabled
+        # The retired AI section redirects to the Math overview.
+        assert dashboard.section == "overview"
         assert controls(dashboard)["rival:research:math"].style is discord.ButtonStyle.success
         dashboard.screen = "accuracy"
         dashboard.section = "overview"
@@ -89,7 +90,7 @@ async def test_live_health_is_fresh_without_invalidating_history_on_every_live_r
 
     monkeypatch.setattr(module, "history_inventory", expensive_history)
     dashboard = ResearchDashboard(
-        owner_id=21, market=market, ai=None,
+        owner_id=21, market=market,
         venues=("hyperliquid", "dydx"),
     )
     dashboard.screen = "math"
@@ -148,7 +149,7 @@ async def test_api_success_without_completed_candle_is_not_a_fresh_feed(tmp_path
         last_candle_close=now - timedelta(hours=1),
     )
     view = ResearchDashboard(
-        owner_id=21, market=market, ai=None, venues=("hyperliquid",),
+        owner_id=21, market=market, venues=("hyperliquid",),
     )
     view.screen = "math"
     view._rebuild()

@@ -77,32 +77,6 @@ async def test_ai_evidence_consumes_all_healthy_venues_and_many_windows(tmp_path
         store.close()
 
 
-@pytest.mark.asyncio
-async def test_persisted_quota_rejects_requests_after_limit_and_honors_cooldown(tmp_path):
-    store = SQLiteHotStore(tmp_path / "rival.sqlite")
-    market = PerpetualMarketStore(store)
-    # Daily budget resets at midnight UTC; this test exercises SAME-DAY caps.
-    now = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
-    try:
-        assert market.reserve_ai_request(
-            model="gemini-test", now=now, daily_max=2, cooldown_seconds=900,
-        )
-        assert not market.reserve_ai_request(
-            model="gemini-test", now=now + timedelta(seconds=2),
-            daily_max=2, cooldown_seconds=900,
-        )
-        assert market.reserve_ai_request(
-            model="gemini-test", now=now + timedelta(minutes=16),
-            daily_max=2, cooldown_seconds=900,
-        )
-        assert not market.reserve_ai_request(
-            model="gemini-test", now=now + timedelta(minutes=32),
-            daily_max=2, cooldown_seconds=900,
-        )
-    finally:
-        store.close()
-
-
 def test_history_is_six_calendar_months_and_never_faked(tmp_path):
     assert six_months_prior(
         datetime(2026, 8, 31, tzinfo=UTC)
@@ -122,8 +96,8 @@ def test_history_is_six_calendar_months_and_never_faked(tmp_path):
         store.close()
 
 
-def test_research_dashboard_does_not_claim_active_math_or_unconfigured_ai():
-    view = ResearchDashboard(owner_id=15, market=None, ai=None, venues=())
+def test_research_dashboard_does_not_claim_active_math():
+    view = ResearchDashboard(owner_id=15, market=None, venues=())
     assert {x.custom_id for x in view.children} == {
         "rival:research:math", "rival:research:asset",
         "rival:research:refresh", "rival:research:accuracy",
@@ -133,7 +107,7 @@ def test_research_dashboard_does_not_claim_active_math_or_unconfigured_ai():
 
 
 def test_xrp_intelligence_reuses_persisted_model_and_history_audit(tmp_path):
-    """XRP source history and math provenance enter the actual AI evidence digest."""
+    """XRP source history and math provenance enter the actual evidence digest."""
     from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle
 
     store = SQLiteHotStore(tmp_path / "xrp.sqlite")
@@ -205,16 +179,6 @@ def test_xrp_intelligence_reuses_persisted_model_and_history_audit(tmp_path):
         assert evidence["prospective_math"]["settled_targets"] == 150
         assert evidence["prospective_math"]["after_cost_edge_verified"] is False
         assert evidence["cold_archive_readback"] == "not_performed_by_live_research"
-        from parlay_bot.perpetuals.evidence_policy import enforce
-        reply = enforce(
-            {"direction": "up", "confidence": "high"},
-            evidence, asset="XRP", now=now + timedelta(minutes=2),
-        )
-        assert reply["direction"] == "uncertain"
-        assert "1/3" in reply["thesis"]
-        assert "1/1" in reply["thesis"]
-        assert "0.230" in reply["thesis"]
-        assert reply["informational_only"] is True
         market.research_candidate_registry = None
         evidence_without_models, digest_without_models = build_evidence(
             market, asset="XRP", venues=tuple(row[0] for row in contracts),

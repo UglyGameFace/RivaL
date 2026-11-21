@@ -266,7 +266,7 @@ async def test_advance_timeout_preserves_incumbent_and_heartbeat(monkeypatch, ca
     assert "advance stage timed out" in caplog.text
 
 
-def _research(monkeypatch, *, forward=None, auto_ai=None):
+def _research(monkeypatch, *, forward=None):
     """AutonomousResearch with stubbed stages; _save_cycle captures its flags."""
     saved: dict[str, object] = {}
     system = object.__new__(AutonomousResearch)
@@ -278,12 +278,6 @@ def _research(monkeypatch, *, forward=None, auto_ai=None):
     system.review_model = lambda: 0
     system.evaluate_promotion = lambda: None
 
-    async def run_auto_ai() -> int:
-        if auto_ai is None:
-            return 0
-        return await auto_ai()
-
-    system.run_auto_ai = run_auto_ai
     system._save_cycle = lambda **kwargs: saved.update(kwargs)
     system.events = SimpleNamespace(refresh=lambda: {
         "sources_checked": 0, "sources_ok": 0,
@@ -321,26 +315,3 @@ async def test_autonomous_cycle_continues_past_timed_out_forward_stage(
     blocked.set()
     await asyncio.sleep(0.05)
 
-
-async def test_autonomous_cycle_continues_past_timed_out_auto_ai_stage(
-    monkeypatch, caplog,
-):
-    """A blocked auto-AI stage is skipped (auto_ai_ok False) and the cycle
-    still saves and returns."""
-    blocked = asyncio.Event()
-
-    async def auto_ai():
-        await blocked.wait()
-        return 0
-
-    system, saved = _research(monkeypatch, auto_ai=auto_ai)
-    monkeypatch.setattr(
-        autonomous_module, "AUTONOMOUS_AUTO_AI_TIMEOUT_SECONDS", 0.05,
-    )
-    with caplog.at_level(
-        logging.WARNING, logger="parlay_bot.perpetuals.autonomous",
-    ):
-        result = await asyncio.wait_for(system.cycle(), timeout=5)
-    assert result == (0, 0, 0)
-    assert saved["auto_ai_ok"] is False
-    assert "automatic AI stage timed out" in caplog.text

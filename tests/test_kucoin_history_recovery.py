@@ -176,7 +176,7 @@ async def test_kucoin_history_progress_visible_in_research_menu(tmp_path):
     market = PerpetualMarketStore(store)
     worker = KucoinHistoryRecovery(market, assets=("BTC",), page_bars=12)
     view = ResearchDashboard(
-        owner_id=42, market=market, ai=None,
+        owner_id=42, market=market,
         venues=("gate", "kucoin"), shadow_enabled=False,
     )
     try:

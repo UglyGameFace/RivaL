@@ -74,7 +74,7 @@ def test_invalid_scores_or_timestamps_never_vote_for_model_promotion():
 def test_governance_filters_wrong_model_versions_and_uses_paired_loss(tmp_path):
     store = SQLiteHotStore(tmp_path / "governance.sqlite")
     market = PerpetualMarketStore(store)
-    supervisor = AutonomousResearch(market, ai=None, venues=(), assets=("BTC",))
+    supervisor = AutonomousResearch(market, venues=(), assets=("BTC",))
     now = datetime(2026, 10, 28, 16, tzinfo=UTC)
     supervisor.initialize()
     try:
@@ -126,7 +126,7 @@ def test_no_trade_settled_rows_never_crash_model_review(tmp_path):
     """A target window with zero trades settles with no outcome or score."""
     store = SQLiteHotStore(tmp_path / "governance-null.sqlite")
     market = PerpetualMarketStore(store)
-    supervisor = AutonomousResearch(market, ai=None, venues=(), assets=("BTC",))
+    supervisor = AutonomousResearch(market, venues=(), assets=("BTC",))
     now = datetime(2026, 10, 28, 16, tzinfo=UTC)
     supervisor.initialize()
     try:

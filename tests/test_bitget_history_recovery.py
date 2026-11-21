@@ -156,7 +156,7 @@ async def test_bitget_history_page_bounds_and_compact_progress(tmp_path):
         try:
             worker._position("BTC", NOW)
             view = ResearchDashboard(
-                owner_id=42, market=market, ai=None,
+                owner_id=42, market=market,
                 venues=("gate", "kucoin", "bitget"),
                 shadow_enabled=False,
             )

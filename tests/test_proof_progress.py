@@ -206,7 +206,7 @@ async def test_progress_is_a_lightweight_navigable_results_section(learning_stor
     )
     panel = ResearchDashboard(
         owner_id=42, market=PerpetualMarketStore(learning_store),
-        ai=None, venues=("hyperliquid", "okx"),
+        venues=("hyperliquid", "okx"),
     )
     panel.screen = "accuracy"
     panel.section = "progress"

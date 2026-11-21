@@ -15,7 +15,7 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
     market = PerpetualMarketStore(store)
     ForwardAccuracyMonitor(market).initialize()
     view = ResearchDashboard(
-        owner_id=42, market=market, ai=None,
+        owner_id=42, market=market,
         venues=("hyperliquid", "dydx"), shadow_enabled=True,
     )
     try:
@@ -174,7 +174,7 @@ async def test_trial_detail_field_carries_the_cut_metrics(tmp_path, monkeypatch)
         else {"issued": 0},
     )
     view = ResearchDashboard(
-        owner_id=42, market=market, ai=None,
+        owner_id=42, market=market,
         venues=("hyperliquid", "dydx"), shadow_enabled=True,
     )
     try:

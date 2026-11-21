@@ -95,7 +95,7 @@ async def test_detailed_research_fills_itself_in_after_a_slow_read(monkeypatch):
     from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 
     monkeypatch.setattr(patient_render, "FIRST_WAIT", .05)
-    view = ResearchDashboard(owner_id=1, market=None, ai=None, venues=())
+    view = ResearchDashboard(owner_id=1, market=None, venues=())
 
     async def slow_render():
         await asyncio.sleep(.2)
@@ -120,7 +120,7 @@ async def test_a_newer_press_keeps_an_old_slow_screen_off_the_message(monkeypatc
     from parlay_bot.discord_app import patient_render
     from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 
-    view = ResearchDashboard(owner_id=1, market=None, ai=None, venues=())
+    view = ResearchDashboard(owner_id=1, market=None, venues=())
 
     async def slow_render():
         await asyncio.sleep(.2)

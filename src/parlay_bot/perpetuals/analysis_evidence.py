@@ -101,7 +101,7 @@ def _prospective_math_evidence(market: PerpetualMarketStore, *, asset: str,
     if auditor is None:
         return {"status": "not_configured", "after_cost_edge_verified": False}
     # This 14-day score costs 3-7 s and held a pooled connection on every
-    # Intelligence review. A review only summarises it, so reuse the score
+    # read. Callers only summarise it, so reuse the score
     # for MATH_EVIDENCE_TTL; never one computed for a later clock.
     cache = market.__dict__.setdefault("_review_math_evidence", {})
     hit = cache.get(asset)

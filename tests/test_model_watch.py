@@ -139,7 +139,7 @@ async def test_a_deleted_watch_post_is_forgotten(store):  # noqa: F811
 @pytest.mark.asyncio
 async def test_picking_several_models_opens_the_compare_card(store):  # noqa: F811
     _seed(store)
-    view = ResearchDashboard(owner_id=1, market=SimpleNamespace(store=store), ai=None,
+    view = ResearchDashboard(owner_id=1, market=SimpleNamespace(store=store),
                              venues=("okx",), watch_service=object())
     view.screen, view.section = "accuracy", "better"
     view._rebuild()

@@ -149,7 +149,7 @@ async def test_okx_progress_on_private_research_menu(tmp_path):
     market = PerpetualMarketStore(store)
     worker = OkxHistoryRecovery(market, assets=("BTC",), page_bars=12)
     view = ResearchDashboard(
-        owner_id=42, market=market, ai=None,
+        owner_id=42, market=market,
         venues=("gate", "kucoin", "bitget", "okx"),
         shadow_enabled=False,
     )

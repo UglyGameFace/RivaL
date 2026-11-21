@@ -390,7 +390,7 @@ def test_live_polymarket_hourly_settlement_source_follows_quote_not_timeframe():
 
 
 @pytest.mark.asyncio
-async def test_market_picker_and_live_board_do_not_spend_free_ai_quota(tmp_path):
+async def test_market_picker_and_live_board_stay_math_only(tmp_path):
     hot, _store, service, _channel, _user, _edited = _setup(tmp_path)
     now = datetime.now(UTC)
     start = datetime.fromtimestamp(int(now.timestamp()) // 300 * 300, UTC)
@@ -423,16 +423,11 @@ async def test_market_picker_and_live_board_do_not_spend_free_ai_quota(tmp_path)
     try:
         await service._observation("BTC", 5)
         calls.assert_called_once_with(notice)
-        # Explicit contract call is the ONLY API-capable path.
-        assert await service.request_contract_ai("BTC", 5)
-        assert calls.call_count == 2
-        assert calls.call_args.kwargs == {"request_ai": True}
-        # Further auto board/price refreshes must remain math-only.
+        # Further auto board/price refreshes remain math-only, and the
+        # board no longer exposes any contract-AI request path.
         await service._observation("BTC", 5)
         assert calls.call_args.kwargs == {}
-        research.ai.available = False
-        assert not await service.request_contract_ai("BTC", 5)
-        assert calls.call_count == 3
+        assert not hasattr(service, "request_contract_ai")
     finally:
         await service.aclose()
         hot.close()

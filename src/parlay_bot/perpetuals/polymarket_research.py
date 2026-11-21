@@ -16,7 +16,6 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from parlay_bot.perpetuals.ai_types import ResearchUnavailable
 from parlay_bot.perpetuals.polymarket_learning import PolymarketOutcomeLearner
 from parlay_bot.perpetuals.polymarket_oracle import (
     OracleReference,
@@ -55,9 +54,8 @@ class ContractCall:
 
 
 class PolymarketResearch:
-    def __init__(self, store: RelationalHotStore, *, ai=None) -> None:
+    def __init__(self, store: RelationalHotStore) -> None:
         self.store = store
-        self.ai = ai
         self.learner = PolymarketOutcomeLearner(store)
         self.oracle_challenger = PolymarketOracleChallenger(store)
         self._learning_tasks: dict[str, asyncio.Task[bool]] = {}
@@ -67,8 +65,6 @@ class PolymarketResearch:
         self._initialized = False
         self._closed = False
         self._init_lock = threading.Lock()
-        self._pending: dict[str, asyncio.Task] = {}
-        self._calls: dict[str, ContractCall] = {}
         self._status: dict[str, tuple[datetime, str]] = {}
         self._settle_task: asyncio.Task | None = None
         self._settle_after = datetime.min.replace(tzinfo=UTC)
@@ -224,40 +220,33 @@ class PolymarketResearch:
         return self._saved(call.slug)
 
     def peek(self, slug: str) -> ContractCall | None:
-        # The first book-model call is the scored, immutable forecast.
-        # A newer optional AI review must not replace or rewrite it.
-        call = self._math_calls.get(slug) or self._calls.get(slug)
+        # The book-model call is the scored, immutable forecast.
+        call = self._math_calls.get(slug)
         now = datetime.now(UTC)
         return call if call is not None and call.issued_at <= now < call.expires else None
 
     def status(self, slug: str) -> str:
-        if slug in self._pending:
-            return "Analyzing this Polymarket contract with free AI…"
         saved = self._status.get(slug)
-        return saved[1] if saved else "No contract-specific AI call has been issued yet."
+        return saved[1] if saved else "No contract call has been issued yet."
 
     def refresh_note(self, slug: str) -> str | None:
-        return self.status(slug) if slug in self._pending or slug in self._status else None
+        return self.status(slug) if slug in self._status else None
 
-    def observe(self, notice, *, request_ai: bool = False) -> ContractCall | None:
-        """Learn mathematically without spending AI quota unless explicitly requested.
+    def observe(self, notice) -> ContractCall | None:
+        """Learn mathematically from the notice and return any live call.
 
-        Background market boards and previews must never trigger OpenRouter
-        calls. A deliberate user action can opt into experimental AI review.
+        Background market boards and previews only ever use the book
+        model; no external review is requested.
         """
         if self._closed:
             return None
         now = datetime.now(UTC)
-        for slug in list(self._calls):
-            if self._calls[slug].expires <= now:
-                self._calls.pop(slug, None)
         for slug in list(self._math_calls):
             if self._math_calls[slug].expires <= now:
                 self._math_calls.pop(slug, None)
         if len(self._status) > 48:
             for slug in list(self._status):
-                if slug not in self._pending:
-                    self._status.pop(slug, None)
+                self._status.pop(slug, None)
                 if len(self._status) <= 24:
                     break
         if not (
@@ -273,107 +262,9 @@ class PolymarketResearch:
             self._status[notice.slug] = (now + timedelta(seconds=15), "Verified contract inputs are incomplete or stale.")
             return None
         self.schedule_study(notice)
-        if not request_ai:
-            # Ordinary board refreshes and silent training use zero LLM tokens.
-            # Existing validated model research still runs above.
-            return self.peek(notice.slug)
-        cached = self._calls.get(notice.slug)
-        if cached is not None and not self._needs_refresh(cached, notice, now):
-            return cached or self.peek(notice.slug)
-        if notice.slug in self._pending:
-            return cached or self.peek(notice.slug)
-        previous = self._status.get(notice.slug)
-        if previous is not None and now < previous[0]:
-            return cached or self.peek(notice.slug)
-        if len(self._pending) >= 12:
-            return None
-        task = asyncio.create_task(self._produce(notice), name="rival-polymarket-ai-contract")
-        self._pending[notice.slug] = task
-
-        def done(finished: asyncio.Task) -> None:
-            if self._pending.get(notice.slug) is finished:
-                self._pending.pop(notice.slug, None)
-            if not finished.cancelled():
-                finished.exception()
-
-        task.add_done_callback(done)
-        return cached or self.peek(notice.slug)
-
-    @staticmethod
-    def _needs_refresh(call: ContractCall, notice, now: datetime) -> bool:
-        """Optional independent AI research may publish a labeled revision.
-
-        Revisions do not alter the book-model's frozen, scored first forecast.
-        """
-        return (
-            now - call.issued_at >= timedelta(seconds=60)
-            and call.input_up_ask is not None and call.input_down_ask is not None
-            and max(abs(notice.up_ask-call.input_up_ask),
-                    abs(notice.down_ask-call.input_down_ask)) >= 0.05
-        )
-
-    async def _produce(self, notice) -> None:
-        try:
-            saved = await asyncio.to_thread(self._saved, notice.slug)
-            if saved is not None and not self._needs_refresh(saved, notice, datetime.now(UTC)):
-                if saved.expires > datetime.now(UTC):
-                    self._calls[notice.slug] = saved
-                return
-            if self.ai is None or not self.ai.available:
-                raise ResearchUnavailable("Contract-specific LFM3 analysis is not configured.")
-            now = datetime.now(UTC)
-            if notice.expires - now < timedelta(seconds=45):
-                raise ResearchUnavailable("Too little time remains to issue a new AI call.")
-            evidence = {
-                "target": "polymarket", "slug": notice.slug,
-                "asset": notice.asset, "horizon_minutes": notice.horizon,
-                "condition_id": notice.condition_id,
-                "up_token_id": notice.up_token_id, "down_token_id": notice.down_token_id,
-                "opens_at": notice.issued.isoformat(), "closes_at": notice.expires.isoformat(),
-                "source_quote_at": notice.quote_at.isoformat(),
-                "observed_at": (notice.received_at or notice.quote_at).isoformat(),
-                "resolution_source": notice.resolution_source,
-                "published_settlement_rules": notice.rules,
-                "price_to_beat": notice.price_to_beat,
-                "up_ask": notice.up_ask, "down_ask": notice.down_ask,
-                "up_10_share_average_ask": notice.up_average_ask,
-                "down_10_share_average_ask": notice.down_average_ask,
-                "contract_outcome_training_verified": False,
-            }
-            digest = hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest()
-            result = await asyncio.wait_for(self.ai.review_contract(evidence), timeout=22)
-            issued = datetime.now(UTC)
-            if issued >= notice.expires or result.get("slug") != notice.slug:
-                raise ResearchUnavailable("The reviewed contract expired or did not match.")
-            call = ContractCall(
-                slug=notice.slug, asset=notice.asset, horizon=notice.horizon,
-                issued_at=issued, expires=notice.expires,
-                direction={"up": "UP", "down": "DOWN", "uncertain": "WAIT"}[result["direction"]],
-                model=result["model"], thesis=result["thesis"], risk=result["risk"],
-                evidence_sha256=digest,
-                input_up_ask=notice.up_ask, input_down_ask=notice.down_ask,
-            )
-            call = await asyncio.to_thread(self._save, call, notice, evidence)
-            if call is not None and call.expires > datetime.now(UTC):
-                self._calls[notice.slug] = call
-                self._status.pop(notice.slug, None)
-                _LOG.info("RivaL Polymarket AI issued asset=%s horizon=%s slug=%s direction=%s model=%s",
-                          call.asset, call.horizon, call.slug, call.direction, call.model)
-        except ResearchUnavailable as exc:
-            self._status[notice.slug] = (datetime.now(UTC) + timedelta(seconds=60), str(exc))
-            _LOG.info("RivaL Polymarket AI unavailable asset=%s horizon=%s reason=%s",
-                      notice.asset, notice.horizon, str(exc))
-        except Exception:  # noqa: BLE001 - no substitute exchange forecast
-            self._status[notice.slug] = (datetime.now(UTC) + timedelta(seconds=60), "Contract AI unavailable; no source was substituted.")
-            _LOG.exception("RivaL Polymarket AI research failed")
+        return self.peek(notice.slug)
 
     async def wait(self, slug: str) -> ContractCall | None:
-        pending = self._pending.get(slug)
-        if pending is not None:
-            try:
-                await asyncio.wait_for(asyncio.shield(pending), timeout=23)
-            except TimeoutError:
-                return None
         return self.peek(slug)
 
     def _unsettled(self, now: datetime) -> list[dict]:
@@ -558,7 +449,7 @@ class PolymarketResearch:
 
     async def aclose(self) -> None:
         self._closed = True
-        pending = list(self._pending.values()) + list(self._learning_tasks.values())
+        pending = list(self._learning_tasks.values())
         if self._settle_task is not None:
             pending.append(self._settle_task)
         for task in pending:
@@ -568,5 +459,4 @@ class PolymarketResearch:
         # for the owned workers before the caller shuts down the store.
         if self._study_workers:
             await asyncio.gather(*tuple(self._study_workers), return_exceptions=True)
-        self._pending.clear()
         self._learning_tasks.clear()

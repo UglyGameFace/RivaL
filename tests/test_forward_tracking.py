@@ -134,7 +134,7 @@ async def test_tracking_controls_are_available_without_triggering_sessions(learn
 
     tracker = _monitor(learning_store)
     panel = ResearchDashboard(owner_id=42, market=PerpetualMarketStore(learning_store),
-                              ai=None, venues=("hyperliquid",))
+                              venues=("hyperliquid",))
     # Audit Step 3: tracking is the "Track next" detail topic inside
     # "Is anything better?", not a standalone section.
     panel.screen, panel.section = "accuracy", "better"

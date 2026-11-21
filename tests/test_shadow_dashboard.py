@@ -19,7 +19,7 @@ async def test_learning_question_discloses_automatic_shadow_status(tmp_path):
 
     market = PerpetualMarketStore(store)
     dashboard = ResearchDashboard(
-        owner_id=123, market=market, ai=None,
+        owner_id=123, market=market,
         venues=("hyperliquid",), shadow_enabled=True,
     )
     try:
@@ -48,7 +48,7 @@ async def test_learning_question_reports_when_background_learning_disabled(tmp_p
 
     store = SQLiteHotStore(tmp_path / "rival.sqlite")
     dashboard = ResearchDashboard(
-        owner_id=123, market=PerpetualMarketStore(store), ai=None,
+        owner_id=123, market=PerpetualMarketStore(store),
         venues=("hyperliquid",), shadow_enabled=False,
     )
     try:

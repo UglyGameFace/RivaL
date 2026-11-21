@@ -102,7 +102,7 @@ async def test_math_screen_labels_past_5m_move_not_validated_bet(tmp_path):
     seed(market, moment=datetime.now(UTC))
     try:
         view = ResearchDashboard(
-            owner_id=42, market=market, ai=None,
+            owner_id=42, market=market,
             venues=tuple(v for v, *_ in VENUES),
         )
         view.screen = "math"
@@ -125,7 +125,7 @@ async def test_math_screen_falls_back_to_no_signal_if_sources_stale(tmp_path):
     store = SQLiteHotStore(tmp_path / "market.sqlite")
     try:
         view = ResearchDashboard(
-            owner_id=42, market=PerpetualMarketStore(store), ai=None,
+            owner_id=42, market=PerpetualMarketStore(store),
             venues=("hyperliquid", "dydx", "bitget"),
         )
         view.screen = "math"

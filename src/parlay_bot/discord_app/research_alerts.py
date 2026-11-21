@@ -24,7 +24,6 @@ FORECASTS_STALE_AFTER = timedelta(minutes=20)  # cycles run every 5 minutes
 # by "older than 3 days" fired falsely from the 4th of every month. It is
 # stale only when this month's 1st is still missing after a short grace.
 MONTH_GRACE = timedelta(days=2)
-INTELLIGENCE_STALE_AFTER = timedelta(hours=2)  # reviews every 5-15 minutes
 DECAY_WINDOW = timedelta(days=3)
 DECAY_MIN_GRADED = 300
 DECAY_SIGMAS = 2.0
@@ -85,8 +84,7 @@ def _has_usable_fit(conn, family: str, stamp: datetime) -> bool:
         return False
 
 
-def research_alerts(store, *, now: datetime | None = None,
-                    intelligence_enabled: bool = True) -> list[tuple[str, str]]:
+def research_alerts(store, *, now: datetime | None = None) -> list[tuple[str, str]]:
     """All checks share ONE pooled connection.
 
     Each check used to check out its own connection. When the pool was busy,
@@ -110,7 +108,7 @@ def research_alerts(store, *, now: datetime | None = None,
         # (tests, replays) always reads the table fresh.
         cache = _decay_cache(store) if now is None else None
         with store.connect() as conn:
-            return _checks(conn, stamp, intelligence_enabled, cache)
+            return _checks(conn, stamp, cache)
     except Exception as exc:  # noqa: BLE001 - pool checkout, not a missing table
         _LOG.warning("Research alert: no database connection for health checks (%s)",
                      type(exc).__name__)
@@ -181,7 +179,7 @@ def _decay_cache(store) -> _DecayCache | None:
     return cache
 
 
-def _checks(conn, stamp: datetime, intelligence_enabled: bool,
+def _checks(conn, stamp: datetime,
             decay_cache: _DecayCache | None = None) -> list[tuple[str, str]]:
     alerts: list[tuple[str, str]] = []
 
@@ -287,20 +285,6 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
                             + f"). Version {model}, error-score gap +{gap:.4f}")))
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("Research alert: challenger table unreadable (%s)", type(exc).__name__)
-
-    # 4. RivaL Intelligence is still producing reviews.
-    if intelligence_enabled:
-        try:
-            newest = _utc(scalar("SELECT MAX(issued_at) AS v FROM rival_intelligence_calls"))
-            if newest is None or stamp - newest > INTELLIGENCE_STALE_AFTER:
-                alerts.append(("intelligence:stale",
-                               "⚠️ RivaL Intelligence hasn't reviewed anything for "
-                               + (_ago(stamp - newest) if newest else "ever")))
-        except Exception as exc:  # noqa: BLE001 - unreadable is not the same as missing
-            _LOG.warning("Research alert: Intelligence table unreadable (%s)",
-                         type(exc).__name__)
-            alerts.append(("intelligence:unreadable",
-                           "⚠️ Couldn't read RivaL Intelligence's reviews; will try again"))
 
     # 5. flow_v3 / liq_v1 / archive_v1 / gbm_v1 / volcal_v1 promotion receipts (batch 2,
     # spec §2.7; Phase 3 adds liq_v1; autonomous-loop D18 adds archive_v1,

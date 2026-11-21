@@ -17,7 +17,7 @@ def test_postgres_auto_ai_forecast_settles_exact_once_and_survives_restart():
         pytest.skip("Postgres integration database unavailable")
     store = PostgresHotStore(dsn)
     market = PerpetualMarketStore(store)
-    system = AutonomousResearch(market, ai=None, venues=())
+    system = AutonomousResearch(market, venues=())
     now = datetime.now(UTC)
     boundary = now.replace(
         minute=now.minute // 5 * 5, second=0, microsecond=0,
@@ -60,7 +60,7 @@ def test_postgres_auto_ai_forecast_settles_exact_once_and_survives_restart():
                  observed.isoformat(), 100, 101, 96, 98, 5, 20),
             )
         restarted = AutonomousResearch(
-            PerpetualMarketStore(store), ai=None, venues=(),
+            PerpetualMarketStore(store), venues=(),
         )
         assert restarted.settle_ai(now=target + timedelta(minutes=6)) == 1
         assert restarted.settle_ai(now=target + timedelta(minutes=6)) == 0

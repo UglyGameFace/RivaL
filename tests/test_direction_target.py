@@ -316,7 +316,7 @@ def test_target_button_is_present_in_real_opportunities_view(tmp_path):
     ))
     try:
         view = ResearchDashboard(
-            owner_id=123, market=None, ai=None, venues=(),
+            owner_id=123, market=None, venues=(),
             target_service=client.direction_targets,
         )
         controls = {item.custom_id for item in view.children}

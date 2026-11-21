@@ -60,7 +60,7 @@ def _dashboard(monkeypatch) -> ResearchDashboard:
     monkeypatch.setattr(
         rd_module, "ForwardAccuracyMonitor", _FakeRegimeMonitor)
     dashboard = ResearchDashboard(
-        owner_id=42, market=SimpleNamespace(), ai=None,
+        owner_id=42, market=SimpleNamespace(),
         venues=("hyperliquid",),
     )
     return dashboard
@@ -196,13 +196,6 @@ async def test_performance_page_worst_case_fields_fit_and_tell_the_truth(
     monkeypatch.setattr(
         home_module, "_cycle_coverage",
         lambda *_: {"cycles": 288, "expired": 199, "issued": 100})
-    monkeypatch.setattr(
-        home_module, "_intelligence_status",
-        lambda *_: {
-            "latest": {"stances": {5: ("follow", "up")}},
-            "report": {"followed": 2, "followed_hit_rate": 0.0,
-                       "abstained": 2, "model_hit_when_abstained": 0.0},
-        })
     home.polymarket_status = lambda *_: _worst_polymarket_status()
     try:
         embeds = await home.render_embeds()
@@ -216,8 +209,6 @@ async def test_performance_page_worst_case_fields_fit_and_tell_the_truth(
     trials = next(v for k, v in fields.items() if k.startswith("🧪"))
     assert "… and 26 more" in trials        # 14 rows shown, the rest counted
     health = fields["⚙️ Running and learning"]
-    assert "too few to judge — 2 followed" in health
-    assert "right 0%" not in health
     assert "⚠️ 288/288 cycles in 24h, 199 predictions skipped (ran late)" in health
     assert "✅ 288/288" not in health
 
@@ -339,7 +330,7 @@ class _FakeSummaryMonitor:
 def _accuracy_dashboard(monkeypatch, *, section) -> ResearchDashboard:
     monkeypatch.setattr(rd_module, "ForwardAccuracyMonitor", _FakeSummaryMonitor)
     dashboard = ResearchDashboard(
-        owner_id=42, market=SimpleNamespace(store=object()), ai=None,
+        owner_id=42, market=SimpleNamespace(store=object()),
         venues=("hyperliquid",),
     )
     dashboard.shadow_enabled = True
@@ -390,20 +381,3 @@ def _analytics_details() -> dict:
             "directional_accuracy": 1.0},
     }
 
-
-@pytest.mark.asyncio
-async def test_historical_external_ai_hides_hit_rate_below_20(monkeypatch):
-    """5 decided at 100% is not a hit rate yet."""
-    monkeypatch.setattr(
-        rd_module, "analytics_snapshot",
-        lambda *_, **__: _analytics_details())
-    dashboard = _accuracy_dashboard(monkeypatch, section="calibration")
-    try:
-        embed = await dashboard._render_full()
-    finally:
-        dashboard.stop()
-    fields = {f.name: f.value for f in embed.fields}
-    assert "too few to judge — 5 graded" in fields[
-        "Historical external AI · forward outcomes"]
-    assert "100.0%" not in fields["Historical external AI · forward outcomes"]
-    assert max(map(len, fields.values())) < 1024

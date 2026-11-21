@@ -102,7 +102,7 @@ async def test_lineage_page_displays_real_boosted_delivery_proof_without_new_men
     store = SQLiteHotStore(tmp_path / "production-evidence.sqlite")
     market = PerpetualMarketStore(store)
     view = ResearchDashboard(
-        owner_id=42, market=market, ai=None,
+        owner_id=42, market=market,
         venues=("binance",), shadow_enabled=True,
     )
     try:

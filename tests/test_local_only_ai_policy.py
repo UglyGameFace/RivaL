@@ -1,4 +1,9 @@
-"""Prevent accidental reactivation of retired external AI inference."""
+"""Prevent accidental reactivation of retired AI inference.
+
+External providers (Gemini/OpenRouter/Cloudflare) were retired on
+2026-11-06; the private local LFM3 service (RivaL Intelligence) was
+retired on 2026-11-21. No AI research client ships at all now.
+"""
 from pathlib import Path
 
 from parlay_bot.config import Settings
@@ -15,13 +20,13 @@ def test_external_ai_adapters_are_not_shipped():
         assert not (ROOT / "src" / "parlay_bot" / "perpetuals" / name).exists()
 
 
-def test_bot_only_instantiates_private_local_intelligence():
+def test_bot_instantiates_no_ai_research_client():
     code = (ROOT / "src/parlay_bot/discord_app/bot.py").read_text()
-    assert "LocalFirstResearch(" in code
+    assert "LocalFirstResearch" not in code
     assert "OpenRouterResearch" not in code
     assert "CloudflareResearch" not in code
     assert "GeminiResearch" not in code
-    assert "self.intelligence_research" in code
+    assert "intelligence_research" not in code
 
 
 def test_retired_api_keys_do_not_enter_settings(monkeypatch):
@@ -56,7 +61,6 @@ def test_stale_docs_carry_a_retirement_banner():
         "RIVAL_CONTINUOUS_LEARNING.md",
         "OPPORTUNITY_DESK.md",
         "DK_ASSISTED_CDNA.md",
-        "RIVAL_LOCAL_INTELLIGENCE_ENGINE.md",
         "auto-hunt.md",
     ):
         text = (ROOT / "docs" / name).read_text()

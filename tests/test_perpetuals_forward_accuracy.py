@@ -203,7 +203,7 @@ async def test_research_accuracy_tab_reads_real_database_without_invented_result
     store = SQLiteHotStore(tmp_path / "menu.sqlite")
     market = PerpetualMarketStore(store)
     view = ResearchDashboard(
-        owner_id=42, market=market, ai=None,
+        owner_id=42, market=market,
         venues=("hyperliquid", "dydx"), shadow_enabled=True,
     )
     try:
@@ -369,7 +369,7 @@ async def test_detailed_accuracy_survives_incomplete_paired_scores(tmp_path):
                 ((now + timedelta(minutes=5)).isoformat(),),
             )
         view = ResearchDashboard(
-            owner_id=42, market=market, ai=None,
+            owner_id=42, market=market,
             venues=("hyperliquid",), shadow_enabled=True,
         )
         view.screen = "accuracy"

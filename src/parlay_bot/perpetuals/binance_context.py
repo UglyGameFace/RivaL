@@ -2,7 +2,7 @@
 
 Fetches exactly the series the Drive warehouse archives for training:
 5m klines (volume, taker-buy volume, trade count), 5m premium-index klines and
-settled funding rates, plus open interest for RivaL Intelligence context.
+settled funding rates, plus open interest for research context.
 Only CLOSED bars are kept. Never places orders; no keys are used.
 """
 from __future__ import annotations
@@ -122,7 +122,7 @@ class BinanceContextFeed:
         return bundle
 
     def numbers(self, asset: str) -> dict:
-        """Numeric market context for RivaL Intelligence ({} when unavailable)."""
+        """Numeric market context for research ({} when unavailable)."""
         bundle = self.bundle(asset)
         if not bundle or len(bundle["klines"]) < 12:
             return {}

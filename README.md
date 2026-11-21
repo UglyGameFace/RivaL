@@ -29,7 +29,7 @@ The primary commands are `/rival`, `/rival-signal`, `/rival-stop`, and the optio
 - **DraftKings:** sportsbook odds and futures belong under Sports. Independent crypto event-contract research must be labeled separately when a verified native contract or price is unavailable.
 - **Sports parlays:** eligible same-book current lines are compared using de-vigged, line-matched market consensus. This is not an independently validated winning-pick model.
 
-See [local-only Intelligence](docs/RIVAL_INTELLIGENCE_LOCAL_ONLY.md) and [continuous contract learning](docs/RIVAL_CONTINUOUS_LEARNING.md), [price goals and contract distinctions](docs/RIVAL_PRICE_TARGETS.md), and [actual profit-proof criteria](docs/RIVAL_PROFIT_PROOF.md).
+See [continuous contract learning](docs/RIVAL_CONTINUOUS_LEARNING.md), [price goals and contract distinctions](docs/RIVAL_PRICE_TARGETS.md), and [actual profit-proof criteria](docs/RIVAL_PROFIT_PROOF.md).
 
 ## What is implemented
 
@@ -41,7 +41,6 @@ See [local-only Intelligence](docs/RIVAL_INTELLIGENCE_LOCAL_ONLY.md) and [contin
 - Source-balanced forward probability scoring, calibration and accuracy screens; disagreements or missing/late data remain visible rather than becoming artificial wins.
 - Lightweight [autonomous price/volume spike observations](docs/RIVAL_SPIKE_ANALYTICS.md), with immutable source evidence and future-only *research* outcomes. Spike detections are descriptive, not trade calls.
 - Paper quote/cost comparisons and conditional read-only model-family selection/rollback. Research qualification is deliberately strict; hypothetical spread, fees, slippage, and funding stress are **not authenticated real fills**.
-- Optional, separately hosted private **RivaL Intelligence** LLM gateway (LFM3, the sole configured model) for bounded explanations of verified evidence. The mathematical decision and NO CALL rule remain authoritative; running an LLM does not train missing market history or establish predictive improvement.
 
 For mathematical admission requirements see [source-specific challenger promotion](docs/RIVAL_FAMILY_COST_PROMOTION.md). The intended research proof includes **150 genuinely future outcomes across 21 UTC days**, at least **80% matched-quote coverage**, calibrated performance against baselines and an independently positive hypothetical after-cost comparison. These are *requirements*, not results already achieved.
 
@@ -84,12 +83,9 @@ Official public exchange data     Sports & event-market providers
           +---------------+----------------+
                           |
                  Discord /rival UI
-                          |
-              private local LFM3
-               (evidence summaries)
 ```
 
-The Discloud bot uses **PostgreSQL** for production state. SQLite is a deliberate local/test alternative. The independent LLM service is not an alternate market database, an order router, or a substitute for mathematical verification.
+The Discloud bot uses **PostgreSQL** for production state. SQLite is a deliberate local/test alternative.
 
 ## Setup and development
 
@@ -118,7 +114,6 @@ Optional configuration groups:
 | **Database** | `RIVAL_STORAGE_BACKEND=postgres`, `RIVAL_DATABASE_URL`. Missing production DB configuration fails startup, not silently redirected to SQLite. |
 | **Sports odds** | `RIVAL_SPORTS_BACKGROUND_ENABLED=true` plus the relevant SportsGameOdds/OddsPapi credentials. Verify quotas and configured league/book coverage. |
 | **Google Drive** | Scoped `RIVAL_DRIVE_*_FOLDER_ID` and `RIVAL_DRIVE_OAUTH_*` secrets. Bot cold archival requires the relevant archive toggles; research Actions may use their own authorized secrets. |
-| **AI / Intelligence** | Only `RIVAL_LOCAL_AI_TOKEN` for the standalone private LFM3 gateway. `RIVAL_AI_PROVIDER=local` is the default; `disabled` opts out. External Gemini/OpenRouter/Cloudflare inference is retired, and old provider keys have no effect. No daily token budget applies; CPU inference is serialized. |
 | **Polymarket** | Optional CLOB read-only credentials for relevant feeds; do not add trading-wallet keys. |
 
 Never commit tokens, database URLs, OAuth refresh tokens, private Drive folder IDs, generated market archives, or user data. RivaL is restricted to its dedicated `RivaL Data Warehouse` tree; it must not browse unrelated Drive files.

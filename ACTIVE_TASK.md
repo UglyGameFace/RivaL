@@ -1,14 +1,14 @@
 # RivaL ACTIVE_TASK — canonical current execution plan
 
-Updated 2026-11-20 01:44 EST. This is an execution checkpoint, not a global task lock. Prior detailed evidence is preserved in Git history.
+Updated 2026-11-20 21:14 EST. This is an execution checkpoint, not a global task lock. Prior detailed evidence is preserved in Git history.
 
 ## Objective and gates
 Restore source-authentic XMarket research history, preserve immutable prospective forecasts, evaluate executable matched quotes against source baselines after fees/slippage, and verify safe Discord delivery and promotion/rollback. Never trade real money, fabricate/backdate data, mine holdouts, trigger recurring historical training, or relax qualification (>=150 independent forward targets, >=21 days, >=80% matched quote coverage, robust positive after-cost baseline comparison).
 
 ## Fresh repository reconciliation
-- Current main at inspection: `0c4edc7fa22ef4b96b2d059a5333f60429944eb4` (2026-11-21 00:33 UTC), merging #734 decision-time exchange-feature lineage; no open PRs returned. Preserve independent work.
-- Current-main [CI #44844632198](https://github.com/UglyGameFace/RivaL/actions/runs/44844632198) was **in progress** (test job) at inspection; [Evidence Board source receipt #44844632203](https://github.com/UglyGameFace/RivaL/actions/runs/44844632203) succeeded. Neither establishes completed full SQLite/PostgreSQL CI.
-- GitHub `discloud/commit` status for this SHA was success; running Discloud process SHA, host health and live historical recovery remain unverified.
+- Current main at inspection: `a47e578a68a3f8dba78a63897f2bae012e1f405f` (2026-11-21 01:13 UTC), merging #736 Polymarket 1h slug repair; no open PRs returned. Preserve independent work.
+- [CI #44844632198](https://github.com/UglyGameFace/RivaL/actions/runs/44844632198) completed **success** at 2026-11-21 00:41 UTC on earlier main. [Evidence Board receipt #44854407059](https://github.com/UglyGameFace/RivaL/actions/runs/44854407059) completed success on current `a47e578a`; this is not full current-SHA SQLite/PostgreSQL CI proof.
+- GitHub `discloud/commit` status on `a47e578a` reports success; actual running Discloud process SHA, host health and live historical recovery remain unverified.
 - Daily records publisher traced to `RecordsBackup.save_day()` -> `GoogleDriveArchiveClient.ensure_history_file()`; existing-object replay verifies size/MD5 without requesting `appProperties.rival_sha256`, whereas training warehouse admission requires SHA-256. This is a source contract gap, **not evidence that rejected production originals have that metadata defect**. Do not alter immutable originals or relax admission absent authenticated readback.
 - #712 diagnostics and #723 host-read classification remain merged; no duplicate repair. No source code, tests, archives or training modified in this inspection.
 

@@ -164,3 +164,18 @@ def test_while_building_the_background_refresh_keeps_its_last_verdict(store):
     monitor = RuntimeHealthMonitor(store)
     first = monitor.refresh_regressions(now=NOW)      # pass 1 of 14: still building
     assert first == {} and monitor.paired_scores()[0] == ()
+
+
+def test_venue_hour_index_is_created_with_the_tally_schema(store):
+    """The window read and the rebuild delete filter (venue, hour range)
+    while the primary key puts hour last; initialize must create the
+    (venue, hour) index that makes both of them range reads."""
+    tally.initialize(store)
+    with store.connect() as conn:
+        found = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name='idx_rival_shadow_score_hours_venue_hour'").fetchone()
+        assert found is not None
+        columns = [row["name"] for row in conn.execute(
+            "PRAGMA index_info(idx_rival_shadow_score_hours_venue_hour)").fetchall()]
+    assert columns == ["venue", "hour"]

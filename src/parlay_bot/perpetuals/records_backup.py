@@ -87,29 +87,40 @@ class RecordsBackup:
         return out
 
     def _write(self, table: str, column: str, day: date, path: Path) -> int:
-        """Stream one day to a gzip file, ONE HOUR at a time.
+        """Stream one day to a gzip file, ONE SCOPE at a time.
 
         Never holds a whole day of a large table in memory (the bot's host
-        has a 512 MB limit); each hour's rows are written and released.
+        has a 512 MB limit); each scope's day is read in bounded fetch
+        chunks and written as it arrives. The day used to be read as 24
+        hour-slices per scope — 288 statements and checkouts for a scoped
+        table — whose combined weight put this export on the slow-operation
+        ledger whenever the database was busy (41 operations at 5 s+ in one
+        10-minute window, Nov 21). One streamed range query per scope reads
+        the same rows through the same indexed scopes; the exported line
+        set is unchanged (verified line-for-line on a production-scale
+        seed), only the grouping of lines inside the file differs.
         """
         start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
         scopes = next(s for t, _, s in TABLES if t == table)
         count = 0
         path.parent.mkdir(parents=True, exist_ok=True)
         with gzip.open(path, "wt", encoding="utf-8") as handle:
-            for hour in range(24):
-                lo, hi = start + timedelta(hours=hour), start + timedelta(hours=hour + 1)
-                for where, params in scopes:
-                    extra = f"{where} AND " if where else ""
-                    with self.store.connect() as conn:
-                        rows = conn.execute(
-                            f"SELECT * FROM {table} WHERE {extra}{column}>=? AND {column}<?",
-                            (*params, lo.isoformat(), hi.isoformat()),
-                        ).fetchall()
-                    for row in rows:
-                        handle.write(json.dumps(dict(row), default=str, sort_keys=True) + "\n")
-                    count += len(rows)
-                    del rows
+            for where, params in scopes:
+                extra = f"{where} AND " if where else ""
+                with self.store.connect() as conn:
+                    cursor = conn.execute(
+                        f"SELECT * FROM {table} WHERE {extra}{column}>=? AND {column}<?",
+                        (*params, start.isoformat(),
+                         (start + timedelta(days=1)).isoformat()),
+                    )
+                    while True:
+                        rows = cursor.fetchmany(2000)
+                        if not rows:
+                            break
+                        for row in rows:
+                            handle.write(
+                                json.dumps(dict(row), default=str, sort_keys=True) + "\n")
+                        count += len(rows)
         return count
 
     def _table_exists(self, table: str) -> bool:

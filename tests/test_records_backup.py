@@ -115,3 +115,33 @@ async def test_a_failed_read_is_retried_not_marked_empty(tmp_path, monkeypatch):
         assert "records-rival_intelligence_calls-2026-11-02" in drive.saved
     finally:
         store.close()
+
+
+def test_write_exports_exactly_the_days_rows_across_scopes(tmp_path):
+    """A scoped table's day file holds exactly that day's rows from every
+    scope: the day boundary is inclusive at 00:00 and exclusive at the
+    next midnight, other days and out-of-scope assets are left out, and
+    the returned count matches the lines written."""
+    store = SQLiteHotStore(tmp_path / "scoped.sqlite")
+    try:
+        with store.connect() as conn:
+            conn.execute("CREATE TABLE perp_forward_audit (asset TEXT, "
+                         "horizon_minutes INTEGER, issued_at TEXT, note TEXT)")
+            for row in [("BTC", 5, "2026-11-02T00:00:00+00:00", "first-instant"),
+                        ("BTC", 5, "2026-11-02T23:59:59+00:00", "last-instant"),
+                        ("ETH", 60, "2026-11-02T12:00:00+00:00", "other-scope"),
+                        ("BTC", 5, "2026-11-03T00:00:00+00:00", "next-day"),
+                        ("BTC", 5, "2026-11-01T23:59:59+00:00", "previous-day"),
+                        ("DOGE", 5, "2026-11-02T12:00:00+00:00", "no-such-scope")]:
+                conn.execute("INSERT INTO perp_forward_audit VALUES (?,?,?,?)", row)
+        backup = RecordsBackup(store, FakeDrive(), tmp_path / "work")
+        path = tmp_path / "out.gz"
+        count = backup._write("perp_forward_audit", "issued_at",
+                              date(2026, 11, 2), path)
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            lines = [json.loads(line) for line in handle]
+        assert count == 3
+        assert sorted(row["note"] for row in lines) == [
+            "first-instant", "last-instant", "other-scope"]
+    finally:
+        store.close()

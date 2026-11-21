@@ -99,6 +99,45 @@ def test_scorecard_counts_value_bets_at_market_price(tmp_path):
         store.close()
 
 
+def test_scorecard_real_bets_use_scheduled_fee_rate_after_changeover(tmp_path):
+    # Real-clock rows are issued after the 2026-11-20 23:59 UTC fee change,
+    # so a BTC 15m real bet must be charged the 0.05 coefficient, not the
+    # flat legacy 0.07 default: cost at a 0.50 ask is 0.5125, not 0.5175.
+    store = SQLiteHotStore(tmp_path / "fees.sqlite")
+    learner = PolymarketOutcomeLearner(store)
+    try:
+        learner.initialize()
+        now = datetime.now(UTC)
+        issued = now - timedelta(minutes=1)
+        expires = issued + timedelta(minutes=15)
+        with store.connect() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS rival_polymarket_ai_outcomes ("
+                         "slug TEXT PRIMARY KEY, condition_id TEXT, direction TEXT, "
+                         "resolved_at TEXT, observed_at TEXT, receipt_sha256 TEXT, "
+                         "receipt_json TEXT)")
+            conn.execute(
+                "INSERT INTO rival_polymarket_observations (slug,condition_id,asset,"
+                "horizon,resolution_source,expires_at,observed_at,features_json,"
+                "evidence_sha256) VALUES (?,?,?,?,?,?,?,?,?)",
+                ("feeslug", "cfeeslug", "BTC", 15, "src", expires.isoformat(),
+                 issued.isoformat(), "[]", "e"))
+            conn.execute(
+                "INSERT INTO rival_polymarket_model_forward (slug,model_version,issued_at,"
+                "weights_sha256,probability_up,market_baseline) VALUES (?,?,?,?,?,?)",
+                ("feeslug", "pooled:pooled_15m_x", issued.isoformat(), "s", .80, .50))
+            conn.execute("INSERT INTO rival_polymarket_ai_outcomes VALUES (?,?,?,?,?,?,?)",
+                         ("feeslug", "cfeeslug", "UP", now.isoformat(), now.isoformat(), "r", "{}"))
+            conn.execute(
+                "INSERT INTO rival_polymarket_pooled_quotes (slug,up_ask,down_ask) "
+                "VALUES (?,?,?)", ("feeslug", .50, .51))
+        card = learner.pooled_summary(asset="BTC", horizon=15)
+        assert card["real_value_bets"] == 1
+        assert card["real_return_per_dollar_after_fees"] == pytest.approx(
+            (1 - 0.5125) / 0.5125)
+    finally:
+        store.close()
+
+
 def test_learner_issues_pooled_forecast_once_per_contract(tmp_path):
     store = SQLiteHotStore(tmp_path / "once.sqlite")
     learner = PolymarketOutcomeLearner(store)

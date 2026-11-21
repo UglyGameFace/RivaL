@@ -79,6 +79,54 @@ def test_only_calls_after_start_count_and_results_are_priced_honestly(learning_s
     assert tracker.report(owner_id=2, asset="BTC")["status"] == "not_started"
 
 
+def _contract_at(store, base, i, *, p, up_ask, down_ask, outcome, asset="BTC"):
+    opens = base + timedelta(minutes=5 * i)
+    issued = opens + timedelta(seconds=4)
+    observed = issued - timedelta(seconds=1)
+    expires = opens + timedelta(minutes=5)
+    slug = f"{asset.lower()}-updown-5m-post-{i}"
+    features = [up_ask, down_ask, up_ask / (up_ask + down_ask), up_ask + down_ask - 1,
+                0, 0, 1, 0, up_ask - down_ask, 0]
+    import json
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO rival_polymarket_observations (slug,condition_id,asset,horizon,"
+            "resolution_source,expires_at,observed_at,features_json,evidence_sha256) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (slug, "0x" + "b" * 64, asset, 5, "chainlink", expires.isoformat(),
+             observed.isoformat(), json.dumps(features), "e" * 64))
+        conn.execute(
+            "INSERT INTO rival_polymarket_model_forward (slug,model_version,issued_at,"
+            "weights_sha256,probability_up,market_baseline) VALUES (?,?,?,?,?,?)",
+            (slug, MODEL, issued.isoformat(), "w" * 64, p, up_ask / (up_ask + down_ask)))
+        if outcome:
+            conn.execute(
+                "INSERT INTO rival_polymarket_ai_outcomes (slug,condition_id,direction,"
+                "resolved_at,observed_at,receipt_sha256,receipt_json) VALUES (?,?,?,?,?,?,?)",
+                (slug, "0x" + "b" * 64, outcome, expires.isoformat(),
+                 (expires + timedelta(minutes=1)).isoformat(), "r" * 64, "{}"))
+
+
+def test_post_changeover_calls_use_the_scheduled_fee_rate(learning_store):
+    # Sessions starting after the 2026-11-20 23:59 UTC fee change must be
+    # priced at the new per-series rates, not the flat legacy 0.07 default:
+    # BTC 5m pays the 0.05 coefficient, ETH 5m the 0.01 coefficient.
+    tracker = _store(learning_store)
+    base = datetime(2026, 11, 21, 0, 0, tzinfo=UTC)
+    for asset, rate in (("BTC", 0.05), ("ETH", 0.01)):
+        _contract_at(learning_store, base, -2, p=0.9, up_ask=0.5, down_ask=0.5,
+                     outcome="UP", asset=asset)  # before start: unlocks start()
+        assert tracker.start(owner_id=1, asset=asset, horizon=5, target=25,
+                             now=base)["status"] == "started"
+        _contract_at(learning_store, base, 1, p=0.70, up_ask=0.60, down_ask=0.41,
+                     outcome="UP", asset=asset)  # priced win
+        report = tracker.report(owner_id=1, asset=asset, now=base + timedelta(hours=2))
+        item = report["cohorts"][0]
+        assert (item["picked"], item["wins"], item["priced"]) == (1, 1, 1)
+        stake = 0.60 + polymarket_fee(0.60, rate)
+        assert item["return_per_dollar"] == pytest.approx((1.0 - stake) / stake)
+
+
 def test_opportunities_lead_with_open_polymarket_calls(learning_store):
     from parlay_bot.discord_app.opportunities import polymarket_call_fields
     _store(learning_store)

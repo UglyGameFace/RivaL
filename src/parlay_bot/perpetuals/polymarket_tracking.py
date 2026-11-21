@@ -21,6 +21,7 @@ from parlay_bot.perpetuals.polymarket_learning import (
     MIN_DIRECTIONAL_MARGIN,
     MODEL,
     polymarket_fee,
+    polymarket_scheduled_fee_rate,
 )
 
 PLATFORM = "polymarket"
@@ -176,7 +177,19 @@ class PolymarketTracking:
         picked = [c for c in graded if c["side"] != "WAIT"]
         wins = sum(c["side"] == c["outcome"] for c in picked)
         priced = [c for c in picked if c["price"] is not None]
-        stake = sum(c["price"] + polymarket_fee(c["price"]) for c in priced)
+        # Each call is charged the venue's published schedule rate for its
+        # own series at its issue time (0.07 before the 2026-11-20 23:59 UTC
+        # change, 0.05 for BTC 5m/15m and 0.01 for all other crypto after
+        # it) — never the flat legacy default.
+        stake = sum(
+            c["price"] + polymarket_fee(
+                c["price"],
+                polymarket_scheduled_fee_rate(
+                    asset=session["asset"],
+                    horizon=int(session["horizon_minutes"]),
+                    issued_at=c["issued_at"]),
+            )
+            for c in priced)
         paid = sum(1.0 for c in priced if c["side"] == c["outcome"])
         ys = [int(c["outcome"] == "UP") for c in graded]
         model_brier = (sum((c["probability_up"] - y) ** 2 for c, y in zip(graded, ys, strict=True))

@@ -173,6 +173,18 @@ class ShadowModelCompetition:
                 ON rival_model_shadow_forecasts (asset,horizon_minutes,issued_at,family)
                 WHERE settled_at IS NOT NULL AND outcome_up IN (0,1)
                   AND probability_up BETWEEN 0 AND 1 AND probability_up<>0.5;
+            -- The board's hit-rate aggregate also filters on venue and
+            -- evaluates probability_up/outcome_up per row, none of which
+            -- the index above carries: every candidate row cost a heap
+            -- fetch, and the grouped 7-day read became the slowest op in
+            -- the incident ledger (33.7 s under load, 2026-11-21). This
+            -- twin carries those columns after the range columns, so the
+            -- same read runs index-only; the numbers are unchanged.
+            CREATE INDEX IF NOT EXISTS idx_rival_model_shadow_recent_hit_cover
+                ON rival_model_shadow_forecasts
+                (asset,horizon_minutes,issued_at,family,venue,probability_up,outcome_up)
+                WHERE settled_at IS NOT NULL AND outcome_up IN (0,1)
+                  AND probability_up BETWEEN 0 AND 1 AND probability_up<>0.5;
             -- Model Lab's 30-minute review performs two scored-ledger reads:
             -- day/target gain and distinct scored streams. Unlike the live
             -- hit-rate index, both filter on valid settled Brier pairs and

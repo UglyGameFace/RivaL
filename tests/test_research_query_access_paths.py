@@ -31,6 +31,9 @@ def test_hot_query_indexes_are_exact_and_reentrant(tmp_path):
         with store.connect() as conn:
             assert _columns(conn, "idx_rival_model_shadow_recent_hit") == [
                 "asset", "horizon_minutes", "issued_at", "family"]
+            assert _columns(conn, "idx_rival_model_shadow_recent_hit_cover") == [
+                "asset", "horizon_minutes", "issued_at", "family",
+                "venue", "probability_up", "outcome_up"]
             assert _columns(conn, "idx_perp_forward_score_recent") == [
                 "asset", "model_version", "issued_at", "horizon_minutes"]
             assert _columns(conn, "idx_perp_forward_intel_target") == [
@@ -42,6 +45,12 @@ def test_hot_query_indexes_are_exact_and_reentrant(tmp_path):
             ).fetchone()["sql"]
             assert "WHERE settled_at IS NOT NULL" in sql
             assert "outcome_up IN (0,1)" in sql
+            cover_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name=?",
+                ("idx_rival_model_shadow_recent_hit_cover",),
+            ).fetchone()["sql"]
+            assert "WHERE settled_at IS NOT NULL" in cover_sql
+            assert "outcome_up IN (0,1)" in cover_sql
         monitor._initialize_schema()  # startup DDL is idempotent
         with store.connect() as conn:
             assert _columns(conn, "idx_perp_forward_intel_target")[2] == (

@@ -48,6 +48,14 @@ SCHEMA = (
     """CREATE TABLE IF NOT EXISTS rival_shadow_score_built (
         venue TEXT NOT NULL, hour TEXT NOT NULL, built_at TEXT NOT NULL,
         PRIMARY KEY (venue,hour))""",
+    # The window read and the rebuild delete both filter (venue, hour
+    # range); the primary key leads with venue but puts hour last, so both
+    # scanned every tally the venue had ever built (~257k rows and growing)
+    # to reach a 7-day window. This index makes them range reads. Within a
+    # stream group the tally rows still arrive in ascending hour order, so
+    # the accumulated sums are unchanged.
+    """CREATE INDEX IF NOT EXISTS idx_rival_shadow_score_hours_venue_hour
+        ON rival_shadow_score_hours (venue, hour)""",
 )
 
 # Same filter as the old aggregate; the hour is the issued_at prefix
@@ -134,21 +142,32 @@ def _build(conn, venue: str, start: datetime, end: datetime, now: datetime) -> N
     conn.execute(
         "DELETE FROM rival_shadow_score_hours WHERE venue=? AND hour>=? AND hour<?",
         (venue, _key(start), _key(end)))
-    for r in rows:
+    # One multi-value insert per 100 tallies (the recorder-batching pattern):
+    # a 12-hour build used to be ~2,400 single-row statements on this one
+    # connection, each a round trip that could stall under load. The stored
+    # rows are identical — same values, same order within the statement.
+    pending = [(venue, r["contract"], r["quote"], int(r["horizon_minutes"]), r["family"],
+                r["hour"], int(r["n"]), float(r["model_sum"]), float(r["incumbent_sum"]),
+                float(r["loss_sq_sum"]), r["first_day"], r["last_day"], r["last_issued"])
+               for r in rows]
+    for offset in range(0, len(pending), 100):
+        chunk = pending[offset:offset + 100]
+        placeholders = ", ".join("(" + ",".join("?" * 13) + ")" for _ in chunk)
         conn.execute(
             """INSERT INTO rival_shadow_score_hours (venue,contract,quote,horizon_minutes,
                  family,hour,n,model_sum,incumbent_sum,loss_sq_sum,first_day,last_day,
-                 last_issued) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (venue, r["contract"], r["quote"], int(r["horizon_minutes"]), r["family"],
-             r["hour"], int(r["n"]), float(r["model_sum"]), float(r["incumbent_sum"]),
-             float(r["loss_sq_sum"]), r["first_day"], r["last_day"], r["last_issued"]))
-    hour = start
-    while hour < end:
+                 last_issued) VALUES """ + placeholders,
+            tuple(item for values in chunk for item in values))
+    built = [(venue, _key(hour), now.isoformat())
+             for hour in _hours(start, end)]
+    for offset in range(0, len(built), 100):
+        chunk = built[offset:offset + 100]
+        placeholders = ", ".join("(?,?,?)" for _ in chunk)
         conn.execute(
-            """INSERT INTO rival_shadow_score_built (venue,hour,built_at) VALUES (?,?,?)
-               ON CONFLICT (venue,hour) DO UPDATE SET built_at=excluded.built_at""",
-            (venue, _key(hour), now.isoformat()))
-        hour += timedelta(hours=1)
+            """INSERT INTO rival_shadow_score_built (venue,hour,built_at) VALUES """
+            + placeholders
+            + """ ON CONFLICT (venue,hour) DO UPDATE SET built_at=excluded.built_at""",
+            tuple(item for values in chunk for item in values))
 
 
 def _hours(start: datetime, end: datetime):

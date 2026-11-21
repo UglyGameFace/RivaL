@@ -44,6 +44,10 @@ import httpx
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 ASSETS = ("BTC", "ETH")
+# Rows per fetchmany chunk when streaming evaluator-side reads (the #727
+# pattern): identical ORDER BY order and contents to fetchall(), without
+# materializing a whole snapshot table before the first row is processed.
+FETCH_CHUNK = 2000
 
 
 @dataclass(frozen=True)
@@ -419,6 +423,12 @@ class ThresholdMarketsRecorder:
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY snapshot_at, condition_id"
+        rows: list[dict] = []
         with self.store.connect() as conn:
-            rows = conn.execute(query, tuple(params)).fetchall()
-        return [dict(row) for row in rows]
+            cursor = conn.execute(query, tuple(params))
+            while True:
+                chunk = cursor.fetchmany(FETCH_CHUNK)
+                if not chunk:
+                    break
+                rows.extend(dict(row) for row in chunk)
+        return rows

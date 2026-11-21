@@ -273,3 +273,26 @@ def test_record_snapshot_batches_with_identical_contents():
     finally:
         store.close()
         _drop_schema(dsn, schema)
+
+
+def test_snapshots_stream_past_the_chunk_boundary(tmp_path):
+    """2,500 stored rows (FETCH_CHUNK=2000) read back complete, in
+    snapshot/strike order, through both snapshots() branches."""
+    recorder = OptionsSurfaceRecorder(SQLiteHotStore(tmp_path / "n1.sqlite"))
+    rows = [{
+        "currency": "BTC",
+        "instrument_name": f"BTC-20NOV26-{60000 + i}-C",
+        "expiry_at": datetime(2026, 11, 20, 8, 0, tzinfo=UTC),
+        "strike": float(60000 + i), "option_type": "call",
+        "mark_price": 0.01, "mark_iv": 50.0, "bid_price": 0.009,
+        "ask_price": 0.011, "underlying_price": 61000.0,
+        "index_price": 61000.0,
+    } for i in range(2500)]
+    assert recorder.record_snapshot(rows, snapshot_at=T0) == 2500
+    whole = recorder.snapshots(currency="BTC")
+    one = recorder.snapshots(currency="BTC", snapshot_at=T0)
+    assert whole == one
+    assert len(one) == 2500
+    assert [row["strike"] for row in one] == [float(60000 + i) for i in range(2500)]
+    assert one[0]["instrument_name"] == "BTC-20NOV26-60000-C"
+    assert one[-1]["instrument_name"] == "BTC-20NOV26-62499-C"

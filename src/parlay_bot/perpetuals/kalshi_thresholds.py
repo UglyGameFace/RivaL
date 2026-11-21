@@ -46,6 +46,10 @@ import httpx
 
 KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 ASSETS = ("BTC", "ETH")
+# Rows per fetchmany chunk when streaming evaluator-side reads (the #727
+# pattern): identical ORDER BY order and contents to fetchall(), without
+# materializing a whole snapshot table before the first row is processed.
+FETCH_CHUNK = 2000
 
 
 @dataclass(frozen=True)
@@ -349,6 +353,12 @@ class KalshiThresholdsRecorder:
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY snapshot_at, market_ticker"
+        rows: list[dict] = []
         with self.store.connect() as conn:
-            rows = conn.execute(query, tuple(params)).fetchall()
-        return [dict(row) for row in rows]
+            cursor = conn.execute(query, tuple(params))
+            while True:
+                chunk = cursor.fetchmany(FETCH_CHUNK)
+                if not chunk:
+                    break
+                rows.extend(dict(row) for row in chunk)
+        return rows

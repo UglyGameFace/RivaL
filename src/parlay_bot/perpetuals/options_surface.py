@@ -41,6 +41,10 @@ import httpx
 
 DERIBIT_BASE = "https://www.deribit.com/api/v2/public/"
 CURRENCIES = ("BTC", "ETH")
+# Rows per fetchmany chunk when streaming evaluator-side reads (the #727
+# pattern): identical ORDER BY order and contents to fetchall(), without
+# materializing a whole snapshot table before the first row is processed.
+FETCH_CHUNK = 2000
 # Deribit options expire at 08:00 UTC on their expiry date.
 _EXPIRY_TIME = time(8, 0)
 _MONTHS = {
@@ -274,21 +278,27 @@ class OptionsSurfaceRecorder:
                   snapshot_at: datetime | None = None) -> list[dict]:
         """Stored rows for one currency, in snapshot/strike order."""
         self.initialize()
+        rows: list[dict] = []
         with self.store.connect() as conn:
             if snapshot_at is None:
-                rows = conn.execute(
+                cursor = conn.execute(
                     """SELECT * FROM rival_options_surface_snapshots
                        WHERE currency=? ORDER BY snapshot_at, strike""",
                     (currency,),
-                ).fetchall()
+                )
             else:
-                rows = conn.execute(
+                cursor = conn.execute(
                     """SELECT * FROM rival_options_surface_snapshots
                        WHERE currency=? AND snapshot_at=?
                        ORDER BY strike""",
                     (currency, _iso(snapshot_at)),
-                ).fetchall()
-        return [dict(row) for row in rows]
+                )
+            while True:
+                chunk = cursor.fetchmany(FETCH_CHUNK)
+                if not chunk:
+                    break
+                rows.extend(dict(row) for row in chunk)
+        return rows
 
     def snapshot_times(self, *, currency: str) -> list[str]:
         """Distinct snapshot stamps recorded for one currency, in order."""

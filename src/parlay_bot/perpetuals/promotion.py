@@ -48,6 +48,11 @@ _LOG = logging.getLogger(__name__)
 
 MIN_QUOTE_WINDOWS = 20
 MIN_QUOTE_TRADES = 20
+# Rows per fetchmany chunk when streaming the evaluation reads (the #727
+# pattern): aggregates accumulate incrementally in the query's own row
+# order, so the recorded promotion row is byte-identical to the fetchall
+# version while the peak materialization drops to one chunk.
+SCORECARD_FETCH_CHUNK = 2000
 PROMOTION_FRESHNESS = timedelta(hours=48)
 # The multi quote shadow's gross already embeds the quoted spread (entry
 # at the ask, exit at the bid). The cost subtracted here is the house's
@@ -116,8 +121,26 @@ def evaluate_promotion(
         raise ValueError("promotion clock requires timezone")
     stamp = stamp.astimezone(UTC)
     initialize(store)
+
+    def _traded(probability: float) -> bool:
+        # Mirrors the shadow ledger's trade rule: a directional strength
+        # below 56% takes no position and records zero gross.
+        return probability <= 0.44 or probability >= 0.56
+
+    def _net(gross: float, traded: bool) -> float:
+        return gross - TRADE_COST_BPS if traded else 0.0
+
+    # Both reads stream in SCORECARD_FETCH_CHUNK chunks (the #727
+    # pattern). `recent` keeps the query's ORDER BY order for the paired
+    # audit, and every quote aggregate accumulates in row order, so the
+    # recorded promotion row is byte-identical to the fetchall version.
+    recent = []
+    quote_windows = 0
+    challenger_trades = incumbent_trades = 0
+    challenger_gross_sum = incumbent_gross_sum = 0.0
+    challenger_net_sum = incumbent_net_sum = 0.0
     with store.connect() as conn:
-        rows = conn.execute(
+        cursor = conn.execute(
             """SELECT target_opened_at,challenger_brier,incumbent_brier
                FROM perp_multi_forward
                WHERE asset=? AND horizon_minutes=? AND model_version=?
@@ -131,8 +154,19 @@ def evaluate_promotion(
                 (stamp - timedelta(days=14)).isoformat(),
                 stamp.isoformat(),
             ),
-        ).fetchall()
-        quotes = conn.execute(
+        )
+        while True:
+            chunk = cursor.fetchmany(SCORECARD_FETCH_CHUNK)
+            if not chunk:
+                break
+            for row in chunk:
+                if _utc(row["target_opened_at"]) >= stamp - timedelta(days=7):
+                    recent.append((
+                        str(row["target_opened_at"]),
+                        float(row["challenger_brier"]),
+                        float(row["incumbent_brier"]),
+                    ))
+        cursor = conn.execute(
             """SELECT q.challenger_gross_bps,q.incumbent_gross_bps,
                       e.probability_up,e.reference_probability_up
                FROM perp_multi_quote_shadow AS q
@@ -151,65 +185,45 @@ def evaluate_promotion(
                 (stamp - timedelta(days=7)).isoformat(),
                 stamp.isoformat(),
             ),
-        ).fetchall()
+        )
+        while True:
+            chunk = cursor.fetchmany(SCORECARD_FETCH_CHUNK)
+            if not chunk:
+                break
+            for row in chunk:
+                quote_windows += 1
+                challenger = _traded(float(row["probability_up"]))
+                incumbent = _traded(float(row["reference_probability_up"]))
+                challenger_trades += challenger
+                incumbent_trades += incumbent
+                challenger_gross_sum += float(row["challenger_gross_bps"])
+                incumbent_gross_sum += float(row["incumbent_gross_bps"])
+                challenger_net_sum += _net(
+                    float(row["challenger_gross_bps"]), challenger)
+                incumbent_net_sum += _net(
+                    float(row["incumbent_gross_bps"]), incumbent)
         previous = conn.execute(
             """SELECT status FROM perp_model_promotion
                WHERE asset=? AND horizon_minutes=?
                ORDER BY evaluated_at DESC LIMIT 1""",
             (asset, horizon),
         ).fetchone()
-    recent = [
-        (
-            str(row["target_opened_at"]),
-            float(row["challenger_brier"]),
-            float(row["incumbent_brier"]),
-        )
-        for row in rows
-        if _utc(row["target_opened_at"]) >= stamp - timedelta(days=7)
-    ]
     try:
         audit = score_paired_forward(recent)
     except (ValueError, TypeError, OverflowError) as exc:
         audit = None
         audit_reason = f"corrupt forward scores: {type(exc).__name__}"
-    def _traded(probability: float) -> bool:
-        # Mirrors the shadow ledger's trade rule: a directional strength
-        # below 56% takes no position and records zero gross.
-        return probability <= 0.44 or probability >= 0.56
-
-    def _net(gross: float, traded: bool) -> float:
-        return gross - TRADE_COST_BPS if traded else 0.0
-
-    quote_windows = len(quotes)
-    challenger_trades = sum(
-        1 for row in quotes if _traded(float(row["probability_up"]))
-    )
-    incumbent_trades = sum(
-        1 for row in quotes if _traded(float(row["reference_probability_up"]))
-    )
     challenger_gross = (
-        sum(float(row["challenger_gross_bps"]) for row in quotes) / quote_windows
-        if quote_windows else None
+        challenger_gross_sum / quote_windows if quote_windows else None
     )
     incumbent_gross = (
-        sum(float(row["incumbent_gross_bps"]) for row in quotes) / quote_windows
-        if quote_windows else None
+        incumbent_gross_sum / quote_windows if quote_windows else None
     )
     challenger_net = (
-        sum(
-            _net(float(row["challenger_gross_bps"]),
-                 _traded(float(row["probability_up"])))
-            for row in quotes
-        ) / quote_windows
-        if quote_windows else None
+        challenger_net_sum / quote_windows if quote_windows else None
     )
     incumbent_net = (
-        sum(
-            _net(float(row["incumbent_gross_bps"]),
-                 _traded(float(row["reference_probability_up"])))
-            for row in quotes
-        ) / quote_windows
-        if quote_windows else None
+        incumbent_net_sum / quote_windows if quote_windows else None
     )
     net_gain = (
         challenger_net - incumbent_net

@@ -145,6 +145,24 @@ _LOG = logging.getLogger(__name__)
 # Optional bulk workers start after the post-restart burst (see _after_startup_burst).
 STARTUP_QUIET_PERIOD = timedelta(minutes=5)
 
+
+def _phase_sleep_seconds(
+    offset_minutes: int, *, period_seconds: float = 30 * 60,
+    now: datetime | None = None,
+) -> float:
+    """Seconds until the next wall-clock phase tick `offset_minutes` past
+    each period boundary.
+
+    Sleep-after-work loops drift by their work time every iteration, so
+    two 30-minute loops with the same period wander into each other and
+    into the :00/:30 perp cycles (the 2026-11-20 saturation clusters).
+    Anchoring the sleep to the wall clock holds a fixed phase instead:
+    the benefit warm runs at :07/:37, the Model Lab review at :17/:47.
+    """
+    instant = (now or datetime.now(UTC)).timestamp()
+    offset = offset_minutes * 60
+    return period_seconds - ((instant - offset) % period_seconds)
+
 # Per-stage deadlines for the 5-minute perp cycle (_perp_loop). Each DB-heavy
 # stage's deadline EXCEEDS the 60 s cycle statement timeout (mark_background):
 # a statement parked on a lock aborts first, the thread returns promptly
@@ -2816,7 +2834,10 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001 - the lab must never stop the bot
                 _LOG.warning("RivaL model lab review failed; retrying next round",
                              exc_info=True)
-            await asyncio.sleep(REVIEW_EVERY.total_seconds())
+            # Fixed :17/:47 phase (see _phase_sleep_seconds): the review
+            # must not drift into the benefit warm or the :00/:30 cycles.
+            await asyncio.sleep(_phase_sleep_seconds(
+                17, period_seconds=REVIEW_EVERY.total_seconds()))
 
     async def _retention_loop(self) -> None:
         """Owner-approved prediction cleanup (retention.py), once a day."""
@@ -3250,7 +3271,9 @@ class RivalDiscordClient(discord.Client):
                     await asyncio.to_thread(warm_page_reads, self.perp_collector.market)
                 except Exception:  # noqa: BLE001 - optional page context
                     _LOG.exception("RivaL Performance page refresh failed")
-            await asyncio.sleep(30 * 60)
+            # Fixed :07/:37 phase (see _phase_sleep_seconds): the warm
+            # must not drift into the Model Lab review or :00/:30 cycles.
+            await asyncio.sleep(_phase_sleep_seconds(7))
 
     async def _spike_stage(self) -> None:
         """One spike scan/settle pass over the collector's assets.
@@ -3422,9 +3445,15 @@ class RivalDiscordClient(discord.Client):
                       host_memory.snapshot().detail)
             # Once per hour, inspect persisted evidence without adding API
             # requests or disturbing live predictions and market collection.
+            # Runs on the :30 cycle, not the first cycle of the hour: the
+            # :00 cycle already carries every other hourly extra, and this
+            # read-only audit's counts are identical whenever in the hour
+            # they are taken (2026-11-20 de-stack).
             if self.autonomous is not None:
-                integrity_hour = int(datetime.now(UTC).timestamp() // 3600)
-                if integrity_hour != last_integrity_hour:
+                integrity_now = datetime.now(UTC)
+                integrity_hour = int(integrity_now.timestamp() // 3600)
+                if (integrity_now.minute >= 30
+                        and integrity_hour != last_integrity_hour):
                     try:
                         audit = await asyncio.wait_for(
                             asyncio.to_thread(
@@ -3531,7 +3560,10 @@ class RivalDiscordClient(discord.Client):
             if self.history_auditor is not None and self.perp_collector is not None:
                 now = datetime.now(UTC)
                 hour = int(now.timestamp() // 3600)
-                if hour != last_audited_hour:
+                # Half-hour, not the top of the hour: this read-only audit
+                # stacked onto the :00 perp cycle (2026-11-20 de-stack);
+                # its report is identical whenever in the hour it runs.
+                if now.minute >= 30 and hour != last_audited_hour:
                     last_audited_hour = hour
                     asset = self.perp_collector.assets[hour % len(
                         self.perp_collector.assets

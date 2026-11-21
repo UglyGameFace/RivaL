@@ -438,3 +438,42 @@ def test_unsettled_dedupes_across_sources_and_keeps_rotation(hot):
     assert attempts[plain[0]] == now.isoformat()
     assert attempts[plain[3]] == (now - timedelta(hours=1)).isoformat()
     assert done not in attempts
+
+
+def test_unsettled_excludes_resolved_slugs_from_every_source(hot):
+    """A slug with a recorded outcome is never returned, whichever source
+    table still carries it: the outcome anti-join applies inside each
+    UNION branch, not just to the observations branch. An unresolved
+    contest-round-only slug is still returned."""
+    import uuid
+
+    prefix = "tu" + uuid.uuid4().hex[:8]
+    done, open_slug = f"{prefix}-done", f"{prefix}-open"
+    with hot.connect() as conn:
+        for table in ("rival_polymarket_ai_calls", "rival_polymarket_ai_outcomes",
+                      "rival_polymarket_observations", "rival_poly_contest_rounds",
+                      "rival_polymarket_resolution_attempts"):
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+    service = PolymarketResearch(hot, ai=None)
+    service.initialize()
+    now = datetime(2026, 11, 18, 5, 0, tzinfo=UTC)
+    base = now - timedelta(hours=2)
+    with hot.connect() as conn:
+        conn.execute(
+            "INSERT INTO rival_polymarket_ai_calls VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (done, "BTC", 15, f"cond-{done}",
+             (base - timedelta(minutes=15)).isoformat(), base.isoformat(),
+             (base - timedelta(minutes=14)).isoformat(),
+             "m", "UP", "t", "r", "sha", "{}"))
+        for slug, expires in ((done, base), (open_slug, base + timedelta(minutes=5))):
+            conn.execute(
+                "INSERT INTO rival_poly_contest_rounds VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (slug, f"cond-{slug}", "BTC", 15, "k",
+                 (expires - timedelta(minutes=15)).isoformat(), expires.isoformat(),
+                 (expires - timedelta(minutes=14)).isoformat(), now.isoformat(),
+                 0.5, None, None, "sha", "{}"))
+        conn.execute(
+            "INSERT INTO rival_polymarket_ai_outcomes VALUES (?,?,?,?,?,?,?)",
+            (done, f"cond-{done}", "UP", now.isoformat(), now.isoformat(), "sha", "{}"))
+    result = service._unsettled(now)
+    assert [row["slug"] for row in result] == [open_slug]

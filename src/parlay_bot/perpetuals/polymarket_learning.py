@@ -415,14 +415,21 @@ class PolymarketOutcomeLearner:
             elif m - p >= edge:
                 bets.append((1 - y) - (1 - m))  # bought DOWN at 1-m
         # Real start-time asks plus Polymarket's crypto taker fee, where recorded.
-        real = [(float(r["probability_up"]), float(r["up_ask"]), float(r["down_ask"]), y)
+        # The fee coefficient is the venue's published schedule for the
+        # contract's own series and issue time (0.07 before the 2026-11-20
+        # 23:59 UTC change, 0.05 for BTC 5m/15m and 0.01 for all other crypto
+        # after it) — never the flat legacy default.
+        real = [(float(r["probability_up"]), float(r["up_ask"]), float(r["down_ask"]), y,
+                 datetime.fromisoformat(str(r["issued_at"])))
                 for r, y in zip(rows, ys, strict=True)
                 if r["up_ask"] is not None and r["down_ask"] is not None]
         stakes = profit = 0.0
         real_bets = real_wins = 0
-        for p, up_ask, down_ask, y in real:
+        for p, up_ask, down_ask, y, issued in real:
+            rate = polymarket_scheduled_fee_rate(
+                asset=asset, horizon=horizon, issued_at=issued)
             for side_p, ask, win in ((p, up_ask, y == 1), (1 - p, down_ask, y == 0)):
-                cost = ask + polymarket_fee(ask)
+                cost = ask + polymarket_fee(ask, rate)
                 if 0 < ask < 1 and side_p - cost >= edge:
                     real_bets += 1
                     real_wins += win

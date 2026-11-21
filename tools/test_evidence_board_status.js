@@ -43,10 +43,6 @@ async function main(){
   assert.equal(r.body.database_read_verified,true);
   assert.equal(r.body.drive_reports_verified,true);
   assert.equal(r.body.after_cost_qualified_not_inferred,true);
-  // D3: LLM metrics are a separate dimension; an absent probe is
-  // unavailable, never a fabricated healthy value, and never gates health.
-  assert.equal(r.body.intelligence_metrics_status,'unavailable');
-  assert.equal(r.body.intelligence_inference_verified,false);
   receipt={...receipt,host:{...receipt.host,status:'unavailable'}};
   r=await status();
   assert.equal(r.code,503,'Recent signed snapshot must not mask host failure');
@@ -89,8 +85,6 @@ async function main(){
       postgres:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
       drive:{status:'failed_read',reason:'incomplete_listing',checked_at:now,freshness_seconds:86400},
       github:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
-      intelligence:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
-      intelligence_host:{status:'ok',reason:null,checked_at:now,freshness_seconds:3600},
       performance:{status:'measured_zero',reason:'no_pairs_measured',checked_at:now,freshness_seconds:3600}},
     host:{status:'verified',forecast_status:'fresh',learning_status:'fresh'},
     database:{status:'verified_read'},drive:{status:'verified_reports'}};
@@ -100,7 +94,7 @@ async function main(){
   assert.equal(r.body.collection.last_attempt_outcome,'accepted');
   assert.equal(r.body.collection.last_successful_publication_at,now);
   assert.equal(r.body.collection.target_cadence_seconds,600);
-  assert.equal(r.body.sources.length,10,'All tracked upstreams are reported');
+  assert.equal(r.body.sources.length,8,'All tracked upstreams are reported');
   assert.equal(sourceNamed(r.body,'drive').status,'failed_read');
   assert.equal(sourceNamed(r.body,'drive').reason,'incomplete_listing');
   assert.equal(sourceNamed(r.body,'drive').fresh,false);

@@ -6,7 +6,6 @@ Only a GitHub Actions main-branch job with a GitHub OIDC identity may publish.
 """
 from __future__ import annotations
 
-import base64
 import json
 import os
 import re
@@ -16,7 +15,7 @@ from datetime import UTC, datetime
 from urllib import error, parse, request
 
 from discloud_learning_cycle_receipt import CMD, parse_receipt
-from evidence_board_github import read_github_snapshot, read_public_intelligence
+from evidence_board_github import read_github_snapshot
 
 ASSETS = {"BTC", "ETH", "SOL", "XRP"}
 HORIZONS = {5, 15, 60}
@@ -63,12 +62,11 @@ RECEIPT_WARN_BYTES = 96_000
 # measured_zero where the read itself reports "nothing found").
 SOURCE_NAMES = (
     "discloud_forecast", "discloud_learning", "postgres", "drive",
-    "github", "intelligence", "intelligence_host", "performance",
+    "github", "performance",
 )
 SOURCE_FRESHNESS_SECONDS = {
     "discloud_forecast": 900, "discloud_learning": 900, "postgres": 3600,
-    "drive": 86400, "github": 3600, "intelligence": 3600,
-    "intelligence_host": 3600, "performance": 3600,
+    "drive": 86400, "github": 3600, "performance": 3600,
 }
 SOURCE_STATUSES = {
     "ok", "unreachable", "auth_failed", "failed_read", "no_records",
@@ -963,348 +961,6 @@ def read_paired_performance() -> dict:
     return unavailable
 
 
-def read_intelligence_host() -> dict:
-    """Discloud application status only; 'online' does not prove AI inference."""
-    app_id = os.getenv("DISCLOUD_LLM_APP_ID", "")
-    token = os.getenv("DISCLOUD_TOKEN", "")
-    result = {"status": "unavailable", "inference_verified": False}
-    if not token or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", app_id):
-        return result
-    url = "https://api.discloud.app/v2/app/" + parse.quote(app_id, safe="") + "/status"
-    response = _url_json(url, headers={"api-token": token}, timeout=18, limit=60_000)
-    info = response.get("apps")
-    if (response.get("status") != "ok" or not isinstance(info, dict)
-            or str(info.get("id", "")) != app_id):
-        return result
-    normalized = str(info.get("container", "")).strip().lower()
-    if normalized in ("online", "offline"):
-        result["status"] = normalized
-    return result
-
-
-LLM_METRICS_MARKER = "RIVAL_LLM_METRICS_RECEIPT="
-LLM_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9/_.-]{0,79}:[A-Za-z0-9_.-]{1,40}$")
-LLM_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-LLM_REPAIR_STATES = {
-    "healthy", "warming", "backend_health_check_failed", "cooldown",
-    "quarantined", "repairing", "repair_failed",
-}
-# The gateway's authenticated /v1/status (services/rival-llm/service.py)
-# returns model, ready, source_sha, repair_state, repair_count,
-# runtime_context_tokens and a cgroup memory snapshot. It does NOT measure
-# generation latency or tokens per second, so those stay null unless the
-# host probe below emits them. DNS/upstream health and database pressure
-# are still not measured by any host probe and stay null.
-# The console probe below runs INSIDE the LFM3 container, reads the token
-# and port from that container's own environment, and prints only this
-# bounded marker. No secret ever leaves the container in the receipt.
-#
-# Generation probe: after the status read, the same program issues ONE real
-# authenticated generation through the gateway's /v1/research route with the
-# same synthetic, read-only body the release verifier uses (no historical
-# claims, no quotes, no database writes, no orders, no user evidence). The
-# response must be the safely-grounded shape (uncertain/low, insufficient
-# evidence) or the generation is not counted as verified. Wall-clock
-# latency is reported as both p50 and p95 (a single sample per cycle);
-# tokens/second is completion_tokens from the gateway's usage block divided
-# by that wall clock, and stays null when the backend reports no usage --
-# never estimated. This is local LFM3 inference: zero API spend, so the AI
-# budget lockdown (no automatic LLM spending) is untouched. Cadence is the
-# receipt workflow itself (every 10 minutes): one 140-token generation per
-# cycle. A 429 means the single-slot gateway is busy serving the bot, so
-# the probe waits 10s and retries once, then reports the failure honestly
-# instead of queuing behind bot traffic. A failed generation never poisons
-# the status fields: they still publish, only inference_verified is False.
-LLM_GENERATION_PROBE_PROGRAM = '''
-import json, os, time, urllib.error, urllib.request
-
-port = os.environ.get("RIVAL_LLM_PORT", "8765")
-token = os.environ.get("RIVAL_LLM_SHARED_TOKEN", "")
-root = "http://127.0.0.1:" + port
-headers = {"Authorization": "Bearer " + token}
-t0 = time.monotonic()
-# The status read is wrapped like the generation call below: a 401/429/5xx,
-# timeout or bad body on /v1/status must degrade to a clearly-marked
-# status failure, not crash the probe with no marker line and no status
-# fields at all. Whatever the read did return is preserved; the marker
-# still prints, and the generation attempt still runs (verification still
-# needs the status model to match, so a failed status read can never
-# verify a generation).
-status = {}
-status_http = None
-status_error = None
-try:
-    with urllib.request.urlopen(
-        urllib.request.Request(root + "/v1/status", headers=headers),
-        timeout=10,
-    ) as resp:
-        status = json.loads(resp.read(200000))
-        status_http = resp.status
-        if not isinstance(status, dict):
-            status = {}
-            status_error = "status_not_object"
-except urllib.error.HTTPError as exc:
-    status_http = exc.code
-    status_error = "status_http_%d" % exc.code
-except (urllib.error.URLError, TimeoutError, ValueError):
-    status_error = "status_read_failed"
-if status_error is None and status_http is not None and status_http != 200:
-    status_error = "status_http_%d" % status_http
-memory = status.get("memory") if isinstance(status.get("memory"), dict) else {}
-marker = {
-    "model": status.get("model"),
-    "ready": status.get("ready"),
-    "source_sha": status.get("source_sha"),
-    "repair_state": status.get("repair_state"),
-    "repair_count": status.get("repair_count"),
-    "runtime_context_tokens": status.get("runtime_context_tokens"),
-    "memory": memory,
-    "status_latency_ms": round((time.monotonic() - t0) * 1000, 1),
-    "status_http": status_http,
-    "requests_sampled": 1,
-    "generation_errors": 0,
-}
-if status_error is not None:
-    marker["status_error"] = status_error
-probe = {"asset": "BTC", "evidence": {
-    "asset": "BTC", "analysis": "unvalidated_research",
-    "horizon_minutes": 5, "sources": []}}
-generation = None
-elapsed_s = 0.0
-for attempt in (0, 1):
-    if attempt:
-        time.sleep(10)
-    start = time.monotonic()
-    req = urllib.request.Request(
-        root + "/v1/research",
-        data=json.dumps(probe).encode("utf-8"),
-        headers={**headers, "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(
-            req, timeout=45 if attempt == 0 else 30,
-        ) as resp:
-            generation = json.loads(resp.read(5000))
-            elapsed_s = time.monotonic() - start
-    except urllib.error.HTTPError as exc:
-        if exc.code == 429 and attempt == 0:
-            continue
-        break
-    except (urllib.error.URLError, TimeoutError, ValueError):
-        break
-    break
-verified = (
-    isinstance(generation, dict)
-    and generation.get("model") == status.get("model")
-    and generation.get("direction") == "uncertain"
-    and generation.get("confidence") == "low"
-    and generation.get("grounding_status") == "insufficient_evidence"
-    and generation.get("grounded_by") == "deterministic_historical_evidence_policy"
-    and generation.get("informational_only") is True
-    and generation.get("uncalibrated") is True
-)
-if verified:
-    marker["inference_verified"] = True
-    marker["generation_probe"] = "authenticated_generation"
-    marker["latency_ms_p50"] = round(elapsed_s * 1000, 1)
-    marker["latency_ms_p95"] = round(elapsed_s * 1000, 1)
-    usage = generation.get("usage")
-    if isinstance(usage, dict):
-        completion = usage.get("completion_tokens")
-        if type(completion) is int and completion > 0 and elapsed_s > 0:
-            marker["tokens_per_second"] = round(completion / elapsed_s, 3)
-else:
-    marker["inference_verified"] = False
-    marker["generation_errors"] = 1
-print("RIVAL_LLM_METRICS_RECEIPT=" + json.dumps(marker, separators=(",", ":")))
-'''
-# The console runs one shell command; the probe program is shipped base64
-# (the same shape as the release verifier in verify_live.py) so the
-# readable program above stays reviewable here instead of a one-liner.
-# Worst case inside the 110s console timeout: status 10s + generation 45s
-# + 10s backoff + retry 30s = 95s.
-_LLM_PROBE_B64 = base64.b64encode(
-    LLM_GENERATION_PROBE_PROGRAM.encode("utf-8")).decode("ascii")
-LLM_METRICS_CMD = (
-    "python -c \"import base64;exec(base64.b64decode('"
-    + _LLM_PROBE_B64 + "'))\""
-)
-
-
-def _llm_memory(value: object) -> dict | None:
-    """Bounded cgroup memory snapshot; unknown fields stay null, never zero."""
-    if not isinstance(value, dict):
-        return None
-    keys = ("current_mb", "limit_mb", "peak_mb", "anon_mb", "file_mb",
-            "file_mapped_mb", "gateway_rss_mb", "backend_rss_mb")
-    out = {key: _nonnegative(value.get(key)) for key in keys}
-    out["oom_kills"] = _nonnegative(value.get("oom_kills"))
-    return out
-
-
-def summarize_llm_metrics(raw: object) -> dict:
-    """Validate a host-emitted LFM3 metrics dict; never fabricate health.
-
-    A status-endpoint read proves authenticated backend readiness only.
-    ``inference_verified`` stays False unless the host also proves an
-    authenticated generation probe (``generation_probe`` marker); the
-    current /v1/status probe never sets it. The marker itself is carried
-    through in the output (validated to the exact string, else null):
-    the board's collector re-checks it before trusting the verified
-    flag, so stripping it here leaves the board Unverified even when
-    the generation proved. Prompts, tokens, conversations,
-    private endpoints and secrets are never accepted fields.
-    Latency and tokens-per-second are only carried when the generation
-    is verified: an unverified (tampered/ungrounded) marker must not
-    lend plausible timing numbers to the published receipt. A failed
-    status read is carried as ``status_error`` (validated label, else
-    null) so a probe that ran but could not read status stays
-    distinguishable from a probe that never ran.
-    """
-    unavailable = {
-        "status": "unavailable", "probe": "host_probe_not_emitted",
-        "captured_at": None, "model": None, "ready": None,
-        "inference_verified": False, "generation_probe": None,
-        "source_sha": None,
-        "repair_state": None, "repair_count": None,
-        "runtime_context_tokens": None, "memory": None,
-        "memory_pressure_pct": None, "status_latency_ms": None,
-        "status_http": None, "status_error": None,
-        "latency_ms_p50": None,
-        "latency_ms_p95": None, "tokens_per_second": None,
-        "requests_sampled": None, "generation_errors": None,
-        "fallback_count": None, "cpu_pct": None, "dns_ok": None,
-        "upstream_ok": None, "db_pressure": None,
-    }
-    if not isinstance(raw, dict):
-        return unavailable
-    status_error = raw.get("status_error")
-    unavailable["status_error"] = (
-        status_error if isinstance(status_error, str)
-        and re.fullmatch(r"[a-z0-9_]{1,80}", status_error) else None)
-    model = raw.get("model")
-    if not isinstance(model, str) or LLM_MODEL_RE.fullmatch(model) is None:
-        return unavailable
-    ready = raw.get("ready")
-    if type(ready) is not bool:
-        return unavailable
-    out = dict(unavailable)
-    out["status"] = "observed"
-    out["model"] = model
-    out["ready"] = ready
-    out["inference_verified"] = bool(
-        raw.get("inference_verified") is True
-        and raw.get("generation_probe") == "authenticated_generation"
-    )
-    out["generation_probe"] = (
-        "authenticated_generation"
-        if raw.get("generation_probe") == "authenticated_generation"
-        else None
-    )
-    sha = raw.get("source_sha")
-    out["source_sha"] = sha if isinstance(sha, str) and LLM_SHA_RE.fullmatch(sha) else None
-    state = raw.get("repair_state")
-    out["repair_state"] = state if state in LLM_REPAIR_STATES else None
-    out["repair_count"] = _nonnegative(raw.get("repair_count"))
-    out["runtime_context_tokens"] = _nonnegative(
-        raw.get("runtime_context_tokens"))
-    memory = _llm_memory(raw.get("memory"))
-    out["memory"] = memory
-    current, limit = (memory or {}).get("current_mb"), (memory or {}).get("limit_mb")
-    if (type(current) is int and type(limit) is int and limit > 0):
-        out["memory_pressure_pct"] = round(min(current / limit * 100, 1000), 1)
-    latency = raw.get("status_latency_ms")
-    out["status_latency_ms"] = (
-        round(float(latency), 1)
-        if type(latency) in (int, float) and 0 <= latency <= 120_000 else None)
-    http = raw.get("status_http")
-    if http is not None:
-        if http != 200:
-            return unavailable
-        out["status_http"] = 200
-    for key, maximum in (("latency_ms_p50", 600_000), ("latency_ms_p95", 600_000)):
-        value = raw.get(key)
-        out[key] = (round(float(value), 1) if out["inference_verified"]
-                    and type(value) in (int, float)
-                    and 0 <= value <= maximum else None)
-    tps = raw.get("tokens_per_second")
-    out["tokens_per_second"] = (
-        round(float(tps), 3) if out["inference_verified"]
-        and type(tps) in (int, float)
-        and 0 <= tps <= 100_000 else None)
-    for key in ("requests_sampled", "generation_errors", "fallback_count"):
-        out[key] = _nonnegative(raw.get(key))
-    cpu = raw.get("cpu_pct")
-    out["cpu_pct"] = (round(float(cpu), 1) if type(cpu) in (int, float)
-                      and 0 <= cpu <= 100 else None)
-    for key in ("dns_ok", "upstream_ok"):
-        out[key] = raw.get(key) if type(raw.get(key)) is bool else None
-    pressure = raw.get("db_pressure")
-    out["db_pressure"] = pressure if pressure in (
-        "none", "elevated", "saturated") else None
-    out["captured_at"] = _iso_timestamp(raw.get("captured_at"))
-    return out
-
-
-def _read_llm_console(command: str) -> dict | None:
-    """Run one read-only console command inside the LFM3 container."""
-    token, app_id = os.getenv("DISCLOUD_TOKEN"), os.getenv("DISCLOUD_LLM_APP_ID")
-    if not token or not app_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", app_id):
-        return None
-    url = "https://api.discloud.app/v2/app/" + parse.quote(app_id, safe="") + "/console"
-    response = _url_json(
-        url, method="PUT", body=json.dumps({"command": command}).encode("utf-8"),
-        headers={"api-token": token, "Content-Type": "application/json"},
-        timeout=110, limit=3_000_000,
-    )
-    apps = response.get("apps")
-    shell = apps.get("shell") if isinstance(apps, dict) else None
-    return shell if isinstance(shell, dict) else None
-
-
-def read_intelligence_metrics() -> dict:
-    """Authenticated LFM3 health via the host's own /v1/status probe.
-
-    The publisher never holds the LFM3 bearer token: the console command
-    runs inside the container and only the bounded marker line is parsed.
-    Until the deployed host emits that marker, every metric is unavailable
-    rather than a fabricated healthy value. The same console program also
-    issues one real authenticated /v1/research generation per cycle, so a
-    verified generation flips inference_verified; a failed generation
-    leaves it False while the status fields still publish.
-    """
-    unavailable = summarize_llm_metrics(None)
-    shell = _read_llm_console(LLM_METRICS_CMD)
-    if not shell:
-        return unavailable
-    for line in str(shell.get("stdout", "")).splitlines():
-        if not line.startswith(LLM_METRICS_MARKER):
-            continue
-        try:
-            parsed = json.loads(line[len(LLM_METRICS_MARKER):])
-        except ValueError:
-            return unavailable
-        clean = summarize_llm_metrics(parsed)
-        if clean["status"] != "observed":
-            # The probe ran and emitted a marker, but the marker did not
-            # validate (e.g. the status read failed inside the probe, or
-            # the host model string was unexpected). Report that honestly:
-            # the probe ran, the status failure label is preserved, and
-            # the read time is stamped — instead of claiming the probe
-            # never emitted, which would hide a failing probe behind the
-            # same "unavailable" as a probe that never started.
-            failed = summarize_llm_metrics(None)
-            failed["probe"] = "llm_console_v1_status"
-            failed["status_error"] = clean["status_error"]
-            failed["captured_at"] = datetime.now(UTC).isoformat()
-            return failed
-        clean["captured_at"] = datetime.now(UTC).isoformat()
-        clean["probe"] = "llm_console_v1_status"
-        return clean
-    return unavailable
-
-
 def _oauth_access_token() -> str:
     parts = {
         "client_id": os.getenv("RIVAL_DRIVE_OAUTH_CLIENT_ID", ""),
@@ -1813,18 +1469,17 @@ def _drive_source_detail(drive: dict, errors: dict, checked_at: str) -> dict:
 
 def _snapshot_source_detail(value: dict, errors: dict, key: str,
                             checked_at: str, *, ok_status: str) -> dict:
-    """GitHub / Intelligence detail from a snapshot dict."""
+    """GitHub detail from a snapshot dict."""
     if value.get("status") == ok_status:
         return _source_detail("ok", None, checked_at)
     if key in errors:
         return _error_detail(errors[key], checked_at)
-    if key in ("github", "intelligence") and not os.getenv("GITHUB_TOKEN", ""):
+    if key == "github" and not os.getenv("GITHUB_TOKEN", ""):
         return _source_detail("not_configured", "credentials_not_configured", checked_at)
     return _source_detail("failed_read", "read_failed", checked_at)
 
 
 def build_source_details(host: dict, db: dict, drive: dict, github: dict,
-                         intelligence: dict, intelligence_host: dict,
                          performance: dict, errors: dict,
                          checked_at: str | None = None) -> dict:
     """One reliability entry per upstream, each with its freshness bar."""
@@ -1833,25 +1488,6 @@ def build_source_details(host: dict, db: dict, drive: dict, github: dict,
     details["drive"] = _drive_source_detail(drive, errors, at)
     details["github"] = _snapshot_source_detail(
         github, errors, "github", at, ok_status="verified")
-    details["intelligence"] = _snapshot_source_detail(
-        intelligence, errors, "intelligence", at, ok_status="verified")
-    host_status = intelligence_host.get("status")
-    if host_status == "online":
-        details["intelligence_host"] = _source_detail("ok", None, at)
-    elif host_status == "offline":
-        # Offline is a genuine observation, but it is not healthy: a down
-        # host must not read as "ok" to any consumer of per-source status.
-        # "unreachable" is already in the collector's status vocabulary,
-        # so no vocabulary change is needed on either side.
-        details["intelligence_host"] = _source_detail(
-            "unreachable", "host_offline", at)
-    elif "intelligence_host" in errors:
-        details["intelligence_host"] = _error_detail(errors["intelligence_host"], at)
-    elif not os.getenv("DISCLOUD_TOKEN", "") or not os.getenv("DISCLOUD_LLM_APP_ID", ""):
-        details["intelligence_host"] = _source_detail(
-            "not_configured", "credentials_not_configured", at)
-    else:
-        details["intelligence_host"] = _source_detail("failed_read", "read_failed", at)
     if performance.get("status") == "observed":
         details["performance"] = _source_detail("ok", None, at)
     elif performance.get("status") == "partial":
@@ -1873,29 +1509,6 @@ def build_source_details(host: dict, db: dict, drive: dict, github: dict,
     for name in SOURCE_NAMES:
         details[name]["freshness_seconds"] = SOURCE_FRESHNESS_SECONDS[name]
     return details
-
-
-def _print_intelligence_summary(publication: str, metrics: dict) -> None:
-    """One prominent log line naming the Intelligence probe's outcome.
-
-    An accepted receipt can still carry intelligence_metrics "unavailable"
-    because the probe never ran (no Discloud credentials in the workflow)
-    or ran and failed — and the workflow stays green either way. This line
-    makes "probe never ran" visible in the run log instead of silent: the
-    probe ran exactly when its label is llm_console_v1_status.
-    """
-    probe = metrics.get("probe") or "host_probe_not_emitted"
-    line = (
-        f"EVIDENCE-BOARD SUMMARY: publication={publication} "
-        f"intelligence_metrics.status={metrics.get('status')} "
-        f"llm_probe={probe} "
-        f"llm_probe_ran={probe == 'llm_console_v1_status'} "
-        f"inference_verified={metrics.get('inference_verified')}"
-    )
-    status_error = metrics.get("status_error")
-    if status_error:
-        line += f" status_error={status_error}"
-    print(line)
 
 
 def publish() -> int:
@@ -1958,20 +1571,6 @@ def publish() -> int:
         github = {"status": "unavailable", "fetched_at": None,
                   "prs": [], "runs": []}
     try:
-        intelligence = read_public_intelligence(os.getenv("GITHUB_TOKEN", ""))
-    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
-        errors["intelligence"] = exc
-        intelligence = {"status": "unavailable", "prs": [], "runs": []}
-    try:
-        intelligence_host = read_intelligence_host()
-    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
-        errors["intelligence_host"] = exc
-        intelligence_host = {"status": "unavailable", "inference_verified": False}
-    try:
-        intelligence_metrics = read_intelligence_metrics()
-    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
-        intelligence_metrics = summarize_llm_metrics(None)
-    try:
         performance = read_paired_performance()
     except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
         errors["performance"] = exc
@@ -1985,16 +1584,13 @@ def publish() -> int:
         errors["host"] = ValueError("host_credentials_not_configured")
     now = datetime.now(UTC).isoformat()
     sources = build_source_details(
-        host, db, drive, github, intelligence, intelligence_host,
-        performance, errors, checked_at)
+        host, db, drive, github, performance, errors, checked_at)
     payload = {
         "schema_version": 1, "captured_at": now,
         "collection": _collection_block(),
         "sources": sources,
         "host": host, "database": db, "drive": drive,
-        "github": github, "intelligence": intelligence,
-        "intelligence_host": intelligence_host,
-        "intelligence_metrics": intelligence_metrics,
+        "github": github,
         "performance": performance,
     }
     try:
@@ -2005,27 +1601,21 @@ def publish() -> int:
         result = _submit_signed_receipt(payload, jwt)
     except ValueError as exc:
         _report_attempt(jwt, "failed", _attempt_reason(exc))
-        _print_intelligence_summary("failed", intelligence_metrics)
         raise
     if result.get("status") not in ("accepted", "stale_ignored"):
         _report_attempt(jwt, "failed", "receipt_not_accepted")
-        _print_intelligence_summary("not_accepted", intelligence_metrics)
         raise ValueError("receipt_not_accepted")
     # The only logged output is a bounded status. Never print provider output.
     print(json.dumps({
         "publication": result["status"], "host": host["status"],
         "database": db["status"], "drive": drive["status"],
         "drive_scopes": drive["reports_considered"],
-        "github": github["status"], "intelligence": intelligence["status"],
-        "intelligence_metrics": intelligence_metrics["status"],
-        "intelligence_probe": intelligence_metrics["probe"],
-        "llm_inference_verified": intelligence_metrics["inference_verified"],
+        "github": github["status"],
         "performance": performance["status"],
         "sources": {name: details["status"]
                     for name, details in sources.items()},
         "source": "read-only", "no_trades_or_db_writes": True,
     }, sort_keys=True))
-    _print_intelligence_summary(result["status"], intelligence_metrics)
     return 0
 
 

@@ -11,20 +11,16 @@ from datetime import UTC, datetime
 from urllib import parse, request
 
 REPO = "UglyGameFace/RivaL"
-INTELLIGENCE_REPO = "UglyGameFace/RivaL-Intelligence"
 API_ROOT = "https://api.github.com/repos/" + REPO
 PINNED_PRS = (447, 463, 526, 529, 531, 532, 533, 534, 536, 538, 542, 543)
 
 # Signed-receipt budget (Delivery 4): the collector rejects payloads over
 # 80,000 bytes, so the GitHub sections are capped by count. RivaL keeps
-# every pinned PR plus the newest others to 20 PRs / 12 runs; the
-# Intelligence mirror keeps 8 PRs / 8 runs (the dashboard renders at most
-# 4 Intelligence runs). Counts, not field widths, are trimmed: titles,
-# SHAs and run names keep their full allowlisted lengths.
+# every pinned PR plus the newest others to 20 PRs / 12 runs. Counts, not
+# field widths, are trimmed: titles, SHAs and run names keep their full
+# allowlisted lengths.
 RECEIPT_PRS_MAX = 20
 RECEIPT_RUNS_MAX = 12
-INTELLIGENCE_RECEIPT_PRS_MAX = 8
-INTELLIGENCE_RECEIPT_RUNS_MAX = 8
 _SHA = re.compile(r"[a-fA-F0-9]{40}\Z")
 
 
@@ -32,7 +28,7 @@ def _github_json(path: str, token: str, limit: int = 2_000_000, *,
                  repository: str = REPO) -> object:
     if not path.startswith("/") or "://" in path:
         raise ValueError("github_path_invalid")
-    if repository not in (REPO, INTELLIGENCE_REPO):
+    if repository != REPO:
         raise ValueError("github_repository_not_allowed")
     url = "https://api.github.com/repos/" + repository + path
     req = request.Request(
@@ -160,47 +156,3 @@ def read_github_snapshot(token: str) -> dict:
         "prs": sorted(pinned + newest, key=lambda x: x["number"], reverse=True),
         "runs": clean_runs[:RECEIPT_RUNS_MAX],
     }
-
-
-
-def read_public_intelligence(token: str) -> dict:
-    """Public repository-only state, NOT evidence of live LLM inference.
-
-    Never read private environment data, workflow logs, release secrets, model
-    weights, prompts, or conversation inputs.
-    """
-    unavailable = {
-        "status": "unavailable", "repository": INTELLIGENCE_REPO,
-        "fetched_at": None, "head_sha": None, "prs": [], "runs": [],
-        "runtime_inference_verified": False,
-    }
-    if not token:
-        return unavailable
-    try:
-        commit = _github_json("/commits/main", token, limit=250_000,
-                              repository=INTELLIGENCE_REPO)
-        pulls = _github_json("/pulls?state=all&per_page=8&sort=updated",
-                             token, limit=250_000, repository=INTELLIGENCE_REPO)
-        actions = _github_json("/actions/runs?per_page=8", token,
-                               limit=400_000, repository=INTELLIGENCE_REPO)
-        if not isinstance(commit, dict) or not isinstance(pulls, list) or not isinstance(actions, dict):
-            raise TypeError("intelligence_github_schema_invalid")
-        sha = _sha(commit.get("sha"))
-        if not sha or not isinstance(actions.get("workflow_runs"), list):
-            raise ValueError("intelligence_public_evidence_incomplete")
-        cleaned_prs = [
-            p for x in pulls if isinstance(x, dict)
-            if (p := safe_pr(x, repository=INTELLIGENCE_REPO)) is not None
-        ][:INTELLIGENCE_RECEIPT_PRS_MAX]
-        cleaned_runs = [
-            r for x in actions["workflow_runs"] if isinstance(x, dict)
-            if (r := safe_run(x, repository=INTELLIGENCE_REPO)) is not None
-        ][:INTELLIGENCE_RECEIPT_RUNS_MAX]
-        return {
-            "status": "verified", "repository": INTELLIGENCE_REPO,
-            "fetched_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-            "head_sha": sha, "prs": cleaned_prs, "runs": cleaned_runs,
-            "runtime_inference_verified": False,
-        }
-    except (OSError, ValueError, TypeError, KeyError):
-        return unavailable

@@ -131,35 +131,6 @@ function cleanGithub(g,identity) {
 }
 
 
-function cleanIntelligence(source, host, inferenceVerified) {
-  // inference_verified is derived from the intelligence_metrics probe gate
-  // (cleanIntelligenceMetrics), never from this section's own fields: the
-  // repo/PRs data here cannot prove an authenticated generation.
-  const out={status:'unavailable',repository:'UglyGameFace/RivaL-Intelligence',
-    fetched_at:null,head_sha:null,prs:[],runs:[],
-    host_status:oneOf(host&&host.status,['online','offline','unavailable']),
-    inference_verified:inferenceVerified===true};
-  if(!source||source.status!=='verified'||source.repository!==out.repository)return out;
-  const sha=s=>typeof s==='string'&&/^[0-9a-fA-F]{40}$/.test(s)?s.toLowerCase():null;
-  const time=isoOrNull(source.fetched_at);
-  if(!time||!sha(source.head_sha))return out;
-  out.status='verified';out.fetched_at=time;out.head_sha=sha(source.head_sha);
-  out.prs=(Array.isArray(source.prs)?source.prs:[]).slice(0,12).map(p=>{
-    if(!Number.isSafeInteger(p.number)||p.number<=0||p.number>1000000)return null;
-    return {number:p.number,title:String(p.title||'').slice(0,160),
-      state:oneOf(p.state,['open','closed']),merged_at:isoOrNull(p.merged_at),
-      html_url:'https://github.com/UglyGameFace/RivaL-Intelligence/pull/'+p.number};
-  }).filter(Boolean);
-  out.runs=(Array.isArray(source.runs)?source.runs:[]).slice(0,15).map(r=>{
-    if(!Number.isSafeInteger(r.id)||r.id<=0||r.id>999999999999999)return null;
-    return {id:r.id,name:String(r.name||'').slice(0,120),
-      status:oneOf(r.status,['queued','in_progress','completed','pending','waiting']),
-      conclusion:oneOf(r.conclusion,['success','failure','cancelled','skipped','unknown']),
-      created_at:isoOrNull(r.created_at),head_sha:sha(r.head_sha),
-      html_url:'https://github.com/UglyGameFace/RivaL-Intelligence/actions/runs/'+r.id};
-  }).filter(Boolean);
-  return out;
-}
 function cleanPerformance(p) {
   const out={status:'unavailable',captured_at:null,scopes:[],window_hours:24,
     model:'prospective-logistic-persistent-v3',after_cost_qualified:false,
@@ -189,80 +160,6 @@ function cleanPerformance(p) {
   return out;
 }
 
-
-function cleanIntelligenceMetrics(value){
-  // Authenticated LFM3 health only; a status-endpoint read never proves
-  // generation. Unknown fields stay null, never zero or healthy.
-  const empty={status:'unavailable',probe:'host_probe_not_emitted',captured_at:null,
-    model:null,ready:null,inference_verified:false,generation_probe:null,source_sha:null,
-    repair_state:null,repair_count:null,runtime_context_tokens:null,
-    memory:null,memory_pressure_pct:null,status_latency_ms:null,status_http:null,
-    status_error:null,
-    latency_ms_p50:null,latency_ms_p95:null,tokens_per_second:null,
-    requests_sampled:null,generation_errors:null,fallback_count:null,
-    cpu_pct:null,dns_ok:null,upstream_ok:null,db_pressure:null};
-  // A probe that ran but could not validate (e.g. its status read
-  // failed) must stay distinguishable in storage from a probe that
-  // never ran: carry the probe label, the validated failure label,
-  // and the read time through even on the unavailable path. The
-  // publisher stamps all three (see read_intelligence_metrics).
-  const probeOut=value&&value.probe==='llm_console_v1_status'
-    ?'llm_console_v1_status':'host_probe_not_emitted';
-  const statusErrorOut=value&&typeof value.status_error==='string'
-    &&/^[a-z0-9_]{1,80}$/.test(value.status_error)?value.status_error:null;
-  const atOut=isoOrNull(value&&value.captured_at);
-  const emptyWithProbe=()=>({...empty,probe:probeOut,
-    status_error:statusErrorOut,captured_at:atOut});
-  if(!value||typeof value!=='object'||value.status!=='observed')return emptyWithProbe();
-  if(typeof value.model!=='string'||
-     !/^[A-Za-z0-9][A-Za-z0-9\/_.-]{0,79}:[A-Za-z0-9_.-]{1,40}$/.test(value.model))return emptyWithProbe();
-  if(typeof value.ready!=='boolean')return emptyWithProbe();
-  const mem=value.memory&&typeof value.memory==='object'?value.memory:null;
-  const memKeys=['current_mb','limit_mb','peak_mb','anon_mb','file_mb',
-    'file_mapped_mb','gateway_rss_mb','backend_rss_mb'];
-  const memory=mem?Object.fromEntries(memKeys.map(k=>[k,numberOrNull(mem[k])])
-    .concat([['oom_kills',numberOrNull(mem.oom_kills,1000000)]])):null;
-  const pressure=memory&&Number.isSafeInteger(memory.current_mb)&&
-    Number.isSafeInteger(memory.limit_mb)&&memory.limit_mb>0
-    ?+Math.min(memory.current_mb/memory.limit_mb*100,1000).toFixed(1):null;
-  const num=(v,max)=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=max?+v.toFixed(3):null;
-  const at=isoOrNull(value.captured_at);
-  const http=value.status_http;
-  if(http!==null&&http!==undefined&&http!==200)return emptyWithProbe();
-  return {...empty,status:'observed',
-    probe:value.probe==='llm_console_v1_status'?'llm_console_v1_status':'host_probe_not_emitted',
-    captured_at:at,model:value.model.slice(0,120),ready:value.ready,
-    inference_verified:value.inference_verified===true&&
-      value.generation_probe==='authenticated_generation',
-    // Carry the probe marker into storage (exact string or null, mirroring
-    // the publisher's #670 validation) so the Verified badge is auditable
-    // after ingest instead of provable only at ingest time.
-    generation_probe:value.generation_probe==='authenticated_generation'
-      ?'authenticated_generation':null,
-    source_sha:typeof value.source_sha==='string'&&/^[0-9a-f]{40}$/.test(value.source_sha)
-      ?value.source_sha:null,
-    repair_state:['healthy','warming','backend_health_check_failed','cooldown',
-      'quarantined','repairing','repair_failed'].includes(value.repair_state)
-      ?value.repair_state:null,
-    repair_count:numberOrNull(value.repair_count,1000000),
-    runtime_context_tokens:numberOrNull(value.runtime_context_tokens,1000000),
-    memory,memory_pressure_pct:pressure,
-    status_latency_ms:num(value.status_latency_ms,120000),
-    status_http:http===200?200:null,
-    status_error:statusErrorOut,
-    latency_ms_p50:num(value.latency_ms_p50,600000),
-    latency_ms_p95:num(value.latency_ms_p95,600000),
-    tokens_per_second:num(value.tokens_per_second,100000),
-    requests_sampled:numberOrNull(value.requests_sampled),
-    generation_errors:numberOrNull(value.generation_errors),
-    fallback_count:numberOrNull(value.fallback_count),
-    cpu_pct:typeof value.cpu_pct==='number'&&Number.isFinite(value.cpu_pct)&&
-      value.cpu_pct>=0&&value.cpu_pct<=100?+value.cpu_pct.toFixed(1):null,
-    dns_ok:typeof value.dns_ok==='boolean'?value.dns_ok:null,
-    upstream_ok:typeof value.upstream_ok==='boolean'?value.upstream_ok:null,
-    db_pressure:['none','elevated','saturated'].includes(value.db_pressure)
-      ?value.db_pressure:null};
-}
 
 function cleanForwardCalls(value){
  const empty={status:'read_unavailable',captured_at:null,window_hours:6,rows:[],rows_per_scope:3,not_trading_calls:true};
@@ -504,7 +401,7 @@ function cleanXmarketWatchdog(v){
 }
 
 const SOURCE_NAMES=['discloud_forecast','discloud_learning','postgres','drive',
- 'github','intelligence','intelligence_host','performance'];
+ 'github','performance'];
 const SOURCE_STATUSES=['ok','unreachable','auth_failed','failed_read','no_records',
  'measured_zero','not_configured','stale'];
 const COLLECTION_EVENTS=['schedule','workflow_dispatch','push','workflow_run','unknown'];
@@ -573,6 +470,12 @@ function cleanAttempt(value){
 
 function rollupSourceHealth(previous,cleanedSources,receivedAt){
   const health=(previous&&typeof previous==='object')?previous:{};
+  // Retired sources keep no health entry: a source the publisher no longer
+  // emits must stop failing (and alerting) instead of freezing at its last
+  // failure forever.
+  for(const key of Object.keys(health)){
+    if(!SOURCE_NAMES.includes(key))delete health[key];
+  }
   if(!cleanedSources)return health;
   for(const name of SOURCE_NAMES){
     const entry=cleanedSources[name];
@@ -653,10 +556,6 @@ function build(payload,identity){
   const h=payload.host||{},db=payload.database||{},d=payload.drive||{};
   const reports=Array.isArray(d.reports)?d.reports.slice(0,12):[];
   const scopeProgress=cleanXmarketScopeProgress(h.xmarket_scope_progress);
-  // Hoisted so cleanIntelligence can derive its inference_verified from the
-  // same probe gate cleanIntelligenceMetrics applies (F13): the field is
-  // true exactly when the metrics say verified.
-  const intelMetrics=cleanIntelligenceMetrics(payload.intelligence_metrics);
   const cleanReports=reports.map(r=>{
     if(!['BTC','ETH','SOL','XRP'].includes(r.asset)||![5,15,60].includes(r.horizon))return null;
     const s=['blocked','fitted','rejected','accepted','unverified','not_recorded','unknown'];
@@ -767,8 +666,6 @@ function build(payload,identity){
       file_metadata_is_not_import_proof:true
     },
     github:cleanGithub(payload.github,identity),
-    intelligence:cleanIntelligence(payload.intelligence,payload.intelligence_host,intelMetrics.inference_verified),
-    intelligence_metrics:intelMetrics,
     performance:cleanPerformance(payload.performance),
     limitations:['This is a timestamped read-only receipt, not continuously live health','Changed weights do not prove an after-cost edge','Drive report existence does not prove host import or shadow issuance']
   };
@@ -869,22 +766,13 @@ export default {
     // under run:<id>. Trend comparisons must gate on schema_version and on
     // the performance sampling_policy carried per point.
     const driveReports=Array.isArray(clean.drive.reports)?clean.drive.reports:[];
-    const llm=clean.intelligence_metrics||{};
-    const llmMemory=llm.memory||{};
     entries.push({schema_version:1,run_id:identity.runId,captured_at:clean.captured_at,
       host:clean.host,database:clean.database,performance:clean.performance,
       drive:{status:clean.drive.status,reports_considered:clean.drive.reports_considered,
         accepted:driveReports.filter(r=>r.status==='accepted').length,
         rejected:driveReports.filter(r=>r.status==='rejected').length,
         blocked:driveReports.filter(r=>r.status==='blocked').length,
-        fitted:driveReports.filter(r=>r.status==='fitted').length},
-      intelligence:{status:clean.intelligence.status,host_status:clean.intelligence.host_status,head_sha:clean.intelligence.head_sha},
-      llm:{status:llm.status||'unavailable',inference_verified:llm.inference_verified===true,
-        ready:llm.ready===true?true:llm.ready===false?false:null,
-        memory_pressure_pct:typeof llm.memory_pressure_pct==='number'?llm.memory_pressure_pct:null,
-        oom_kills:Number.isSafeInteger(llmMemory.oom_kills)?llmMemory.oom_kills:null,
-        repair_count:Number.isSafeInteger(llm.repair_count)?llm.repair_count:null,
-        status_latency_ms:typeof llm.status_latency_ms==='number'?llm.status_latency_ms:null}});
+        fitted:driveReports.filter(r=>r.status==='fitted').length}});
     entries=entries.slice(-72);
     await env.EVIDENCE_KV.put('metrics-series',JSON.stringify(entries));
 

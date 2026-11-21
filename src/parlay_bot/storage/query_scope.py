@@ -3,18 +3,23 @@
 A Discord tap waits on its queries; a background worker may legitimately
 run long ones (archiving, history recovery). The limit therefore follows
 the asyncio task that serves an interaction, and every ``asyncio.to_thread``
-call it makes, through a context variable. Most background workers never
-set it; the 5-minute perp cycle sets a 60 s bound via ``mark_background``
-so a statement parked on a lock aborts with QueryCanceled instead of
-parking the cycle and its heartbeat. The watchdog health check sets a
-12 s bound for its own block via ``statement_timeout`` (never the whole
-loop: the one-time acceptance join spawned beside it needs ~20 s).
+call it makes, through a context variable. Every background worker is
+created through ``run_background`` (see ``RivalBot._spawn_worker``), which
+sets the 60 s bound for the whole task: a statement parked on a lock aborts
+with QueryCanceled and returns its pooled connection instead of holding
+one of the pool's slots indefinitely — including in loops that abandon the
+*wait* on a shielded thread but not the thread itself. Tighter scopes
+still override per block: interactions get 8 s, the Performance page 28 s,
+and the watchdog health check sets a 12 s bound for its own block via
+``statement_timeout`` (never the whole loop: the one-time acceptance join
+spawned beside it needs ~20 s, which fits inside the 60 s task default).
 """
 from __future__ import annotations
 
 import contextvars
-from collections.abc import Iterator
+from collections.abc import Coroutine, Iterator
 from contextlib import contextmanager
+from typing import Any, TypeVar
 
 # 8 s: below the 10 s dashboard render wait and the 9 s forecast render
 # wait, so a parked render query aborts before the render gives up instead
@@ -76,6 +81,25 @@ def mark_background(timeout_ms: int = BACKGROUND_STATEMENT_TIMEOUT_MS) -> None:
 
 def current_statement_timeout_ms() -> int | None:
     return _statement_timeout_ms.get()
+
+
+_T = TypeVar("_T")
+
+
+async def run_background(coro: Coroutine[Any, Any, _T]) -> _T:
+    """Run one background worker under the default 60 s statement bound.
+
+    Worker tasks are created already running, so the bound cannot be set
+    from outside the task; wrapping the worker's coroutine sets it as the
+    first step inside the task's own context, where it then follows every
+    ``asyncio.to_thread`` the worker makes and every task it spawns.
+    60 s is headroom, not a guillotine: the slowest legitimate single
+    statement observed in the incident ledger is ~24 s (most are ≤ ~12 s),
+    and per-batch writers (history recovery, archiving, records backup)
+    issue many short statements rather than one long one.
+    """
+    mark_background()
+    return await coro
 
 
 @contextmanager

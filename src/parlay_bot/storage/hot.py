@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,6 +38,8 @@ class RelationalHotStore:
 
     def __init__(self, database: RelationalDatabase) -> None:
         self.database = database
+        self._schema_lock = threading.Lock()
+        self._schema_ready = False
 
     def connect(self):
         return self.database.connect()
@@ -45,6 +48,21 @@ class RelationalHotStore:
         self.database.close()
 
     def initialize(self) -> None:
+        # Guarded per instance, the PerpetualMarketStore pattern: the schema
+        # script takes the database-wide advisory DDL lock and runs ~21
+        # statements, so running it on every public call (the old behavior)
+        # serialized all hot-store traffic and could pin the whole pool
+        # behind any long DDL elsewhere. First call per instance still
+        # creates the schema; later calls return immediately.
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            self._initialize_schema()
+            self._schema_ready = True
+
+    def _initialize_schema(self) -> None:
         auto_id = self.database.auto_increment_primary_key
         with self.connect() as connection:
             connection.executescript(

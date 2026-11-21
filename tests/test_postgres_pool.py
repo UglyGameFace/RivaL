@@ -269,3 +269,34 @@ def test_read_only_postgres_rejects_actual_writes_when_service_present() -> None
             conn.execute("DROP TABLE IF EXISTS rival_read_only_probe_test")
         reader.close()
         writer.close()
+
+
+def test_blocked_waiters_are_served_in_arrival_order(fake_connect: dict) -> None:
+    """FIFO fairness: while any thread waits, a new arrival must not steal
+    a just-returned connection via the get_nowait fast path."""
+    db = PostgresDatabase(
+        "postgresql://user:pass@host/db", max_size=1, checkout_timeout=10,
+    )
+    order: list[int] = []
+
+    def waiter(index: int) -> None:
+        with db.connect():
+            order.append(index)
+
+    with db.connect():
+        threads = []
+        for index in range(3):
+            thread = threading.Thread(target=waiter, args=(index,))
+            thread.start()
+            threads.append(thread)
+            # Deterministic arrival: thread i is registered as a waiter
+            # before thread i+1 is allowed to arrive.
+            deadline = time.monotonic() + 5
+            while db._waiters < index + 1:
+                assert time.monotonic() < deadline
+                time.sleep(0.005)
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    assert order == [0, 1, 2]
+    assert db._waiters == 0

@@ -492,3 +492,85 @@ def test_new_economic_policy_does_not_grandfather_previous_cost_only_rounds(
             (END.isoformat(), POLICY),
         )
     assert entry(learning_store)["champion"] is None
+
+
+def test_rounds_reassembles_forecasts_outcomes_and_proofs(learning_store):
+    """_rounds yields each round once, in (expires_at, slug) order.
+
+    The read pages rounds with one keyset query and reassembles forecasts,
+    outcomes and cost proofs from batched primary-key lookups; this pins
+    the join semantics the reassembly must preserve: every forecast of the
+    slug is in the probabilities map (the row itself carries the
+    alphabetically first model), an outcome applies only when its
+    condition_id matches the round's, and a proof counts only when its
+    digest and issue time match the round's.
+    """
+    from parlay_bot.perpetuals.model_league import _rounds
+
+    c = setup(learning_store)
+    proven = notice(start=START)
+    assert c.capture(proven, {BOOK: (.9, SHA), FORMULA: (.4, SHA)}, now=proven.quote_at)
+    plain = notice(start=START + timedelta(hours=2), with_receipt=False)
+    assert c.capture(plain, {BOOK: (.7, SHA)}, now=plain.quote_at)
+    with learning_store.connect() as conn:
+        conn.execute(
+            "INSERT INTO rival_polymarket_ai_outcomes VALUES (?,?,?,?,?,?,?)",
+            (proven.slug, proven.condition_id, "UP", proven.expires.isoformat(),
+             (proven.expires + timedelta(minutes=1)).isoformat(), SHA, "{}"))
+        # Same slug, wrong market: must not attach to the plain round.
+        conn.execute(
+            "INSERT INTO rival_polymarket_ai_outcomes VALUES (?,?,?,?,?,?,?)",
+            (plain.slug, "0x" + "e" * 64, "DOWN", plain.expires.isoformat(),
+             (plain.expires + timedelta(minutes=1)).isoformat(), SHA, "{}"))
+        # A round nobody forecast, plus a proof whose digest does not match.
+        bare_open = START + timedelta(hours=4)
+        conn.execute(
+            "INSERT INTO rival_poly_contest_rounds VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("bare-round", CONDITION, "BTC", 60, "k", bare_open.isoformat(),
+             (bare_open + timedelta(minutes=60)).isoformat(),
+             (bare_open + timedelta(minutes=12)).isoformat(),
+             bare_open.isoformat(), .5, None, None, SHA, "{}"))
+        conn.execute(
+            "INSERT INTO rival_poly_contest_cost_proof VALUES (?,?,?,?)",
+            ("bare-round", "f" * 64, SHA,
+             (bare_open + timedelta(minutes=12)).isoformat()))
+    got = list(_rounds(learning_store, "BTC", 60, START, END))
+    assert [row["slug"] for row, _ in got] == [proven.slug, plain.slug, "bare-round"]
+    first, probabilities = got[0]
+    assert first["source_proven"] == 1
+    assert first["direction"] == "UP"
+    assert first["resolved_at"] == proven.expires.isoformat()
+    assert first["outcome_at"] == (proven.expires + timedelta(minutes=1)).isoformat()
+    assert probabilities == {BOOK: .9, FORMULA: .4}
+    assert first["model"] == min(BOOK, FORMULA)
+    assert first["probability_up"] == probabilities[first["model"]]
+    second, plain_probabilities = got[1]
+    assert second["source_proven"] == 0
+    assert second["direction"] is None and second["outcome_at"] is None
+    assert second["resolved_at"] is None
+    assert plain_probabilities == {BOOK: .7}
+    third, bare_probabilities = got[2]
+    assert third["model"] is None and third["probability_up"] is None
+    assert bare_probabilities == {}
+    assert third["source_proven"] == 0
+
+
+def test_rounds_crosses_keyset_pages_without_gaps_or_repeats(learning_store):
+    """500-row pages: 505 bare rounds come back exactly once, in order."""
+    from parlay_bot.perpetuals.model_league import _rounds
+
+    setup(learning_store)
+    with learning_store.connect() as conn:
+        for i in range(505):
+            opened = START + timedelta(minutes=i)
+            conn.execute(
+                "INSERT INTO rival_poly_contest_rounds VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (f"page-{i:03d}", CONDITION, "BTC", 60, "k", opened.isoformat(),
+                 (opened + timedelta(minutes=60)).isoformat(),
+                 (opened + timedelta(minutes=12)).isoformat(),
+                 opened.isoformat(), .5, None, None, SHA, "{}"))
+    got = list(_rounds(learning_store, "BTC", 60, START, END))
+    keys = [(row["expires_at"], row["slug"]) for row, _ in got]
+    assert len(got) == 505
+    assert keys == sorted(keys)
+    assert len({row["slug"] for row, _ in got}) == 505

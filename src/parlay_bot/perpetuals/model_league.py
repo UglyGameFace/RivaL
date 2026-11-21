@@ -14,7 +14,6 @@ import math
 import re
 import threading
 from datetime import UTC, datetime, timedelta
-from itertools import groupby
 from urllib.parse import urlsplit
 
 ALPHA = .05
@@ -526,33 +525,72 @@ def _test_alpha(model: str, model_slots: dict, scope_index: int) -> float:
 
 
 def _rounds(store, asset, horizon, start, end):
-    """Keyset pages bound RAM, including when months of evidence accumulate."""
+    """Keyset pages bound RAM, including when months of evidence accumulate.
+
+    Each page reads its rounds with one indexed keyset query, then fetches
+    the page's forecasts, outcomes and cost proofs with batched primary-key
+    lookups. The previous single statement joined all three tables per page;
+    the planner answered with a fresh sequential scan and hash join of every
+    joined table on every page (52k forecast rows, 42k outcome rows and the
+    proof table, ~35 times per league pass), which is what put
+    ``model_league._rounds`` on the slow-operation ledger at 2-4 s a page.
+    The rows yielded, their order and every value are unchanged: the joins
+    are primary-key lookups (at most one proof and one outcome per slug),
+    reassembled here in the page's (expires_at, slug) order.
+    """
     cursor = start.isoformat(), ""
     while True:
         with store.connect() as conn:
             rows = conn.execute(
-                "SELECT r.slug,r.schema_key,r.opens_at,r.issued_at,r.expires_at,r.market_up,"
-                "r.up_cost,r.down_cost,r.evidence_sha256,r.evidence_json,"
-                "o.direction,o.observed_at AS outcome_at,o.resolved_at,"
-                "f.model,f.probability_up, "
-                "CASE WHEN proof.slug IS NULL THEN 0 ELSE 1 END AS source_proven "
-                "FROM (SELECT * FROM rival_poly_contest_rounds "
+                "SELECT slug,condition_id,schema_key,opens_at,issued_at,expires_at,"
+                "market_up,up_cost,down_cost,evidence_sha256,evidence_json "
+                "FROM rival_poly_contest_rounds "
                 "WHERE asset=? AND horizon=? AND issued_at>=? AND issued_at<expires_at "
                 "AND expires_at<=? AND (expires_at>? OR (expires_at=? AND slug>?)) "
-                "ORDER BY expires_at,slug LIMIT 500) r "
-                "LEFT JOIN rival_poly_contest_cost_proof proof ON proof.slug=r.slug "
-                "AND proof.evidence_sha256=r.evidence_sha256 "
-                "AND proof.issued_at=r.issued_at "
-                "LEFT JOIN rival_polymarket_ai_outcomes o ON o.slug=r.slug AND o.condition_id=r.condition_id "
-                "LEFT JOIN rival_poly_contest_forecasts f ON f.slug=r.slug "
-                "ORDER BY r.expires_at,r.slug,f.model",
+                "ORDER BY expires_at,slug LIMIT 500",
                 (asset, horizon, start.isoformat(), end.isoformat(), cursor[0], cursor[0], cursor[1]),
             ).fetchall()
-        if not rows:
-            return
-        for _, group in groupby(rows, key=lambda r: r["slug"]):
-            group = list(group)
-            row = dict(group[0])
+            if not rows:
+                return
+            slugs = [r["slug"] for r in rows]
+            forecasts: dict[str, list] = {}
+            outcomes: dict[str, dict] = {}
+            proofs: dict[str, dict] = {}
+            for i in range(0, len(slugs), 200):
+                part = slugs[i:i + 200]
+                marks = ",".join("?" * len(part))
+                for r in conn.execute(
+                        f"SELECT slug,model,probability_up FROM rival_poly_contest_forecasts "
+                        f"WHERE slug IN ({marks}) ORDER BY slug,model", part).fetchall():
+                    forecasts.setdefault(r["slug"], []).append(r)
+                for r in conn.execute(
+                        f"SELECT slug,condition_id,direction,observed_at,resolved_at "
+                        f"FROM rival_polymarket_ai_outcomes WHERE slug IN ({marks})",
+                        part).fetchall():
+                    outcomes[r["slug"]] = r
+                for r in conn.execute(
+                        f"SELECT slug,evidence_sha256,issued_at "
+                        f"FROM rival_poly_contest_cost_proof WHERE slug IN ({marks})",
+                        part).fetchall():
+                    proofs[r["slug"]] = r
+        for page_row in rows:
+            row = dict(page_row)
+            del row["condition_id"]
+            outcome = outcomes.get(page_row["slug"])
+            if outcome is not None and outcome["condition_id"] == page_row["condition_id"]:
+                row["direction"] = outcome["direction"]
+                row["outcome_at"] = outcome["observed_at"]
+                row["resolved_at"] = outcome["resolved_at"]
+            else:
+                row["direction"] = row["outcome_at"] = row["resolved_at"] = None
+            proof = proofs.get(page_row["slug"])
+            row["source_proven"] = int(
+                proof is not None
+                and proof["evidence_sha256"] == page_row["evidence_sha256"]
+                and proof["issued_at"] == page_row["issued_at"])
+            group = forecasts.get(page_row["slug"], [])
+            row["model"] = group[0]["model"] if group else None
+            row["probability_up"] = group[0]["probability_up"] if group else None
             if row["source_proven"]:
                 try:
                     raw = json.loads(row["evidence_json"])

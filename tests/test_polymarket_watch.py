@@ -30,6 +30,25 @@ def _notice(now):
     )
 
 
+def test_market_slug_formats_match_live_gamma():
+    """Slug shapes verified against live Gamma 2026-11-20: the dated
+    "bitcoin-up-or-down-...-et" hourly names 404 for every asset; the live
+    hourly series is "<asset>-updown-1h-<hour bucket epoch>"."""
+    opened = datetime(2026, 11, 21, 0, 37, tzinfo=UTC)
+    bucket_1h = 1795219200  # 2026-11-21T00:00:00Z
+    for asset in ("BTC", "ETH", "SOL", "XRP"):
+        assert polymarket_watch.market_slug(asset, 60, opened) == (
+            f"{asset.lower()}-updown-1h-{bucket_1h}"
+        )
+    start = datetime(2026, 11, 21, 0, 0, tzinfo=UTC)
+    assert polymarket_watch.market_slug("BTC", 5, start) == (
+        f"btc-updown-5m-{bucket_1h}"
+    )
+    assert polymarket_watch.market_slug("BTC", 15, start) == (
+        f"btc-updown-15m-{bucket_1h}"
+    )
+
+
 def test_polymarket_source_select_is_user_specific_persistent_and_stoppable(tmp_path):
     store = SQLiteHotStore(tmp_path / "poly-select.sqlite")
     store.initialize()

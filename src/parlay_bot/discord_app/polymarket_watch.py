@@ -14,7 +14,6 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -121,12 +120,11 @@ def market_slug(asset: str, horizon: int, opened: datetime) -> str:
     period = horizon * 60
     bucket = int(opened.astimezone(UTC).timestamp()) // period * period
     if horizon == 60:
-        local = datetime.fromtimestamp(bucket, UTC).astimezone(ZoneInfo("America/New_York"))
-        months = ("january", "february", "march", "april", "may", "june",
-                  "july", "august", "september", "october", "november", "december")
-        name = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "XRP": "xrp"}[asset]
-        hour = f"{local.hour % 12 or 12}{'am' if local.hour < 12 else 'pm'}"
-        return f"{name}-up-or-down-{months[local.month - 1]}-{local.day}-{local.year}-{hour}-et"
+        # Polymarket retired the dated "bitcoin-up-or-down-...-et" hourly
+        # names; the live hourly series uses the same epoch-bucket shape as
+        # 5m/15m with a 1h label (verified against Gamma 2026-11-20 for all
+        # four assets, current and next hour; the old names 404).
+        return f"{asset.lower()}-updown-1h-{bucket}"
     return f"{asset.lower()}-updown-{horizon}m-{bucket}"
 
 

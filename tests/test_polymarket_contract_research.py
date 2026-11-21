@@ -172,7 +172,9 @@ async def test_hourly_market_requires_current_year_time_and_real_binance_rule(mo
     start = datetime(2026, 10, 30, 12, tzinfo=UTC)
     now = start + timedelta(minutes=10)
     slug = poly.market_slug("BTC", 60, start)
-    assert f"-{start.year}-" in slug
+    # The slug is bound to the exact hour: its suffix is the hour's epoch
+    # bucket (the retired dated name carried the year instead).
+    assert slug == f"btc-updown-1h-{int(start.timestamp())}"
     controls = {"year": 0, "source": "https://www.binance.com/en/trade/BTC_USDT"}
 
     def handle(req):

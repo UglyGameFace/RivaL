@@ -1559,11 +1559,6 @@ class RivalDiscordClient(discord.Client):
         await asyncio.to_thread(self.polymarket_research.initialize)
         await asyncio.to_thread(self.formula_test.initialize)
         await asyncio.to_thread(self.kalshi_forward.initialize)
-        _LOG.info(
-            "RivaL Polymarket contract AI wired free_key_configured=%s; "
-            "exact 5m/15m/1h contracts, experimental calls only",
-            self.polymarket_research.ai is not None and self.polymarket_research.ai.available,
-        )
         # Install read/forecast schemas before starting any collection,
         # notification or learning workers. Creating indexes while another
         # worker inserts predictions caused live PostgreSQL deadlocks.

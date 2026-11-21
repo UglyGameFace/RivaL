@@ -1877,7 +1877,6 @@ class GuidedHome(discord.ui.View):
             elif self.live_source == "draftkings":
                 self._add("Find My Coin", "cdna-auto", 3, "🔎", True)
                 self._add("Check CDNA Quote", "cdna-quote", 3, "💱")
-                self._add("Independent AI", "dk-independent-ai", 3, "🧠")
                 self.add_item(discord.ui.Button(
                     label="Open DraftKings Predictions",
                     url="https://predictions.draftkings.com/en",
@@ -2086,9 +2085,6 @@ class GuidedHome(discord.ui.View):
                         "CDNA and DraftKings contracts are NOT automatically the same.\n"
                         "**Check CDNA Quote:** One owner-only personal reference; "
                         "no automatic feed, saved provider data, or orders.\n"
-                        "**Independent AI:** RivaL's existing free AI examines "
-                        "independent exchange research for this coin, NOT "
-                        "CDNA or DraftKings prices or contract outcomes.\n"
                         "**No verified DraftKings live price feed, contract-specific "
                         "trained model, or settled prediction statistics yet.** "
                         "Use DraftKings' own listed strike, settlement terms, "
@@ -3227,61 +3223,7 @@ class GuidedHome(discord.ui.View):
             return
         await interaction.response.defer(thinking=False)
         _LOG.info("Guided interaction acknowledged action=%s", action)
-        if action == "dk-independent-ai":
-            if self.live_source != "draftkings" or self.research_factory is None:
-                self.note = "Choose DraftKings and enable independent research first."
-            else:
-                try:
-                    panel = self.research_factory(self.owner_id)
-                    panel.asset = self.coin
-                    panel.screen = "ai"
-                    panel.section = "overview"
-                    if panel.ai is not None and panel.ai.available and panel.market is not None:
-                        try:
-                            # Explicit click only; evidence gates apply unchanged.
-                            # The AI server allows 40 s for an answer and the
-                            # client 52 s, so waiting only 22 s here threw away
-                            # answers that were still coming. Outlast both.
-                            panel.opinion = await asyncio.wait_for(
-                                panel.ai.ask(
-                                    asset=self.coin, venues=panel.venues,
-                                    requester_id=interaction.user.id,
-                                ),
-                                timeout=55,
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            # No provider data, API credentials or internal paths
-                            # may leak in exception messages to Discord.
-                            _LOG.info("Requested independent AI unavailable: %s", type(exc).__name__)
-                            panel.message = (
-                                "Independent AI has no qualified response right now. "
-                                "NO BET. Math and market lookup remain separate."
-                            )
-                    else:
-                        panel.message = (
-                            "Independent exchange AI is not configured or no "
-                            "validated exchange evidence is connected. NO BET."
-                        )
-                    panel._rebuild()
-                    await interaction.followup.send(
-                        content=(
-                            f"Independent {self.coin} exchange AI research. "
-                            "RivaL uses its model-supported horizons, which may "
-                            f"differ from the {self.horizon}m selected market window. "
-                            "AI NEVER receives Crypto.com/CDNA data or DraftKings "
-                            "quotes. Its lean is NOT a matched DraftKings bet."
-                        ),
-                        embed=await asyncio.wait_for(panel.render(), timeout=10),
-                        view=panel, ephemeral=True,
-                    )
-                    self.note = (
-                        "Independent AI requested with exchange-only inputs. "
-                        "No Crypto.com data went to a model or training."
-                    )
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("Independent DraftKings-adjacent AI failed")
-                    self.note = "Independent AI research unavailable; no market call."
-        elif action == "desk-call":
+        if action == "desk-call":
             if self.live_source is None:
                 self.note = "Choose a market first. No call was requested."
             elif self.live_source == "exchange":

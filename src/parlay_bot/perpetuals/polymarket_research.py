@@ -382,14 +382,18 @@ class PolymarketResearch:
             rows = conn.execute(
                 "SELECT c.slug,c.condition_id,c.expires_at FROM ("
                 "SELECT slug,condition_id,expires_at FROM rival_polymarket_ai_calls "
-                "WHERE expires_at<? AND expires_at>=? UNION ALL "
+                "WHERE expires_at<? AND expires_at>=? AND NOT EXISTS ("
+                "SELECT 1 FROM rival_polymarket_ai_outcomes o "
+                "WHERE o.slug=rival_polymarket_ai_calls.slug) UNION ALL "
                 "SELECT slug,condition_id,expires_at FROM rival_polymarket_observations "
-                "WHERE expires_at<? AND expires_at>=? UNION ALL "
+                "WHERE expires_at<? AND expires_at>=? AND NOT EXISTS ("
+                "SELECT 1 FROM rival_polymarket_ai_outcomes o "
+                "WHERE o.slug=rival_polymarket_observations.slug) UNION ALL "
                 "SELECT slug,condition_id,expires_at FROM rival_poly_contest_rounds "
-                "WHERE expires_at<? AND expires_at>=?) c "
-                "LEFT JOIN rival_polymarket_ai_outcomes o ON o.slug=c.slug "
+                "WHERE expires_at<? AND expires_at>=? AND NOT EXISTS ("
+                "SELECT 1 FROM rival_polymarket_ai_outcomes o "
+                "WHERE o.slug=rival_poly_contest_rounds.slug)) c "
                 "LEFT JOIN rival_polymarket_resolution_attempts a ON a.slug=c.slug "
-                "WHERE o.slug IS NULL "
                 "ORDER BY COALESCE(a.checked_at,''),c.expires_at LIMIT 200",
                 # Contracts resolve within hours; one still unresolved after
                 # 30 days will not be. Unbounded, the UNION of every call and
@@ -403,6 +407,14 @@ class PolymarketResearch:
                 # in ORDER BY order, and keep the first 20 — exactly the
                 # UNION result unless more than 180 duplicate triples sort
                 # ahead of the 20th distinct slug.
+                # The outcome anti-join sits inside each branch (Nov 21): as
+                # an outer LEFT JOIN it forced every resolved contract in the
+                # window (~45k rows) through the ORDER BY sort before the
+                # filter could drop it, which put this read back on the
+                # slow-operation ledger at up to 25 s under load. Filtered
+                # per branch, only the unresolved remainder is sorted; the
+                # returned rows and their (checked_at, expires_at) order are
+                # unchanged (verified row-for-row on a production-scale seed).
                 (now.isoformat(), (now - timedelta(days=30)).isoformat()) * 3,
             ).fetchall()
             seen = set()

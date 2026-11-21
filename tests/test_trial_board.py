@@ -189,6 +189,32 @@ def test_read_adds_each_models_hit_rate_from_the_ledger(tmp_path, monkeypatch):
         store.close()
 
 
+def test_hit_rates_recompute_at_most_once_per_warm_cycle(tmp_path, monkeypatch):
+    """The board warm runs every 30 minutes; the shared-read TTL must span
+    it, or every warm recomputes the grouped 7-day aggregate for all 12
+    coin x timeframe keys (the slow-op burst of 2026-11-21)."""
+    from parlay_bot.discord_app import trial_board
+    from parlay_bot.storage.hot import SQLiteHotStore
+
+    store = SQLiteHotStore(tmp_path / "rates-cache.sqlite")
+    try:
+        calls = []
+
+        def stub(store_, *, asset, horizon, now=None, venues=None):
+            calls.append((asset, horizon))
+            return {"regime_v1": (30, 18)}
+
+        monkeypatch.setattr(trial_board, "_hit_rates_uncached", stub)
+        first = trial_board.hit_rates(store, asset="BTC", horizon=5)
+        second = trial_board.hit_rates(store, asset="BTC", horizon=5)
+        assert first == second == {"regime_v1": (30, 18)}
+        assert calls == [("BTC", 5)]              # second read is a cache hit
+        trial_board.hit_rates(store, asset="ETH", horizon=5)
+        assert calls == [("BTC", 5), ("ETH", 5)]   # a new key computes once
+    finally:
+        store.close()
+
+
 def test_reverted_venue_variants_never_show():
     """'<family>_venue' (#365) was reverted in #366: its old rows must not
     sit on the board as "day 1/21, 5 results" forever."""

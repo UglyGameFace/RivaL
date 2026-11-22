@@ -1,6 +1,6 @@
 # RivaL ACTIVE_TASK — canonical execution plan
 
-Updated 2026-11-21 19:56 EST. This is a repository checkpoint, not a global task lock; prior details remain in Git history.
+Updated 2026-11-21 23:57 EST. This is a repository checkpoint, not a global task lock; prior details remain in Git history.
 
 ## Objective and immutable gates
 Recover authenticated, chronologically eligible XMarket history; maintain independent prospective shadows; prove source-baseline and executable after-cost performance before promotion; verify Discord next-target and settlement behavior. No real orders, retroactive forecasts, holdout mining, recurring historical retraining, or relaxed gates (>=150 independent forward targets, >=21 UTC days, >=80% matched quotes, positive robust after-cost versus baseline).
@@ -48,8 +48,10 @@ The bot is **not learning in the qualified sense: 0 qualified models of 93 evalu
 - **2026-12-10T02:12Z** — convergence ACCRUAL_FAILED readout (automatic; nothing to spend on it).
 - **Months out** — N1 forward verdict (floors-gated, ~2–6 months); N3 crypto-only verdict (~60 days at the observed pace; accrual deadline 2027-03-31); step-8 fold completion at 7/7 days gates any new XMarket fits.
 
-## New repository changes since the previous checkpoint
-- At 2026-11-21 07:10 UTC, `main@1963b7df` merged #747 (batch shadow-score tally inserts and index tallies by venue/hour). Also merged #745 (filter resolved Polymarket contracts within each unsettled UNION branch) and #746 (stream records-backup day scopes in one query instead of 24 hourly slices). These changes are source-commit verified, not yet independently validated against live host metrics. No open PRs were returned at inspection. The commit-specific workflow lookup for #747's merge SHA returned no PR-triggered runs; it is not a full CI verdict. Running Discloud SHA, fresh incident ledger, first-boot index build and live qualification outcomes remain unverified. Do not attribute live recovery to these merges without receipts.
+## Latest source integration (2026-11-22 UTC)
+- Current returned main is `136b2da42b8619258c3e547c3f10ffd892e85207`. PR #750 merged a materialized-scorecard worker, table and shadow canary; #751 repaired fee-era-dependent test expectations; #752 merged flag-gated materialized readers for forward accuracy and Polymarket scorecards. `RIVAL_MATERIALIZED_READS` defaults **off**, so merged readers alone do not establish lower live PostgreSQL pressure. Missing/stale materializations fall back to live reads; historical-clock reads remain live. Prior #745–#749 fixes remain integrated. GitHub PR search returned no open PRs at this checkpoint.
+- No authenticated live process SHA, materialization freshness/canary comparison, PostgreSQL incident-ledger recovery, first-boot index build, or forecast/settlement continuity receipt was obtained. Do not enable the flag or assert production recovery without these checks. The next safe action is authenticated read-only live evidence, then bounded canary activation only with a verified rollback path and observed baseline.
+- XMarket's last evidenced 2/7 inner days, five fitted research-only scopes, seven missing and zero qualified models are unchanged; no historical originals or qualification gates changed.
 
 ## November 21 evening reconciliation
 - `main@8579c170` incorporates PR #748 (removed deleted RivaL-Intelligence Evidence Board probes) and PR #749 (removed remaining bot/service/Discord Intelligence dependencies). PR #749's earlier CI passed before merge; the merged SHA has a GitHub `discloud/commit: success` status, **not** authenticated live process or collector proof. These are repository integration changes, not proof that the hourly Evidence Board warning disappeared in production.

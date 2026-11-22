@@ -538,6 +538,70 @@ async function main(){
  throttleRes=await cx.worker.fetch(throttleReq(fallbackIdentity),brokenEnv);
  assert.equal((await throttleRes.json()).send,false,
   'the KV fallback still suppresses within the hour');
+
+ // D1 storage migration (2026-11-22): when the EVIDENCE_DB binding
+ // exists, writes go to D1 only — zero KV puts — and reads prefer D1.
+ // Replay of pre-migration stored rows: values that exist ONLY in KV
+ // (written before the binding existed) must stay readable through the
+ // new read path with their meaning unchanged, until D1 holds its own
+ // copy. Fake D1 models prepare/bind/first/run over a Map.
+ const d1Rows=new Map();
+ const fakeD1={prepare(sql){
+   let bound=[];
+   const stmt={bind(...args){bound=args;return stmt;},
+     async run(){
+       if(sql.startsWith('CREATE TABLE'))return{success:true};
+       if(sql.startsWith('INSERT INTO evidence_store')){
+         d1Rows.set(bound[0],bound[1]);return{success:true};}
+       throw new Error('unexpected D1 run: '+sql.slice(0,40));},
+     async first(){
+       if(sql.startsWith('SELECT value FROM evidence_store')){
+         return d1Rows.has(bound[0])?{value:d1Rows.get(bound[0])}:null;}
+       throw new Error('unexpected D1 first: '+sql.slice(0,40));}};
+   return stmt;}};
+ const legacyRecords=new Map();
+ let legacyPuts=0;
+ const legacyLatest={captured_at:new Date(Date.now()-3600000).toISOString(),
+   marker:'legacy-kv-latest'};
+ legacyRecords.set('latest',JSON.stringify(legacyLatest));
+ legacyRecords.set('training-report-20261112',
+   JSON.stringify({status:'seeded-in-kv'}));
+ const d1Env={EVIDENCE_DB:fakeD1,
+   EVIDENCE_KV:{get:async key=>legacyRecords.has(key)
+      ?JSON.parse(legacyRecords.get(key)):null,
+     put:async(key,value)=>{legacyPuts++;legacyRecords.set(key,value);}}};
+ let d1Res=await cx.worker.fetch(new Request(claims.aud+'/latest'),d1Env);
+ assert.equal((await d1Res.json()).marker,'legacy-kv-latest',
+   'D1 migration: a latest that exists only in KV stays readable');
+ d1Res=await cx.worker.fetch(new Request(claims.aud+'/training-snapshot'),d1Env);
+ assert.equal((await d1Res.json()).status,'seeded-in-kv',
+   'D1 migration: the KV-seeded training report stays readable');
+ d1Res=await cx.worker.fetch(make(valid),d1Env);
+ assert.equal(d1Res.status,202,'D1-backed ingest is accepted');
+ assert.equal(legacyPuts,0,'D1-backed ingest costs zero KV writes');
+ assert.ok(d1Rows.has('latest')&&d1Rows.has('metrics-series')
+   &&d1Rows.has('bookkeeping'),
+   'D1-backed ingest writes latest, metrics-series and bookkeeping to D1');
+ d1Res=await cx.worker.fetch(new Request(claims.aud+'/latest'),d1Env);
+ const d1Latest=await d1Res.json();
+ assert.equal(d1Latest.provenance&&d1Latest.provenance.verified,true,
+   'after ingest, /latest serves the D1 copy, not the legacy KV value');
+ assert.equal(d1Latest.marker,undefined);
+ const d1Diag=await (await cx.worker.fetch(
+   new Request(claims.aud+'/diagnostics'),d1Env)).json();
+ assert.equal(d1Diag.collection.last_publication.run_id,claims.run_id,
+   'diagnostics read bookkeeping back from D1');
+ let d1Throttle=await cx.worker.fetch(
+   throttleReq('warning|source_failed:d1-fixture'),d1Env);
+ assert.equal((await d1Throttle.json()).send,true,
+   'D1 fallback throttle: first sight of an identity may send');
+ assert.equal(legacyPuts,0,'D1 throttle record costs zero KV writes');
+ assert.ok(d1Rows.has('alert-throttle:warning|source_failed:d1-fixture'),
+   'the throttle record landed in D1');
+ d1Throttle=await cx.worker.fetch(
+   throttleReq('warning|source_failed:d1-fixture'),d1Env);
+ assert.equal((await d1Throttle.json()).send,false,
+   'D1 fallback throttle still suppresses within the hour');
  console.log('Evidence collector signed round-trip, redaction and rejection regressions passed');
 }
 main().catch(error=>{console.error(error);process.exitCode=1});

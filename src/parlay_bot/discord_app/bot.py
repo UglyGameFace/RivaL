@@ -3972,11 +3972,25 @@ class RivalDiscordClient(discord.Client):
         """Read Polymarket contract scores without querying exchange/Drive state."""
         self.polymarket_research.initialize()
         learner = self.polymarket_research.learner
-        result = learner.summary(asset=asset, horizon=horizon)
-        try:
-            result["pooled"] = learner.pooled_summary(asset=asset, horizon=horizon)
-        except Exception:  # noqa: BLE001 - optional comparison line
-            _LOG.warning("Pooled Polymarket scorecard unavailable")
+        # Slice 1: a fresh worker-materialized row may serve this builder
+        # behind the default-off flag; any miss falls back to the shared
+        # live assembly the worker and the canary also use, so the three
+        # can never drift. The Kalshi additions below are unchanged, and
+        # with the flag off the lookup is never attempted.
+        from parlay_bot.perpetuals.materialized_scorecards import polymarket_status_payload
+        from parlay_bot.storage.materialized_reads import (
+            KIND_POLYMARKET_SUMMARY,
+            lookup_if_enabled,
+            reads_enabled,
+        )
+
+        result = None
+        if reads_enabled():
+            result = lookup_if_enabled(
+                self.store, KIND_POLYMARKET_SUMMARY, asset, horizon)
+        if result is None:
+            result = polymarket_status_payload(
+                learner, asset=asset, horizon=horizon)
         if horizon == 15 and self.kalshi_updown is not None:
             try:
                 result["kalshi"] = self.kalshi_updown.summary(asset=asset)

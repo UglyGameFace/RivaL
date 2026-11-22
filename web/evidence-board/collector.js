@@ -518,9 +518,73 @@ function appendAttempt(history,entry){
    before this deploy carries over; the legacy keys are never written
    again. The per-run full-receipt archive (run:<id>) was write-only —
    nothing ever read it — and is gone. */
+
+/* Storage layer — D1 primary, KV legacy fallback (2026-11-22).
+   KV's free tier allows only 1,000 writes/day and this worker's designed
+   steady state (a receipt every ~10 minutes, several values per receipt)
+   lives at 60-90% of that cap, so any busy day exhausts it and the board
+   freezes (2026-11-19, and again 2026-11-22 at ~90% by mid-afternoon).
+   D1's free tier allows 100,000 rows written/day — the same workload is
+   ~0.5% of the cap. All values keep their exact key names and JSON shapes;
+   only the backend changes. When the EVIDENCE_DB (D1) binding exists,
+   writes go to D1 ONLY (never KV — that is the point of the migration)
+   and reads try D1 first, falling back to KV so every value written
+   before the migration (latest, metrics-series, github-snapshot,
+   bookkeeping, the legacy bookkeeping keys, the seeded training report)
+   stays readable until D1 holds its own copy. With no D1 binding the
+   worker behaves exactly as before on KV alone, so this code is safe to
+   deploy before the binding exists. The table is created by the worker
+   itself (CREATE TABLE IF NOT EXISTS on first use), so setup is only:
+   create the D1 database and bind it as EVIDENCE_DB. D1 rows have no
+   TTL; the one expiring KV user (alert-throttle:) checks its own
+   timestamp on read, so a lingering row is harmless. */
+let storeTableReady=null;
+function d1Db(env){
+  return env&&env.EVIDENCE_DB&&typeof env.EVIDENCE_DB.prepare==='function'
+    ?env.EVIDENCE_DB:null;
+}
+async function ensureStoreTable(env){
+  const db=d1Db(env);if(!db)return false;
+  if(!storeTableReady){
+    storeTableReady=db.prepare(
+      'CREATE TABLE IF NOT EXISTS evidence_store '+
+      '(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)'
+    ).run().then(()=>true,err=>{storeTableReady=null;throw err;});
+  }
+  return storeTableReady;
+}
+async function storeGetJson(env,key){
+  const db=d1Db(env);
+  if(db){
+    try{
+      if(await ensureStoreTable(env)){
+        const row=await db.prepare(
+          'SELECT value FROM evidence_store WHERE key=?').bind(key).first();
+        if(row&&typeof row.value==='string'){
+          try{return JSON.parse(row.value);}catch(_){return null;}
+        }
+      }
+    }catch(_){/* D1 read failed; the KV fallback below answers */}
+  }
+  if(env&&env.EVIDENCE_KV)return env.EVIDENCE_KV.get(key,'json');
+  return null;
+}
+async function storePut(env,key,value){
+  const db=d1Db(env);
+  if(db){
+    await ensureStoreTable(env);
+    await db.prepare(
+      'INSERT INTO evidence_store (key,value,updated_at) VALUES (?,?,?) '+
+      'ON CONFLICT(key) DO UPDATE SET value=excluded.value, '+
+      'updated_at=excluded.updated_at')
+      .bind(key,String(value),new Date().toISOString()).run();
+    return;
+  }
+  return env.EVIDENCE_KV.put(key,value);
+}
 const BOOKKEEPING_KEY='bookkeeping';
 async function readBookkeeping(env){
-  const stored=await env.EVIDENCE_KV.get(BOOKKEEPING_KEY,'json');
+  const stored=await storeGetJson(env,BOOKKEEPING_KEY);
   if(stored&&typeof stored==='object')return{
     last_attempt:stored.last_attempt||null,
     last_publication:stored.last_publication||null,
@@ -528,18 +592,18 @@ async function readBookkeeping(env){
     source_health:(stored.source_health&&typeof stored.source_health==='object')?stored.source_health:{},
     attempt_history:Array.isArray(stored.attempt_history)?stored.attempt_history:[]};
   const [lastAttempt,lastPublication,lastSchedule,health,history]=await Promise.all([
-    env.EVIDENCE_KV.get('last-attempt','json'),
-    env.EVIDENCE_KV.get('last-publication','json'),
-    env.EVIDENCE_KV.get('last-schedule-attempt','json'),
-    env.EVIDENCE_KV.get('source-health','json'),
-    env.EVIDENCE_KV.get('attempt-history','json')]);
+    storeGetJson(env,'last-attempt'),
+    storeGetJson(env,'last-publication'),
+    storeGetJson(env,'last-schedule-attempt'),
+    storeGetJson(env,'source-health'),
+    storeGetJson(env,'attempt-history')]);
   return{last_attempt:lastAttempt||null,last_publication:lastPublication||null,
     last_schedule_attempt:lastSchedule||null,
     source_health:(health&&typeof health==='object')?health:{},
     attempt_history:Array.isArray(history)?history:[]};
 }
 function writeBookkeeping(env,book){
-  return env.EVIDENCE_KV.put(BOOKKEEPING_KEY,JSON.stringify(book));
+  return storePut(env,BOOKKEEPING_KEY,JSON.stringify(book));
 }
 
 function build(payload,identity){
@@ -697,9 +761,9 @@ export default {
  async fetch(req,env){
   const u=new URL(req.url);
   if(req.method==='GET'&&u.pathname==='/health')return reply({ok:true,receiver:'rival-evidence-collector',read_only_sources:true});
-  if(req.method==='GET'&&u.pathname==='/github-snapshot'){const data=await env.EVIDENCE_KV.get('github-snapshot','json');return reply(data||{status:'unavailable',reason:'github_snapshot_not_yet_published'},200,'public,max-age=60');}
-  if(req.method==='GET'&&u.pathname==='/training-snapshot'){const data=await env.EVIDENCE_KV.get('training-report-20261112','json');return reply(data||{status:'unavailable'},200,'public,max-age=3600');}
-  if(req.method==='GET'&&u.pathname==='/history'){const records=await env.EVIDENCE_KV.get('metrics-series','json');return reply({source:'signed-github-actions',points:Array.isArray(records)?records:[]},200,'public,max-age=60');}
+  if(req.method==='GET'&&u.pathname==='/github-snapshot'){const data=await storeGetJson(env,'github-snapshot');return reply(data||{status:'unavailable',reason:'github_snapshot_not_yet_published'},200,'public,max-age=60');}
+  if(req.method==='GET'&&u.pathname==='/training-snapshot'){const data=await storeGetJson(env,'training-report-20261112');return reply(data||{status:'unavailable'},200,'public,max-age=3600');}
+  if(req.method==='GET'&&u.pathname==='/history'){const records=await storeGetJson(env,'metrics-series');return reply({source:'signed-github-actions',points:Array.isArray(records)?records:[]},200,'public,max-age=60');}
   // Durable alert dedupe for the board worker: worker isolates are
   // ephemeral, so the "already sent" record for an alert set cannot live
   // in the sender. Check-and-set on the alert set's identity: the same
@@ -729,9 +793,9 @@ export default {
     const key=body&&typeof body.key==='string'?body.key:'';
     if(!/^[A-Za-z0-9:._@|-]{1,512}$/.test(key))return reply({error:'invalid_key'},400,'no-store');
     const now=Date.now();
-    const prev=await env.EVIDENCE_KV.get('alert-throttle:'+key,'json');
+    const prev=await storeGetJson(env,'alert-throttle:'+key);
     const send=!(prev&&Number.isFinite(prev.at)&&now-prev.at<3600000);
-    if(send)await env.EVIDENCE_KV.put('alert-throttle:'+key,JSON.stringify({at:now}),{expirationTtl:7200});
+    if(send)await storePut(env,'alert-throttle:'+key,JSON.stringify({at:now}));
     // No per-consult logging: an earlier diagnostic build recorded every
     // decision to KV, which cost one write per consult on a 1,000/day
     // free-tier budget and helped exhaust it (2026-11-19). A suppressed
@@ -740,7 +804,7 @@ export default {
     return reply({send:true},200,'no-store');
   }
   if(req.method==='GET'&&u.pathname==='/latest'){
-    const data=await env.EVIDENCE_KV.get('latest','json');
+    const data=await storeGetJson(env,'latest');
     return reply(data||{status:'not_configured',source:'GitHub-signed collector pending'},200,'public,max-age=45,stale-while-revalidate=60');
   }
   if(req.method==='POST'&&u.pathname==='/ingest'){
@@ -754,10 +818,10 @@ export default {
     if(raw.length>128000)return reply({error:'payload_too_large'},413);
     let clean;
     try{clean=build(JSON.parse(raw),identity)}catch(e){return reply({error:'invalid_receipt',reason:e.message},400)}
-    const latest=await env.EVIDENCE_KV.get('latest','json');
+    const latest=await storeGetJson(env,'latest');
     if(latest&&Date.parse(latest.captured_at)>Date.parse(clean.captured_at))return reply({status:'stale_ignored'},200);
-    await env.EVIDENCE_KV.put('latest',JSON.stringify(clean));
-    const series=await env.EVIDENCE_KV.get('metrics-series','json');
+    await storePut(env,'latest',JSON.stringify(clean));
+    const series=await storeGetJson(env,'metrics-series');
     let entries=Array.isArray(series)?series:[];
     entries=entries.filter(e=>e&&e.run_id!==identity.runId&&Date.parse(e.captured_at)<Date.parse(clean.captured_at));
     // History keeps only bounded trend inputs, not full receipts: 72 points
@@ -774,9 +838,9 @@ export default {
         blocked:driveReports.filter(r=>r.status==='blocked').length,
         fitted:driveReports.filter(r=>r.status==='fitted').length}});
     entries=entries.slice(-72);
-    await env.EVIDENCE_KV.put('metrics-series',JSON.stringify(entries));
+    await storePut(env,'metrics-series',JSON.stringify(entries));
 
-    if(clean.github){await env.EVIDENCE_KV.put('github-snapshot',JSON.stringify(clean.github));}
+    if(clean.github){await storePut(env,'github-snapshot',JSON.stringify(clean.github));}
     // Reliability bookkeeping (Delivery 1): the last successful signed
     // publication, per-source last-success / last-error, and the attempt
     // history are kept apart from the snapshot so a failed run can still

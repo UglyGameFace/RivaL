@@ -131,6 +131,7 @@ def _seed_settled(store, slug, *, asset, horizon, probability, baseline,
                VALUES (?,?,?,?,?,?,?)""",
             (slug, condition, direction, resolved.isoformat(),
              (resolved + timedelta(minutes=1)).isoformat(), "c" * 64, "{}"))
+    return issued
 
 
 def test_summary_computes_after_fee_over_exactly_the_priced_calls(tmp_path):
@@ -138,12 +139,12 @@ def test_summary_computes_after_fee_over_exactly_the_priced_calls(tmp_path):
     service = PolymarketResearch(store)
     service.initialize()
     try:
-        _seed_settled(store, "win-up", asset="BTC", horizon=5, probability=0.65,
-                      baseline=0.75 / 1.01,
+        btc_issued = _seed_settled(store, "win-up", asset="BTC", horizon=5,
+                      probability=0.65, baseline=0.75 / 1.01,
                       features_json=canonical(_features(0.75, 0.26)),
                       direction="UP")
-        _seed_settled(store, "win-down", asset="SOL", horizon=5, probability=0.30,
-                      baseline=0.40 / 1.01,
+        sol_issued = _seed_settled(store, "win-down", asset="SOL", horizon=5,
+                      probability=0.30, baseline=0.40 / 1.01,
                       features_json=canonical(_features(0.40, 0.61)),
                       direction="DOWN")
         # Settled and Brier-counted, but its stored book is not its
@@ -158,11 +159,18 @@ def test_summary_computes_after_fee_over_exactly_the_priced_calls(tmp_path):
         report = service.learner.summary()
         assert report["settled_forward_contracts"] == 4
         assert report["after_fee_calls"] == 2
-        expected = (0.236875 + (1 - 0.61 - 0.07 * 0.61 * 0.39)) / 2 * 100
+        # Each priced leg is charged the fee rate scheduled for its own
+        # issuance instant, so the expectation holds in either fee era.
+        btc_rate = polymarket_scheduled_fee_rate(
+            asset="BTC", horizon=5, issued_at=btc_issued)
+        sol_rate = polymarket_scheduled_fee_rate(
+            asset="SOL", horizon=5, issued_at=sol_issued)
+        btc_net = 1 - 0.75 - btc_rate * 0.75 * 0.25
+        expected = (btc_net + (1 - 0.61 - sol_rate * 0.61 * 0.39)) / 2 * 100
         assert report["after_fee_mean_net_cents"] == pytest.approx(expected)
         scoped = service.learner.summary(asset="BTC", horizon=5)
         assert scoped["after_fee_calls"] == 1
-        assert scoped["after_fee_mean_net_cents"] == pytest.approx(23.6875)
+        assert scoped["after_fee_mean_net_cents"] == pytest.approx(btc_net * 100)
     finally:
         store.close()
 

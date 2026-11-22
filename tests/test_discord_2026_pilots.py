@@ -31,22 +31,22 @@ from parlay_bot.jurisdiction.states import normalize_state
 
 def _result(**overrides) -> PriceResult:
     now = datetime(2026, 11, 22, 17, 0, tzinfo=UTC)
-    base = dict(
-        asset="BTC",
-        horizon_minutes=15,
-        target_price="105",
-        reference_price=100.0,
-        required_direction="UP",
-        status="WATCH",
-        explanation="Monitoring completed candles. "
-                    "Target-hit probability is not validated.",
-        venue="gate",
-        last_price=101.5,
-        observed_at=now - timedelta(minutes=1),
-        started_at=now - timedelta(minutes=5),
-        deadline=now + timedelta(minutes=10),
-        hit_at=None,
-    )
+    base = {
+        "asset": "BTC",
+        "horizon_minutes": 15,
+        "target_price": "105",
+        "reference_price": 100.0,
+        "required_direction": "UP",
+        "status": "WATCH",
+        "explanation": "Monitoring completed candles. "
+                       "Target-hit probability is not validated.",
+        "venue": "gate",
+        "last_price": 101.5,
+        "observed_at": now - timedelta(minutes=1),
+        "started_at": now - timedelta(minutes=5),
+        "deadline": now + timedelta(minutes=10),
+        "hit_at": None,
+    }
     base.update(overrides)
     return PriceResult(**base)
 

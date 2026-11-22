@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -330,9 +331,7 @@ def price_embed(result: PriceResult) -> discord.Embed:
 # both paths carry identical data by construction; the embed path is
 # untouched and stays the default.
 
-import threading as _threading
-
-_V2_FLAG_LOCK = _threading.Lock()
+_V2_FLAG_LOCK = threading.Lock()
 _V2_FLAG: bool | None = None
 
 

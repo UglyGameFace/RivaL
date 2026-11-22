@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     rival_current_event_limit: int = Field(default=25, ge=1, le=100)
     rival_current_max_pages: int = Field(default=1, ge=1, le=5)
 
+    # Slice 1 scorecard materialization (2026-11-21): when on, descriptive
+    # Performance readers may serve fresh rows the rival-worker service
+    # precomputes into rival_materialized_reads, falling back to the exact
+    # live computation on any miss. Default off; nothing that issues,
+    # settles, promotes, or admits ever reads the materialized rows.
+    rival_materialized_reads: bool = Field(default=False)
+
     rival_storage_backend: Literal["postgres", "sqlite"] = Field(default="postgres")
     rival_database_url: SecretStr | None = Field(default=None)
     rival_db_path: str = Field(default="data/rival.sqlite")

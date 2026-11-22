@@ -1,0 +1,7 @@
+# The worker imports parlay_bot's config, storage, and perpetuals
+# aggregates only -- no Discord, archive, or ML dependencies. Version
+# ranges mirror the repo's pyproject.toml.
+psycopg[binary]>=3.2,<4
+pydantic>=2.9,<3
+pydantic-settings>=2.6,<3
+httpx>=0.28,<1

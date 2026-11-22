@@ -75,7 +75,10 @@ assert.deepEqual(uploadBindings(EXPECTED.collector.bindings),
 const collector = EXPECTED.collector;
 assert.ok(Array.isArray(collector.optionalBindings));
 assert.deepEqual(collector.optionalBindings,
-  [{ type: 'durable_object_namespace', name: 'ALERT_THROTTLE', class_name: 'AlertThrottleDO' }]);
+  [{ type: 'durable_object_namespace', name: 'ALERT_THROTTLE', class_name: 'AlertThrottleDO' },
+   { type: 'd1', name: 'EVIDENCE_DB', database_id: 'ba3d9030-9c4a-4dda-a2c7-aef618686682' }]);
+const doBinding = collector.optionalBindings[0];
+const d1Binding = collector.optionalBindings[1];
 checkBindings(collector.bindings, collector.bindings, collector.optionalBindings);
 checkBindings([...collector.bindings, ...collector.optionalBindings],
   collector.bindings, collector.optionalBindings);
@@ -111,14 +114,14 @@ assert.throws(() => checkBindings([...collector.bindings,
 // migration) and rides in the upload in its declared shape.
 const storedPlan = planUpload(storedCollector, collector);
 assert.deepEqual(storedPlan.bindings,
-  [...collector.bindings, ...collector.optionalBindings],
+  [...collector.bindings, doBinding],
   'a stored Durable Object binding uploads in its declared shape');
 assert.equal(storedPlan.migrations, null,
   'no migration is sent for the stored Durable Object binding');
 
 const bootstrapPlan = planUpload(collector.bindings, collector);
 assert.deepEqual(bootstrapPlan.bindings,
-  [...collector.bindings, ...collector.optionalBindings],
+  [...collector.bindings, doBinding],
   'a missing Durable Object binding is appended to the upload');
 assert.deepEqual(bootstrapPlan.migrations, { new_sqlite_classes: ['AlertThrottleDO'] },
   'the first upload carries the one-time SQLite class migration');
@@ -128,6 +131,31 @@ assert.deepEqual(existingPlan.bindings,
   'an existing Durable Object binding is carried forward verbatim');
 assert.equal(existingPlan.migrations, null,
   'no migration is sent once the class exists');
+// The D1 binding (2026-11-22 KV migration): dashboard-created and
+// bound as EVIDENCE_DB. Its production read-back shape may carry
+// account-assigned facts (the database name) alongside the contract
+// fields; that shape must satisfy the contract — the first D1-era
+// collector build failed closed because the binding was unknown to
+// it — while a binding to any other database is still refused, and
+// planUpload never appends it (only the account owner creates it).
+const storedD1 = [...collector.bindings, doBinding,
+  { type: 'd1', name: 'EVIDENCE_DB',
+    database_id: 'ba3d9030-9c4a-4dda-a2c7-aef618686682',
+    database_name: 'rival-evidence-store' }];
+checkBindings(storedD1, collector.bindings, collector.optionalBindings);
+assert.throws(() => checkBindings([...collector.bindings,
+  { type: 'd1', name: 'EVIDENCE_DB', database_id: 'aaaaaaaa-0000-0000-0000-000000000000' }],
+  collector.bindings, collector.optionalBindings), /bindings differ/);
+assert.throws(() => checkBindings([...collector.bindings,
+  { type: 'd1', name: 'EVIDENCE_DB' }],
+  collector.bindings, collector.optionalBindings), /bindings differ/);
+const storedD1Plan = planUpload(storedD1, collector);
+assert.deepEqual(storedD1Plan.bindings,
+  [...collector.bindings, doBinding, d1Binding],
+  'a stored D1 binding uploads in its declared shape');
+assert.equal(storedD1Plan.migrations, null,
+  'no migration is sent for the D1 binding');
+
 const boardPlan = planUpload(board.bindings, board);
 assert.deepEqual(boardPlan.bindings, board.bindings,
   'the board upload plan is unchanged');

@@ -825,6 +825,23 @@ class ForwardAccuracyMonitor:
         if now is not None and abs((utc(now) - wall).total_seconds()) > 10:
             return self._active_learning_evidence_uncached(
                 asset=asset, horizon_minutes=horizon_minutes, now=now)
+        # Slice 1: a fresh worker-materialized row may serve live reads
+        # behind the default-off flag; any miss falls back to the exact
+        # shared-cache path below. Historical clocks never reach here,
+        # and with the flag off the lookup is never attempted.
+        from parlay_bot.storage.materialized_reads import (
+            KIND_ACTIVE_LEARNING,
+            lookup_if_enabled,
+            reads_enabled,
+        )
+
+        payload = None
+        if reads_enabled():
+            payload = lookup_if_enabled(
+                self.store, KIND_ACTIVE_LEARNING, asset, horizon_minutes,
+                now=wall)
+        if payload is not None:
+            return payload
         return shared_reads(self.store).read(
             ("active_learning", asset, horizon_minutes), SUMMARY_TTL_SECONDS,
             lambda: self._active_learning_evidence_uncached(
@@ -2223,6 +2240,22 @@ class ForwardAccuracyMonitor:
         wall = datetime.now(UTC)
         stamp = utc(now or wall)
         if abs((stamp - wall).total_seconds()) <= 10:
+            # Slice 1: fresh worker-materialized row behind the default-off
+            # flag; any miss falls back to the exact shared-cache path,
+            # and with the flag off the lookup is never attempted.
+            from parlay_bot.storage.materialized_reads import (
+                KIND_FORWARD_CALIBRATION,
+                lookup_if_enabled,
+                reads_enabled,
+            )
+
+            payload = None
+            if reads_enabled():
+                payload = lookup_if_enabled(
+                    self.store, KIND_FORWARD_CALIBRATION, asset, horizon,
+                    now=wall)
+            if payload is not None:
+                return payload
             return shared_reads(self.store).read(
                 ("forward_calibration", asset, horizon), SUMMARY_TTL_SECONDS,
                 lambda: self._calibration_uncached(asset=asset, horizon=horizon, now=stamp))
@@ -2302,6 +2335,21 @@ class ForwardAccuracyMonitor:
         stamp = utc(now or wall)
         live = abs((stamp - wall).total_seconds()) <= 10
         if live:
+            # Slice 1: fresh worker-materialized row behind the default-off
+            # flag; any miss falls back to the exact shared-cache path,
+            # and with the flag off the lookup is never attempted.
+            from parlay_bot.storage.materialized_reads import (
+                KIND_FORWARD_SUMMARY,
+                lookup_if_enabled,
+                reads_enabled,
+            )
+
+            payload = None
+            if reads_enabled():
+                payload = lookup_if_enabled(
+                    self.store, KIND_FORWARD_SUMMARY, asset, 0, now=wall)
+            if payload is not None:
+                return payload
             return shared_reads(self.store).read(
                 ("forward_summary", asset), SUMMARY_TTL_SECONDS,
                 lambda: self._summary_uncached(asset=asset, now=stamp))

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -321,3 +322,66 @@ def price_embed(result: PriceResult) -> discord.Embed:
         text="5m completed-candle evidence, NOT instant price or hit probability • /rival-stop",
     )
     return embed
+
+
+# --- Components V2 pilot (2026-11-22) -------------------------------------
+# RIVAL_COMPONENTS_V2_CARDS (Settings, default off): when on, the personal
+# price-target DM card is sent/edited as a Components V2 LayoutView instead
+# of the classic embed. The view is rendered FROM the price_embed output, so
+# both paths carry identical data by construction; the embed path is
+# untouched and stays the default.
+
+_V2_FLAG_LOCK = threading.Lock()
+_V2_FLAG: bool | None = None
+
+
+def components_v2_cards_enabled() -> bool:
+    """Resolved once per process, mirroring storage.materialized_reads:
+    on Discloud an env change only reaches the container on a deploy/restart
+    anyway, so caching cannot serve a flag value the operator did not deploy.
+    An unreadable flag resolves to off (the classic embed)."""
+    global _V2_FLAG
+    if _V2_FLAG is None:
+        with _V2_FLAG_LOCK:
+            if _V2_FLAG is None:
+                try:
+                    from parlay_bot.config import Settings
+
+                    _V2_FLAG = bool(Settings().rival_components_v2_cards)
+                except Exception:  # noqa: BLE001 - flag unreadable = off
+                    _V2_FLAG = False
+    return _V2_FLAG
+
+
+def reset_components_v2_cards_cache() -> None:
+    """Test hook: forget the resolved flag so the next read re-resolves it."""
+    global _V2_FLAG
+    with _V2_FLAG_LOCK:
+        _V2_FLAG = None
+
+
+def price_card_view(result: PriceResult) -> discord.ui.LayoutView:
+    """Components V2 rendering of the price-target card.
+
+    Built from price_embed(result) so title, explanation, every field and
+    the footer are byte-identical to the embed path. The classic card has
+    no buttons or links attached to it (the DM message is display-only),
+    so the view is display-only too.
+    """
+    embed = price_embed(result)
+    container = discord.ui.Container(accent_colour=embed.color)
+    container.add_item(discord.ui.TextDisplay(f"## {embed.title}"))
+    if embed.description:
+        # price_embed already bolds the explanation; carry it verbatim.
+        container.add_item(discord.ui.TextDisplay(embed.description))
+    container.add_item(discord.ui.Separator())
+    for field in embed.fields:
+        container.add_item(
+            discord.ui.TextDisplay(f"**{field.name}**\n{field.value}")
+        )
+    if embed.footer and embed.footer.text:
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(f"-# {embed.footer.text}"))
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(container)
+    return view

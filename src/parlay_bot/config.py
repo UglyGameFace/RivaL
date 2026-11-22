@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # settles, promotes, or admits ever reads the materialized rows.
     rival_materialized_reads: bool = Field(default=False)
 
+    # Discord Components V2 pilot (2026-11-22): when on, the personal
+    # price-target DM card renders as a Components V2 LayoutView carrying
+    # the exact price_embed data instead of a classic embed. Default off;
+    # the embed path is unchanged and remains the fallback.
+    rival_components_v2_cards: bool = Field(default=False)
+
     rival_storage_backend: Literal["postgres", "sqlite"] = Field(default="postgres")
     rival_database_url: SecretStr | None = Field(default=None)
     rival_db_path: str = Field(default="data/rival.sqlite")

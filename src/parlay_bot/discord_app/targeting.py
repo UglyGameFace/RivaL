@@ -37,7 +37,9 @@ from parlay_bot.discord_app.out_the_gate import (
 from parlay_bot.discord_app.price_targets import (
     PriceGoal,
     PriceResult,
+    components_v2_cards_enabled,
     create_price_goal,
+    price_card_view,
     price_embed,
     price_result,
 )
@@ -600,17 +602,23 @@ class DirectionTargetService:
             embed = price_embed(snapshot) if isinstance(snapshot, PriceResult) else (
                 target_embed(snapshot)
             )
+            # Components V2 pilot: price cards only, flag-gated (default
+            # off). The view is rendered from the same embed data; the
+            # direction-target card is never affected.
+            card_kwargs: dict = {"embed": embed}
+            if isinstance(snapshot, PriceResult) and components_v2_cards_enabled():
+                card_kwargs = {"embed": None, "view": price_card_view(snapshot)}
             try:
                 channel = user.dm_channel or await user.create_dm()
                 message = None
                 if existing is not None and str(channel.id) == existing.channel_id:
                     try:
                         message = await channel.fetch_message(int(existing.message_id))
-                        await message.edit(embed=embed)
+                        await message.edit(**card_kwargs)
                     except discord.NotFound:
                         message = None
                 if message is None:
-                    message = await channel.send(embed=embed)
+                    message = await channel.send(**card_kwargs)
             except (discord.Forbidden, discord.HTTPException):
                 return False, "I couldn't DM you. Enable DMs for RivaL, then retry."
             target = DirectionTarget(
@@ -685,12 +693,19 @@ class DirectionTargetService:
                     embed = target_embed(snapshot)
                 if snapshot.fingerprint == target.fingerprint:
                     continue
+                # Components V2 pilot: same gating as the follow() send —
+                # price-goal cards only, flag default off.
+                edit_kwargs: dict = {"embed": embed}
+                if target.price_goal is not None and components_v2_cards_enabled():
+                    edit_kwargs = {
+                        "embed": None, "view": price_card_view(snapshot),
+                    }
                 try:
                     channel = self.bot.get_channel(int(target.channel_id))
                     if channel is None:
                         channel = await self.bot.fetch_channel(int(target.channel_id))
                     message = await channel.fetch_message(int(target.message_id))
-                    await message.edit(embed=embed)
+                    await message.edit(**edit_kwargs)
                 except (discord.NotFound, discord.Forbidden):
                     # A DM was deleted or access revoked; no replacement spam.
                     await asyncio.to_thread(

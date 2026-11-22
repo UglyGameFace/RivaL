@@ -54,7 +54,16 @@ const EXPECTED = Object.freeze({
     // a working production state.
     optionalBindings: [
       { type: 'durable_object_namespace', name: 'ALERT_THROTTLE',
-        class_name: 'AlertThrottleDO' }
+        class_name: 'AlertThrottleDO' },
+      // The D1 database for the KV migration (2026-11-22): created by
+      // the account owner in the dashboard and bound as EVIDENCE_DB.
+      // Optional in this contract because the collector works with or
+      // without it (without it, storage stays on KV — the pre-migration
+      // state), but once present it must be preserved exactly: the
+      // 2026-11-22 collector build failed closed here because this
+      // binding was unknown to the contract.
+      { type: 'd1', name: 'EVIDENCE_DB',
+        database_id: 'ba3d9030-9c4a-4dda-a2c7-aef618686682' }
     ]
   }
 });
@@ -74,6 +83,7 @@ function bindingKey(binding) {
   }
   return [binding.type, binding.name, binding.service || '',
     binding.environment || '', binding.namespace_id || '',
+    binding.database_id || '',
     binding.class_name || ''].join(':');
 }
 function checkBindings(actual, expected, optional = []) {
@@ -89,14 +99,14 @@ function checkBindings(actual, expected, optional = []) {
     'Deployed Worker bindings differ from the known production contract; refusing upload');
   for (const binding of actual) {
     const spec = allowed.find(candidate => bindingKey(candidate) === bindingKey(binding));
-    if (spec.type === 'durable_object_namespace') {
+    if (spec.type === 'durable_object_namespace' || spec.type === 'd1') {
       // The settings API's returned field set for Durable Object
       // bindings has not been observed in this account yet; the
       // identity fields (type, name, class_name — all compared by
       // bindingKey above) are the contract, so extra returned fields
       // are tolerated for this type only.
       assert.ok(Object.keys(spec).every(key => key in binding),
-        'Durable Object binding is missing a contract field; refusing upload');
+        'Platform-assigned binding is missing a contract field; refusing upload');
       continue;
     }
     assert.deepEqual(Object.keys(binding).sort(), Object.keys(spec).sort(),
@@ -131,10 +141,19 @@ function planUpload(settingsBindings, target) {
   // the upload declares the binding in its contract shape — type,
   // name and class — exactly as the first, migration-carrying upload
   // did. Every other binding passes through uploadBindings unchanged.
-  const bindings = uploadBindings(settingsBindings).map(binding =>
-    binding && binding.type === 'durable_object_namespace'
-      ? { type: binding.type, name: binding.name, class_name: binding.class_name }
-      : binding);
+  const bindings = uploadBindings(settingsBindings).map(binding => {
+    if (binding && binding.type === 'durable_object_namespace') {
+      return { type: binding.type, name: binding.name, class_name: binding.class_name };
+    }
+    if (binding && binding.type === 'd1') {
+      // Same treatment as the Durable Object above: the settings API
+      // may report account-assigned facts (e.g. the database name)
+      // alongside a D1 binding; the upload declares only the contract
+      // shape — type, name, database id.
+      return { type: binding.type, name: binding.name, database_id: binding.database_id };
+    }
+    return binding;
+  });
   const newClasses = [];
   for (const spec of target.optionalBindings || []) {
     if (spec.type !== 'durable_object_namespace') continue;

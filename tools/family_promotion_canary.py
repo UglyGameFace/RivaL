@@ -4,15 +4,17 @@ The rival-worker service drives the 20-minute ``FamilyPromotion``
 proof review out of process. Before the bot's in-cycle driver is
 flagged off, this harness proves the worker's computation is the bot's
 computation: for one slot it recomputes the evaluation with the stamp
-pinned to the slot boundary -- the exact inputs both drivers use --
-inside a snapshot isolation that restores ``rival_family_promotion``,
+pinned to the slot's evaluation stamp -- the exact inputs both drivers
+use -- inside a snapshot isolation that restores ``rival_family_promotion``,
 its receipts, and the offline-pin rows byte for byte, then compares
 the SHA-256 of the full promotion row the evaluation wrote against
 ``--expect-sha256`` (the hash the worker's shadow cycle logged for the
-same slot). MATCH is byte-identity of the entire evaluation record --
-status, selection, reason, and the full evidence JSON -- not just of a
-promotion event (promotion has never fired; the held record is what
-must match).
+same slot). The stamp is the slot's evaluation stamp (boundary +
+``PROMOTION_STAMP_OFFSET_SECONDS``), derived by ``promotion_driver``
+itself -- this harness contains no stamp math of its own. MATCH is
+byte-identity of the entire evaluation record -- status, selection,
+reason, and the full evidence JSON -- not just of a promotion event
+(promotion has never fired; the held record is what must match).
 
 Only hashes, the slot, and the scope are ever printed -- never payload
 contents. Exit status: 0 on MATCH (or COMPUTED when no expectation was

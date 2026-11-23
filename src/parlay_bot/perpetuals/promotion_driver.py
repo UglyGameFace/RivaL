@@ -17,15 +17,16 @@ Slot replication is exact by construction:
 
 * the slot is the same integer the bot derives,
   ``family_proof_review_slot(stamp)`` with ``stamp`` pinned to the
-  20-minute boundary (the bot's cycle stamp falls inside the same
-  ``minute % 20 < 5`` window and derives the same slot);
+  slot's evaluation stamp (boundary + ``PROMOTION_STAMP_OFFSET_SECONDS``;
+  the bot's cycle stamp falls inside the same ``minute % 20 < 5``
+  window and derives the same slot);
 * the eligible set is ``ShadowLearningMonitor._eligible_streams`` with
   the same ``limit=40`` at the same stamp, passed through the same
   ``select_live_streams`` rotation the cycle builds (the rotation only
   reorders -- ``select_family_proof_scope`` consumes the set);
-* ``evaluate`` is called with ``now`` = the slot boundary, so
-  ``evaluated_at`` is the slot stamp and the trial clock's freshness is
-  unchanged.
+* ``evaluate`` is called with ``now`` = the evaluation stamp, so
+  ``evaluated_at`` is the slot's evaluation stamp and the trial clock's
+  freshness is unchanged.
 
 Behind ``RIVAL_PROMOTION_WORKER_DRIVEN`` (Settings, default off) the bot
 cycle skips its in-process review and this driver is the only writer.
@@ -64,8 +65,24 @@ SLOT_SECONDS = 1200
 # Fire seven and a half minutes after each 20-minute boundary: inside the
 # same slot window the bot's first 5-minute cycle derives, but staggered
 # off the scorecard job's +150 s start on the worker's shared pool. The
-# stamp passed to evaluate() is the boundary regardless of this offset.
+# stamp passed to evaluate() is the boundary +
+# PROMOTION_STAMP_OFFSET_SECONDS regardless of this fire offset.
 CYCLE_OFFSET_SECONDS = 450
+
+# The logical stamp evaluate() runs at: one minute past the boundary.
+# Production evidence (first flip run, 2026-11-23): the bot's own cycle
+# stamps land +37 s to +86 s into the slot (17:00:50, 17:21:13, 17:40:37,
+# 18:00:41, 19:01:26 for :00/:20/:40 slots), when the current bucket's
+# candles already exist. The boundary instant itself is a moment the bot
+# never uses: a stream's current-bucket candle is first observed seconds
+# AFTER it, so at the boundary stamp MAX(first_observed_at) is in the
+# future, the freshness age in _eligible_streams is negative, and every
+# quote-supported stream is excluded -- the worker deferred every slot
+# with "no supported source" while the bot, into the same slot, selected
+# a scope. +60 s sits inside the bot's observed range and leaves every
+# slot derivation unchanged (60 < 300 <= 1200, so the proof slot, the
+# 5-minute rotation slot, and the minute % 20 < 5 window all agree).
+PROMOTION_STAMP_OFFSET_SECONDS = 60
 
 # The offline families evaluate() passes to offline_model_pins.resolve_pin
 # on every call (family_governance.py); the shadow snapshot covers exactly
@@ -132,8 +149,23 @@ def slot_for(now: datetime) -> int:
 
 
 def slot_stamp(slot: int) -> datetime:
-    """The pinned evaluation stamp for a slot: its UTC boundary."""
+    """The UTC boundary of a slot (fire-schedule math only; the stamp
+    the evaluation itself runs at is ``slot_eval_stamp``)."""
     return datetime.fromtimestamp(slot * SLOT_SECONDS, tz=UTC)
+
+
+def slot_eval_stamp(slot: int) -> datetime:
+    """The logical evaluation stamp for a slot: boundary + offset.
+
+    The single derivation both this driver and the canary
+    (``tools/family_promotion_canary.py``, via ``run_shadow_canary``)
+    evaluate at, so the two can never drift apart. Distinct from
+    ``slot_stamp``: the fire schedule (``seconds_until_slot_run``,
+    ``run_forever``) and the canary's fired-yet check reason about the
+    boundary itself and are unchanged by the offset.
+    """
+    return slot_stamp(slot) + timedelta(
+        seconds=PROMOTION_STAMP_OFFSET_SECONDS)
 
 
 def seconds_until_slot_run(now: datetime) -> float:
@@ -344,7 +376,7 @@ def _run_slot(store, slot: int, *, shadow: bool,
               promotion: FamilyPromotion | None = None) -> dict:
     """One slot's proof review. In shadow mode the evaluation is
     snapshot-isolated and its row hash is the report's payload."""
-    stamp = slot_stamp(slot)
+    stamp = slot_eval_stamp(slot)
     report: dict = {"slot": slot, "stamp": stamp.isoformat(),
                     "shadow": shadow, "scope": None, "deferred": False,
                     "status": None, "selected_family": None,

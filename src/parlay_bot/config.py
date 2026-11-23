@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # settles, promotes, or admits ever reads the materialized rows.
     rival_materialized_reads: bool = Field(default=False)
 
+    # Slice 2 proof-review move (2026-11-23): when on, the bot's perp
+    # cycle no longer drives the 20-minute FamilyPromotion proof review;
+    # the rival-worker service drives it on the identical slot schedule
+    # and is the only writer of rival_family_promotion. Default off; the
+    # flag changes which process calls evaluate(), never its semantics.
+    rival_promotion_worker_driven: bool = Field(default=False)
+
     # Discord Components V2 pilot (2026-11-22): when on, the personal
     # price-target DM card renders as a Components V2 LayoutView carrying
     # the exact price_embed data instead of a classic embed. Default off;

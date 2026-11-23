@@ -80,22 +80,40 @@ class ShadowLearningMonitor:
         if not 1 <= limit <= 40:
             raise ValueError("invalid shadow stream discovery limit")
         cutoff = (now - timedelta(minutes=20)).isoformat()
+        stamp = now.isoformat()
+        # As-of pinning: selection is a pure function of the review
+        # stamp, never of when this query happens to execute. Both
+        # inputs are bounded above by the stamp -- candles by
+        # first_observed_at (written once at first observation, never
+        # updated: PerpetualMarketStore.ingest inserts with
+        # ON CONFLICT DO NOTHING and skips existing rows) and the
+        # round-robin's last-evaluation ordering by evaluated_at.
+        # Without the upper bounds, a candle landing -- or a shadow
+        # evaluation saved -- after the stamp but before a later
+        # recompute (the worker at +450 s, a canary after that) changed
+        # the eligible set and the rotation for the same logical slot:
+        # flip attempt 3 (2026-11-23) saw slot 1496221 select
+        # (phemex, SOL) in the worker and (lighter, BTC) in the bot.
+        # For live callers whose stamp IS the run moment the only delta
+        # is excluding rows that land during the query itself.
         with self.store.connect() as conn:
             observed = conn.execute(
                 """SELECT venue,contract,quote,MAX(first_observed_at) AS last_seen
                    FROM perp_market_candles
                    WHERE interval_minutes=5
                      AND first_observed_at>=?
+                     AND first_observed_at<=?
                    GROUP BY venue,contract,quote
                    ORDER BY venue,contract,quote LIMIT 80""",
-                (cutoff,),
+                (cutoff, stamp),
             ).fetchall()
             prior = conn.execute(
                 """SELECT venue,contract,quote,MAX(evaluated_at) AS last_eval
                    FROM perp_shadow_evaluations
                    WHERE model_version=?
+                     AND evaluated_at<=?
                    GROUP BY venue,contract,quote""",
-                (MODEL,),
+                (MODEL, stamp),
             ).fetchall()
         evaluated = {
             (x["venue"], x["contract"], x["quote"]): x["last_eval"]

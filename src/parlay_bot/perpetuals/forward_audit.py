@@ -1837,6 +1837,16 @@ class ForwardAccuracyMonitor:
         # all three horizons. Other venues remain in immutable forward research
         # but cannot earn after-cost proof without a real matching quote feed.
         proof_slot = family_proof_review_slot(stamp)
+        # Slice 2 (2026-11-23): with RIVAL_PROMOTION_WORKER_DRIVEN on, the
+        # rival-worker service runs this review on the identical slot
+        # schedule and is the only writer of rival_family_promotion, so
+        # this cycle skips it. Delayed import avoids an import cycle:
+        # promotion_driver imports this module's slot helpers.
+        if proof_slot is not None:
+            from parlay_bot.perpetuals.promotion_driver import worker_driven
+
+            if worker_driven():
+                proof_slot = None
         if proof_slot is not None:
             proof_scope = select_family_proof_scope(
                 selection, hour_slot=proof_slot,

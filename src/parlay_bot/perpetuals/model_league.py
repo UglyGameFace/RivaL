@@ -234,6 +234,8 @@ class Contest:
                     );
                     CREATE INDEX IF NOT EXISTS idx_poly_contest_expiry
                         ON rival_poly_contest_rounds(asset,horizon,expires_at);
+                    CREATE INDEX IF NOT EXISTS idx_rival_poly_contest_rounds_expiry_cover
+                        ON rival_poly_contest_rounds(expires_at,slug,condition_id);
                     -- Only records frozen at original issue time with exact
                     -- fee/book/token/size provenance can enter money scoring.
                     -- Never manufacture this row for older contest receipts.

@@ -89,6 +89,13 @@ class PolymarketResearch:
                     );
                     CREATE INDEX IF NOT EXISTS rival_polymarket_ai_expiry
                         ON rival_polymarket_ai_calls(expires_at);
+                    -- The settlement sweep's per-branch window scan reads
+                    -- exactly (expires_at, slug, condition_id); covering
+                    -- indexes on all three source tables keep that scan
+                    -- index-only instead of hauling the wide evidence
+                    -- heap on every 60 s pass (see _unsettled).
+                    CREATE INDEX IF NOT EXISTS idx_rival_polymarket_ai_calls_expiry_cover
+                        ON rival_polymarket_ai_calls(expires_at,slug,condition_id);
                     CREATE TABLE IF NOT EXISTS rival_polymarket_resolution_attempts (
                         slug TEXT PRIMARY KEY, checked_at TEXT NOT NULL
                     );
@@ -306,6 +313,15 @@ class PolymarketResearch:
                 # per branch, only the unresolved remainder is sorted; the
                 # returned rows and their (checked_at, expires_at) order are
                 # unchanged (verified row-for-row on a production-scale seed).
+                # The branches still hauled the wide evidence heap for
+                # every window row (up to 273 s under load, 2026-11-23);
+                # the (expires_at, slug, condition_id) covering indexes
+                # declared in the three initialize() methods make each
+                # branch an index-only scan — same rows, same order,
+                # verified row-for-row on a production-shaped seed
+                # (ai_calls empty, observations/contest at production
+                # volume and row width). A UNION-first single anti-join
+                # was measured 10x worse and rejected.
                 (now.isoformat(), (now - timedelta(days=30)).isoformat()) * 3,
             ).fetchall()
             seen = set()

@@ -12,10 +12,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-import discord
 import httpx
 
 if TYPE_CHECKING:
+    import discord
+
     from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
 
 ASSETS = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT", "XRP": "XRPUSDT"}
@@ -655,6 +656,11 @@ def quote_cost_preview(
 
 
 def quote_embed(quote: BookQuote, *, quantity: float) -> discord.Embed:
+    # Delayed import: this module's pure quote helpers are imported by
+    # the rival-worker's promotion path, whose environment deliberately
+    # has no discord.py installed. Only this embed builder needs it.
+    import discord
+
     data = quote_cost_preview(quote, quantity=quantity)
     embed = discord.Embed(
         title=f"RivaL • {quote.asset} USDT • Exchange Bid/Ask",

@@ -115,6 +115,17 @@ class PerpetualMarketStore:
                     CREATE INDEX IF NOT EXISTS idx_perp_market_candles_observed
                         ON perp_market_candles
                            (interval_minutes,first_observed_at);
+                    -- The six-month quality audit keyset-pages one stream
+                    -- in opened_at order reading exactly these columns.
+                    -- Without a covering index the planner bitmap-scans
+                    -- the whole remaining window from the heap on every
+                    -- page (44 very-slow operations in one 10-minute
+                    -- window, 2026-11-23); with it each page is an
+                    -- index-only scan that stops at the page limit.
+                    CREATE INDEX IF NOT EXISTS idx_perp_market_candles_audit
+                        ON perp_market_candles
+                           (venue,contract,quote,interval_minutes,opened_at,
+                            closed_at,first_observed_at);
                     -- Lighter revises the base-volume value on settled
                     -- candles. Keep the original point-in-time source row
                     -- immutable. Retain a separate, bounded per-bar latest

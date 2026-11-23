@@ -165,6 +165,8 @@ class PolymarketOutcomeLearner:
                 );
                 CREATE INDEX IF NOT EXISTS idx_rival_poly_observed_expiry
                     ON rival_polymarket_observations(expires_at);
+                CREATE INDEX IF NOT EXISTS idx_rival_poly_observations_expiry_cover
+                    ON rival_polymarket_observations(expires_at,slug,condition_id);
                 CREATE INDEX IF NOT EXISTS idx_rival_poly_learning_scope
                     ON rival_polymarket_observations(asset,horizon,resolution_source,learned_at);
                 CREATE TABLE IF NOT EXISTS rival_polymarket_model_state (

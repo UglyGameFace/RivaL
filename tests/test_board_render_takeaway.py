@@ -60,7 +60,7 @@ def test_short_blocker_map_registered(tmp_path):
     assert by_id["gd-2"]["blocker_short"] == (
         "waiting for settled rows with recorded features")
     assert by_id["gc-1"]["blocker_short"] == (
-        "outcome recorder added; first settlements Nov 27")
+        "grader registered; waiting for settled outcomes")
     assert by_id["liq-cascade-v1"]["blocker_short"] == (
         "needs a paid data source; owner's decision")
     assert by_id["floor-1"]["blocker_short"] == "accruing toward its floors"
@@ -189,7 +189,7 @@ def test_workbench_takeaway_is_derived(tmp_path):
     assert "Closest: Conditioning 9" in text
     assert "still needs 211 more calls; 4 more days" in text
     assert "10 in G-D (grader built 2026-11-25" in text
-    assert "8 in G-C (outcome recorder added; first settlements Nov 27)" in text
+    assert "8 in G-C (grader registered; waiting for settled outcomes)" in text
     assert "1 in R2 (needs a paid data source; owner's decision)" in text
     assert "the next workbench run grades the accrual-blocked pile" in text
     # Change the numbers and the line changes.

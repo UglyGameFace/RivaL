@@ -24,9 +24,10 @@ Screens:
     generation        G-A/G-B (phase-2 amendment): mask logistic
                       refits + book-state conditioning on the settled
                       forward record.
-    estate            G-C: new-estate loaders + availability; the
-                      registered candidates are graded as far as their
-                      records allow (NOT MEASURABLE today).
+    estate            G-C: the threshold estate, graded under the
+                      owner-approved floors (2026-11-25) against the
+                      settled threshold outcomes; NOT_MEASURABLE with
+                      floor progress below the floors.
     llm-intake        G-D: the frozen proposer's stored feature masks,
                       validated, deduplicated, registered, and graded
                       against the settled lineage record (the recorded
@@ -287,15 +288,30 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.screen == "estate":
         result = gen.screen_estate(store)
-        entries = [{
-            "candidate_id": cand["id"], "screen": cand["screen"],
-            "factory": cand["factory"], "display": cand["display"],
-            "status": "NOT_MEASURABLE", "verdict": None,
-            "graded_rows": 0, "calls": 0, "days": 0,
-            "evaluated_at": now.isoformat(),
-            "detail": {"cause": cand["cause"],
-                       "coverage": result["coverage"]},
-        } for cand in gen.ESTATE_CANDIDATES]
+        entries = []
+        for cand in gen.ESTATE_CANDIDATES:
+            graded = result["candidates"][cand["id"]]
+            score = graded.get("score") or {}
+            detail = {"legs": graded.get("legs"),
+                      "floors": graded.get("floors"),
+                      "grading_version": graded["grading_version"],
+                      "coverage": graded.get("coverage"),
+                      "estate_coverage": result["coverage"]}
+            if graded.get("cause"):
+                detail["cause"] = graded["cause"]
+            if graded.get("reason"):
+                detail["reason"] = graded["reason"]
+            entries.append({
+                "candidate_id": cand["id"], "screen": cand["screen"],
+                "factory": cand["factory"], "display": cand["display"],
+                "status": graded.get("status"),
+                "verdict": graded.get("verdict"),
+                "graded_rows": score.get("rows") or 0,
+                "calls": (score.get("calls") or {}).get("n") or 0,
+                "days": score.get("days") or 0,
+                "evaluated_at": now.isoformat(),
+                "detail": detail,
+            })
         recorded = gen.record_results(store, entries)
         report = gen.base_report("G-C", now=now)
         report.update(result)

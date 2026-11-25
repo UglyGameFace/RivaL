@@ -65,7 +65,14 @@ CREATE TABLE IF NOT EXISTS {OUTCOMES_TABLE} (
 # resolutions per cycle is ~21k/day.
 MAX_PM_PER_CYCLE = 300
 MAX_KALSHI_PER_CYCLE = 600
-MAX_CONCURRENT_RESOLUTIONS = 5
+MAX_CONCURRENT_RESOLUTIONS = 3
+# Kalshi's limiter is burst-sensitive (measured live 2026-11-25:
+# five concurrent fast requests tripped HTTP 429 within ~80 calls,
+# while a paced sequential stream sustained ~8/s with none). Starts
+# are therefore spaced as well as concurrency-bounded: ~5/s per
+# venue, which a 600-market Kalshi pass turns into ~2 minutes --
+# inside the cycle budget below.
+REQUEST_SPACING_SECONDS = 0.2
 CYCLE_BUDGET_SECONDS = 240.0
 # A market the venues cannot resolve yet (not final, voided, split)
 # is retried at most once per cooldown instead of re-occupying the
@@ -310,13 +317,21 @@ class ThresholdOutcomeSettler:
                             now: datetime, due_total: int) -> dict:
         started = time.monotonic()
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_RESOLUTIONS)
+        pace_lock = asyncio.Lock()
+        last_start = 0.0
         rate_limited = False
 
         async def attempt(market: dict):
-            nonlocal rate_limited
+            nonlocal rate_limited, last_start
             async with semaphore:
                 if rate_limited:
                     return market, None, False
+                async with pace_lock:
+                    wait = REQUEST_SPACING_SECONDS - (
+                        time.monotonic() - last_start)
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+                    last_start = time.monotonic()
                 try:
                     resolution = await resolver(
                         client, market["market_key"])

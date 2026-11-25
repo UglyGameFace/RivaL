@@ -213,11 +213,18 @@ def _evidence(days, targets, gain, *, bps=None, qualified=False):
 @pytest.mark.asyncio
 async def test_every_model_on_trial_is_one_row_from_the_hourly_check(tmp_path, monkeypatch):
     """The table reads the promotion check itself (every family it scored),
-    folds the exchanges into one row per model, but hides fully stopped models."""
+    folds the exchanges into one row per model, but hides fully stopped models.
+
+    One family's trial is switched on for this test: with every trial
+    stopped the section shows its paused state instead (test_trial_board
+    covers that case); this test covers the full record's shape while a
+    trial is live."""
+    from parlay_bot.perpetuals import forward_audit
     from parlay_bot.perpetuals.early_stop import EarlyStop
 
     bot, home = _make_home(tmp_path, section="details")
     _patch_live_reads(monkeypatch)
+    monkeypatch.setattr(forward_audit, "ISSUE_REGIME_V1_CHALLENGERS", True)
     monkeypatch.setattr(home_module, "_trial_board_record", _real_trial_board_record)
     for venue, gain in (("okx", .004), ("bybit", .002)):
         _promotion(bot.store, venue=venue, evidence={

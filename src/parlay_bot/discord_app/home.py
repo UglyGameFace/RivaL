@@ -1342,7 +1342,9 @@ def _trials_sections(reports: dict, *, full: bool = False) -> dict:
 
     The section board (full=False) lists live contenders only and counts
     the retired/early-stopped rows it hides in one summary line; Full
-    evidence (full=True) shows every row and hides nothing.
+    evidence (full=True) shows every row and hides nothing — unless this
+    market has no live trial at all, when it shows the paused state
+    instead of parading a frozen record as a live board.
     """
     from parlay_bot.discord_app import trial_board
 
@@ -1368,6 +1370,24 @@ def _trials_sections(reports: dict, *, full: bool = False) -> dict:
         rows = board.get("rows") or []
         trials_n = int(board.get("trials") or 0)
         passed_n = int(board.get("passed") or 0)
+    if full and rows and not (board.get("rows") or []):
+        # Owner's call (2026-11-25): this market has records on file but no
+        # live trial — every family's issuance is switched off, so the
+        # records are frozen and the "closest to passing" leader below
+        # would promise days that can never accrue ("still needs 5 more
+        # days" about a trial stopped on Nov 19). Show the paused state
+        # instead of the contender table; the board returns on its own
+        # when a trial resumes, and the frozen record stays on file.
+        return {"name": "🧪 Test models here (0)",
+                "leader": ("⏸ **Test models are paused.** No model is on trial "
+                           "right now — every trial is stopped, so these "
+                           "records are frozen and nothing is gaining new "
+                           "results. The board comes back when trials resume."),
+                "table": "", "missing": "",
+                "how_to_read": (f"-# All markets: {trials_n} stopped trial "
+                                f"comparison(s) on record · {passed_n} qualified · "
+                                f"{int(board.get('stops') or 0)} early-stop records"),
+                "count": 0}
     # A stop is recorded per model/exchange/contract, not necessarily one
     # globally retired model. Distinguish live comparisons from those records.
     # The section board hides two kinds of dead rows — families cut on every

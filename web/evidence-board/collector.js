@@ -160,6 +160,112 @@ function cleanPerformance(p) {
   return out;
 }
 
+// Live grading (2026-11-24): interim, read-only grades for in-flight
+// pre-registered tests, computed bot-side from recorded state. The
+// frozen evaluators remain the only verdict sources; this cleaner only
+// bounds and whitelists what the board may render.
+function cleanLiveGrading(value){
+  if(!value||typeof value!=='object')return {status:'read_unavailable',tests:[],live_model:null};
+  const num=(v)=>finiteOrNull(v,1000000);
+  const cnt=(v)=>numberOrNull(v,100000000);
+  const str=(v,m)=>typeof v==='string'?v.slice(0,m):null;
+  const ci=(e)=> (e&&typeof e==='object')?{lower:num(e.lower),upper:num(e.upper),days:cnt(e.days)}:null;
+  const floors=(f)=>{
+    if(!f||typeof f!=='object')return {};
+    const out={};
+    for(const k of Object.keys(f).slice(0,8)){
+      const e=f[k];
+      if(e&&typeof e==='object')out[k]={have:cnt(e.have),need:cnt(e.need)};
+    }
+    return out;
+  };
+  const legs=(l)=>{
+    if(!l||typeof l!=='object')return {};
+    const out={};
+    for(const k of Object.keys(l).slice(0,8)){
+      const e=l[k];
+      if(!e||typeof e!=='object')continue;
+      out[k]={value:num(e.value),bar:num(e.bar),first:num(e.first),second:num(e.second),
+        first_n:cnt(e.first_n),second_n:cnt(e.second_n),ci95:ci(e.ci95),
+        passing_now:e.passing_now===true,rule:str(e.rule,220)};
+    }
+    return out;
+  };
+  const perAsset=(p)=>{
+    if(!p||typeof p!=='object')return {};
+    const out={};
+    for(const k of Object.keys(p).slice(0,8)){
+      const e=p[k];
+      if(!e||typeof e!=='object')continue;
+      out[k]={n:cnt(e.n),calls:cnt(e.calls),delta_log_loss:num(e.delta_log_loss),
+        delta_brier:num(e.delta_brier),mean_net:num(e.mean_net),
+        call_mean_net:num(e.call_mean_net)};
+    }
+    return out;
+  };
+  const excl=(x)=>{
+    if(!x||typeof x!=='object')return {};
+    const out={};
+    for(const k of Object.keys(x).slice(0,20)){
+      const v=x[k];
+      if(v&&typeof v==='object'){
+        const inner={};
+        for(const k2 of Object.keys(v).slice(0,20))inner[k2]=cnt(v[k2]);
+        out[k]=inner;
+      }else out[k]=cnt(v);
+    }
+    return out;
+  };
+  const grade=(g)=>{
+    if(!g||typeof g!=='object')return null;
+    return {settled:cnt(g.settled),delta_log_loss:num(g.delta_log_loss),
+      delta_log_loss_ci95:ci(g.delta_log_loss_ci95),delta_brier:num(g.delta_brier),
+      delta_brier_ci95:ci(g.delta_brier_ci95),accuracy:num(g.accuracy),
+      baseline_accuracy:num(g.baseline_accuracy),days:cnt(g.days)};
+  };
+  const tests=[];
+  for(const t of (Array.isArray(value.tests)?value.tests.slice(0,8):[])){
+    if(!t||typeof t!=='object')continue;
+    tests.push({
+      id:str(t.id,40),title:str(t.title,80),kind:str(t.kind,30),venue:str(t.venue,30),
+      status:str(t.status,40),verdict:str(t.verdict,20),
+      floors:floors(t.floors),legs:legs(t.legs),
+      calls:(t.calls&&typeof t.calls==='object')?{n:cnt(t.calls.n),mean_net:num(t.calls.mean_net),win_rate:num(t.calls.win_rate)}:null,
+      observations:cnt(t.observations),
+      per_asset:perAsset(t.per_asset),
+      coverage:(t.coverage&&typeof t.coverage==='object')?{
+        windows_seen:cnt(t.coverage.windows_seen),
+        window_exclusions:excl(t.coverage.window_exclusions),
+        observation_exclusions:excl(t.coverage.observation_exclusions),
+        exclusions:excl(t.coverage.exclusions),
+        fee_verified_rate:num(t.coverage.fee_verified_rate)}:null,
+      accrual_deadline:isoOrNull(t.accrual_deadline),
+      days_to_deadline:cnt(t.days_to_deadline),
+      day_block_interval:ci(t.day_block_interval),
+      win_rate:num(t.win_rate),
+      registered:(t.registered&&typeof t.registered==='object')?{
+        band:Array.isArray(t.registered.band)?t.registered.band.slice(0,2).map(num):null,
+        deadline:str(t.registered.deadline,20),rule:str(t.registered.rule,300)}:null,
+      live_counters:null,
+      note:str(t.note,500)
+    });
+  }
+  const lm=(value.live_model&&typeof value.live_model==='object')?value.live_model:null;
+  let perHorizon={};
+  if(lm&&lm.per_horizon_7d&&typeof lm.per_horizon_7d==='object'){
+    for(const k of Object.keys(lm.per_horizon_7d).slice(0,6))perHorizon[k]=grade(lm.per_horizon_7d[k]);
+  }
+  return {
+    schema:str(value.schema,40),
+    computed_at:isoOrNull(value.computed_at),
+    status:str(value.status,40),
+    tests,
+    live_model:lm?{id:'live_model',title:str(lm.title,90),status:str(lm.status,40),
+      last_24h:grade(lm.last_24h),last_7d:grade(lm.last_7d),
+      per_horizon_7d:perHorizon,note:str(lm.note,400)}:null
+  };
+}
+
 
 function cleanForwardCalls(value){
  const empty={status:'read_unavailable',captured_at:null,window_hours:6,rows:[],rows_per_scope:3,not_trading_calls:true};
@@ -731,6 +837,7 @@ function build(payload,identity){
     },
     github:cleanGithub(payload.github,identity),
     performance:cleanPerformance(payload.performance),
+    live_grading:cleanLiveGrading(payload.live_grading),
     limitations:['This is a timestamped read-only receipt, not continuously live health','Changed weights do not prove an after-cost edge','Drive report existence does not prove host import or shadow issuance']
   };
 }

@@ -907,6 +907,13 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
             lineage.get("streams_with_verified_weight_updates")
         )
         db["compared_streams"] = _nonnegative(lineage.get("streams_with_before_after"))
+    elif isinstance(lineage, dict) and lineage.get("status") in (
+        "read_unavailable", "unavailable"
+    ):
+        # The in-host lineage read itself failed: keep that distinct from
+        # "no lineage recorded" so the per-source detail can say failed
+        # read instead of no_records_found (defect sweep D-4).
+        db["status"] = "read_unavailable"
     paper = report.get("forward_proof")
     if isinstance(paper, dict) and paper.get("status") == "recorded":
         db["qualified_paper_scopes"] = _nonnegative(paper.get("qualified_paper_scopes"))
@@ -1448,6 +1455,14 @@ def _host_source_details(host: dict, db: dict, errors: dict,
         details["postgres"] = _source_detail("ok", None, checked_at)
     elif "database" in errors:
         details["postgres"] = _error_detail(errors["database"], checked_at)
+    elif db.get("status") == "read_unavailable":
+        # The in-host lineage read failed: a failed read, not an empty
+        # database. Calling it no_records_found hid exactly the
+        # Postgres-distress episodes this receipt exists to surface
+        # (defect sweep D-4). Every other state (no_lineage, or the host
+        # read itself unavailable) keeps the no_records label.
+        details["postgres"] = _source_detail(
+            "failed_read", "read_unavailable", checked_at)
     else:
         details["postgres"] = _source_detail(
             "no_records", "no_records_found", checked_at)
@@ -1477,6 +1492,37 @@ def _snapshot_source_detail(value: dict, errors: dict, key: str,
     if key == "github" and not os.getenv("GITHUB_TOKEN", ""):
         return _source_detail("not_configured", "credentials_not_configured", checked_at)
     return _source_detail("failed_read", "read_failed", checked_at)
+
+
+def _bounded_copy(value, *, depth: int = 0):
+    """Bounded JSON copy for a new payload section (the collector applies
+    its own strict whitelist on top of this)."""
+    if depth > 4:
+        return None
+    if isinstance(value, dict):
+        return {str(k)[:60]: _bounded_copy(v, depth=depth + 1)
+                for k, v in list(value.items())[:48]}
+    if isinstance(value, (list, tuple)):
+        return [_bounded_copy(v, depth=depth + 1) for v in list(value)[:16]]
+    if isinstance(value, str):
+        return value[:400]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return None
+
+
+def _live_grading_block(host_report: dict | None) -> dict:
+    """The host report's live-grading section, bounded, or unavailable.
+
+    The section is computed bot-side from recorded state (read-only);
+    this collector only carries it into the receipt payload.
+    """
+    if not isinstance(host_report, dict):
+        return {"status": "read_unavailable"}
+    section = host_report.get("live_grading")
+    if not isinstance(section, dict):
+        return {"status": "read_unavailable"}
+    return _bounded_copy(section)
 
 
 def build_source_details(host: dict, db: dict, drive: dict, github: dict,
@@ -1592,6 +1638,7 @@ def publish() -> int:
         "host": host, "database": db, "drive": drive,
         "github": github,
         "performance": performance,
+        "live_grading": _live_grading_block(host_report),
     }
     try:
         jwt = _github_oidc()

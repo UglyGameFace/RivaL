@@ -209,7 +209,25 @@ assert.match(source,/if\(url.pathname==='\/api\/status'\)/);
 assert.doesNotMatch(source,/signed auto-updates/);
 
 // The primary product UI must be an operations dashboard, not a PR index.
-assert.deepEqual(Array.from(cx.NAV),['Command','Markets','Signals','Models','XMarket','Diagnostics']);
+assert.deepEqual(Array.from(cx.NAV),['Command','Markets','Signals','Models','Grading','XMarket','Diagnostics']);
+// Live grading page: interim grades render from the receipt section, and
+// a missing section degrades to an honest unavailable message.
+cx.state.evidence.live_grading={schema:'rival-live-grading-v1',computed_at:at,tests:[
+ {id:'fair_value_polymarket',title:'Fair value — Polymarket',kind:'fair_value',venue:'polymarket',
+  status:'ACCRUAL',verdict:null,
+  floors:{recording_days:{have:5,need:7},evaluated_windows:{have:90,need:2500},triggered_calls:{have:30,need:250}},
+  legs:{paired_brier_corrected:{value:-0.0028,bar:null,first:null,second:null,ci95:{lower:-0.004,upper:-0.0005,days:5},passing_now:true,rule:'corrected ruler'}},
+  calls:{n:30,mean_net:0.015,win_rate:0.6},per_asset:{BTC:{calls:30,delta_brier:-0.0028,call_mean_net:0.015}},note:'interim only'},
+ {id:'n3',title:'N3',kind:'n3',venue:'polymarket',status:'external_recorder',live_counters:null,
+  registered:{band:[0.9,0.97],deadline:'2027-03-31',rule:'band rule'},note:'external'}],
+ live_model:{title:'Live model',last_7d:{settled:12000,delta_log_loss:0.006,delta_log_loss_ci95:{lower:0.004,upper:0.008,days:7},delta_brier:0.001,accuracy:0.61,baseline_accuracy:0.62,days:7},last_24h:null,per_horizon_7d:{},note:'rolling'}};
+assert.match(cx.opsGrading(),/graded as settlements land/);
+assert.match(cx.opsGrading(),/90 \/ 2,500/);
+assert.match(cx.opsGrading(),/passing so far/);
+assert.match(cx.opsGrading(),/Live model — rolling grade/);
+cx.state.evidence.live_grading={status:'read_unavailable'};
+assert.match(cx.opsGrading(),/unavailable in the latest receipt/);
+cx.state.evidence.live_grading=null;
 assert.match(cx.opsCommand(),/See what the bot is actually doing/);
 assert.match(cx.opsCommand(),/Evidence integrity and freshness/);
 assert.match(cx.opsEvidenceReadiness(),/Signed receipt/);

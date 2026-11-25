@@ -91,6 +91,20 @@ def _reference_venue_coverage(store, best: dict, now: datetime) -> dict:
     return scope
 
 
+def _live_grading(store, now: datetime) -> dict:
+    """Interim grades for in-flight tests (live_grading.read_live_grading).
+
+    A failure here must never sink the receipt: the section degrades to
+    read_unavailable, like every other optional section.
+    """
+    try:
+        from parlay_bot.perpetuals.live_grading import read_live_grading
+
+        return read_live_grading(store, now)
+    except Exception:  # noqa: BLE001 - optional section by design
+        return {"schema": "rival-live-grading-v1", "status": "read_unavailable"}
+
+
 def _future_proof(store, now: datetime) -> dict:
     """Read only the authoritative source-specific 21-day paper proof rows.
 
@@ -419,6 +433,7 @@ def read_receipt() -> dict:
             "recent_forward_calls": read_forward_calls(store, now),
             "advance_forecasts": read_advance_receipt(store, now),
             "forward_proof": forward_proof,
+            "live_grading": _live_grading(store, now),
             "path_targets": _path_target_progress(store, now),
             "polymarket_contest": _contest_progress(store, now),
             "xmarket": xmarket,

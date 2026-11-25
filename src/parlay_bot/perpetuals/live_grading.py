@@ -1,6 +1,6 @@
 """Live grading view: interim, read-only grades for in-flight tests.
 
-Felix (2026-11-24): "I don't want to be in the dark anymore waiting 21
+The owner (2026-11-24): "I don't want to be in the dark anymore waiting 21
 days. I want to see the grading and everything live."
 
 This module computes, from the same recorded state the frozen evaluators
@@ -136,7 +136,7 @@ def _fair_value_block(venue: str, report: dict) -> dict:
         "note": ("Interim leg states are reporting only; the frozen "
                  "evaluator issues the verdict once, when the floors are "
                  "met. The corrected Brier ruler is shown alongside the "
-                 "frozen leg Felix's registered design specifies."),
+                 "frozen leg the owner's registered design specifies."),
     }
 
 
@@ -325,7 +325,7 @@ def _candidates_block(store) -> dict:
     its status, its specific blocker and its floor progress, from the
     workbench results table (written by workbench runs; the snapshot
     timestamp travels with it so a stale snapshot reads as stale).
-    Felix (2026-11-24): the "not measurable yet" pile must be
+    The owner (2026-11-24): the "not measurable yet" pile must be
     watchable draining, candidate by candidate -- never a bare count.
     """
     from parlay_bot.perpetuals import replay_generation

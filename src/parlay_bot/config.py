@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     rival_settlement_index_seconds: int = Field(default=10, ge=5, le=30)
     # Forward collection for the N1 options-implied pre-test (design +
     # amendment 2026-11-19): the historical Deribit surface archive the
-    # design wanted is paid-only (step 0), so Felix chose the free route
+    # design wanted is paid-only (step 0), so the owner chose the free route
     # -- record the live Deribit options surface and the Polymarket
     # threshold/barrier markets hourly and let the sample accrue.
     # Collection only; no model input, no evaluation, no issuance.

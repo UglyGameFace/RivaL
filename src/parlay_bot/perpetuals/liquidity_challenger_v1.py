@@ -46,7 +46,7 @@ early Brier numbers on < 50 targets are noise and must never be
 presented as a track record; the first evaluation is a finding even if
 it loses. Kill switch: ``ISSUE_LIQ_V1_CHALLENGERS`` in
 ``forward_audit``; add ``"liq_v1"`` to ``BLOCKED_FAMILIES`` to stop
-serving (Felix's explicit approval required, as coded). Existing rows
+serving (the owner's explicit approval required, as coded). Existing rows
 keep settling either way. OTG: the D11 rule applies -- the OTG call
 only, no live lean at launch (``live_lean`` returns None for any
 ``CHALLENGER_PREFIXES`` family, which includes ``liq_``).

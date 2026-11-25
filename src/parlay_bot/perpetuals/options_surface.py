@@ -6,7 +6,7 @@ is the sharp reference, and the test reads a risk-neutral distribution
 off an hourly snapshot of it. Step 0 of that design verified the gating
 fact: Deribit's public API serves only the LIVE surface, and no free
 historical archive of it exists -- the archives with the needed fields
-are paid. Felix chose the free forward route (amendment 2026-11-19):
+are paid. The owner chose the free forward route (amendment 2026-11-19):
 record the live surface hourly from deploy and let the sample accrue,
 exactly as the settlement-index recorders accrue theirs. If it is not
 recorded live, it does not exist.

@@ -903,7 +903,7 @@ def workbench_text(record: object, *, full: bool = False) -> str:
             parts.append("Passed: " + "; ".join(_names(verdict="PASS")) + ".")
         # Every blocked candidate gets its own line with its specific
         # blocker and its progress toward its floors -- never a bare
-        # name in an aggregate pile (Felix, 2026-11-24). The field cap
+        # name in an aggregate pile (the owner, 2026-11-24). The field cap
         # is real, so overflow points at the board's Grading page,
         # which lists every candidate without a length limit.
         limbo = [c for c in candidates

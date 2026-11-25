@@ -1,7 +1,7 @@
 """Runtime serving set for the regime live-learning challengers.
 
 Spec rival-regime-live-learning-spec-20261108, D1-D12, plus the Q1
-amendment (Felix, 2026-11-08): two live families that learn as outcomes
+amendment (the owner, 2026-11-08): two live families that learn as outcomes
 settle, instead of an offline weekly fit:
 
   regime_live_v1       base family, learning rate 0.025 (the incumbent's);

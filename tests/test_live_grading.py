@@ -1,4 +1,4 @@
-"""Live grading view (Felix, 2026-11-24): interim, read-only grades.
+"""Live grading view (the owner, 2026-11-24): interim, read-only grades.
 
 The blocks must report the frozen evaluators' own counters and leg
 formulas applied to accrued data — never a verdict of their own — and

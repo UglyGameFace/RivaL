@@ -20,7 +20,7 @@ def test_evidence_board_cadence_preserves_signed_read_only_collection():
     # The trigger list and concurrency group are owned by the Delivery 1
     # scheduler patch (~/workspace/your_files/evidence-board-scheduler-
     # workflow.patch): the Production Release trigger is dropped and the
-    # group becomes per-event when Felix places it. This test pins only the
+    # group becomes per-event when the owner places it. This test pins only the
     # invariants that hold before and after placement.
     assert '"RivaL independent Discloud uptime"' in content
     collector = (WORKFLOW.parents[2] / "web/evidence-board/collector.js").read_text(encoding="utf-8")

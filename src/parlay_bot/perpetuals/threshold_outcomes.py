@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+import time
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -48,10 +49,28 @@ CREATE TABLE IF NOT EXISTS {OUTCOMES_TABLE} (
 );
 """
 
-# Per-cycle bounds: the weekly estate is small; these caps keep a
-# backfill burst from crowding out the snapshot collectors.
-MAX_PM_PER_CYCLE = 40
-MAX_KALSHI_PER_CYCLE = 40
+# Per-cycle bounds. The original 40/venue caps were sized for the
+# weekly estate's steady state (a handful of expiries per cycle) and
+# for keeping a backfill burst from crowding out the snapshot
+# collectors. They were never sized for a backlog: after the settler
+# defects were fixed on 2026-11-25 the live queue held ~125k expired
+# Kalshi markets (five days of recording while the settler was down),
+# which at 40/cycle would have taken months to drain and left fresh
+# settlements queued behind it. The bounds below keep the protection
+# the caps existed for -- the pass still cannot crowd out the
+# collectors, because resolutions run at most
+# MAX_CONCURRENT_RESOLUTIONS at a time and each venue's pass stops
+# starting new work after CYCLE_BUDGET_SECONDS -- while draining a
+# backlog in days: at the ~40-minute collection cadence, 600 Kalshi
+# resolutions per cycle is ~21k/day.
+MAX_PM_PER_CYCLE = 300
+MAX_KALSHI_PER_CYCLE = 600
+MAX_CONCURRENT_RESOLUTIONS = 5
+CYCLE_BUDGET_SECONDS = 240.0
+# A market the venues cannot resolve yet (not final, voided, split)
+# is retried at most once per cooldown instead of re-occupying the
+# head of the queue on every cycle.
+RECHECK_COOLDOWN = timedelta(hours=24)
 
 
 def _parse_time(value) -> datetime | None:
@@ -78,17 +97,29 @@ class ThresholdOutcomeSettler:
     def _due(self, now: datetime) -> dict[str, list[dict]]:
         """Latest snapshot per expired market with no resolved row."""
         resolved = set()
+        cooling = set()
         with self.store.connect() as conn:
             try:
                 rows = conn.execute(
-                    f"SELECT venue, market_key FROM {OUTCOMES_TABLE}"
-                    " WHERE resolved_yes IS NOT NULL", ()).fetchall()
+                    f"SELECT venue, market_key, resolved_yes, recorded_at"
+                    f" FROM {OUTCOMES_TABLE}", ()).fetchall()
             except Exception:  # noqa: BLE001 - table not created yet
                 rows = []
             for row in rows:
                 item = dict(row) if isinstance(row, dict) else {
-                    "venue": row[0], "market_key": row[1]}
-                resolved.add((item["venue"], item["market_key"]))
+                    "venue": row[0], "market_key": row[1],
+                    "resolved_yes": row[2], "recorded_at": row[3]}
+                key = (item["venue"], item["market_key"])
+                if item["resolved_yes"] is not None:
+                    resolved.add(key)
+                    continue
+                # Checked before and left unresolved: step aside for
+                # the cooldown so an unresolvable market cannot hold
+                # the head of the queue hostage cycle after cycle.
+                attempted = _parse_time(item["recorded_at"])
+                if attempted is not None \
+                        and now - attempted < RECHECK_COOLDOWN:
+                    cooling.add(key)
         due: dict[str, list[dict]] = {"polymarket": [], "kalshi": []}
         seen: set[tuple[str, str]] = set()
         with self.store.connect() as conn:
@@ -140,7 +171,7 @@ class ThresholdOutcomeSettler:
                     "contract_type": raw_row[2], "strike_low": raw_row[3],
                     "strike_high": raw_row[4], "expiry": raw_row[5]}
                 key = (venue, str(item["key"]))
-                if key in seen or key in resolved:
+                if key in seen or key in resolved or key in cooling:
                     continue
                 seen.add(key)
                 expiry = _parse_time(item["expiry"])
@@ -233,6 +264,13 @@ class ThresholdOutcomeSettler:
                         " WHERE venue=? AND market_key=?",
                         (resolved_yes, final_price, now.isoformat(),
                          venue, market["market_key"]))
+                else:
+                    # Still unresolved: bump the attempt time so the
+                    # recheck cooldown in _due measures from this try.
+                    conn.execute(
+                        f"UPDATE {OUTCOMES_TABLE} SET recorded_at=?"
+                        " WHERE venue=? AND market_key=?",
+                        (now.isoformat(), venue, market["market_key"]))
                 return
             conn.execute(
                 f"INSERT INTO {OUTCOMES_TABLE} (venue, market_key, asset,"
@@ -248,33 +286,78 @@ class ThresholdOutcomeSettler:
 
     async def settle(self, client: httpx.AsyncClient, *,
                      now: datetime) -> dict:
-        """One cycle: resolve due markets per venue, failure-isolated."""
+        """One cycle: resolve due markets per venue, failure-isolated.
+
+        Resolutions run with bounded concurrency under a per-venue
+        wall-clock budget, so a large backlog drains quickly without
+        the pass ever crowding out the snapshot cycle that hosts it.
+        A venue rate-limit answer (HTTP 429) stops that venue's pass
+        for this cycle; the remaining markets stay due for the next.
+        """
         self.initialize()
         due = self._due(now)
         receipt: dict[str, dict] = {}
         for venue, resolver, cap in (
                 ("polymarket", self._resolve_polymarket, MAX_PM_PER_CYCLE),
                 ("kalshi", self._resolve_kalshi, MAX_KALSHI_PER_CYCLE)):
-            checked = resolved = 0
-            for market in due[venue][:cap]:
+            receipt[venue] = await self._settle_venue(
+                venue, resolver, due[venue][:cap], client, now=now,
+                due_total=len(due[venue]))
+        return receipt
+
+    async def _settle_venue(self, venue: str, resolver, markets: list,
+                            client: httpx.AsyncClient, *,
+                            now: datetime, due_total: int) -> dict:
+        started = time.monotonic()
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_RESOLUTIONS)
+        rate_limited = False
+
+        async def attempt(market: dict):
+            nonlocal rate_limited
+            async with semaphore:
+                if rate_limited:
+                    return market, None, False
                 try:
-                    resolution = await resolver(client, market["market_key"])
+                    resolution = await resolver(
+                        client, market["market_key"])
                 except asyncio.CancelledError:
                     raise
+                except httpx.HTTPStatusError as exc:
+                    if exc.response is not None \
+                            and exc.response.status_code == 429:
+                        rate_limited = True
+                    _LOG.warning(
+                        "threshold outcome resolve failed venue=%s "
+                        "market=%s error=%s",
+                        venue, market["market_key"], type(exc).__name__)
+                    return market, None, False
                 except Exception as exc:  # noqa: BLE001 - one market's outage is local
                     _LOG.warning(
                         "threshold outcome resolve failed venue=%s "
                         "market=%s error=%s",
                         venue, market["market_key"], type(exc).__name__)
+                    return market, None, False
+                return market, resolution, True
+
+        checked = resolved = 0
+        chunk = MAX_CONCURRENT_RESOLUTIONS * 4
+        for offset in range(0, len(markets), chunk):
+            if offset and time.monotonic() - started > CYCLE_BUDGET_SECONDS:
+                break
+            results = await asyncio.gather(
+                *(attempt(m) for m in markets[offset:offset + chunk]))
+            for market, resolution, attempted in results:
+                if not attempted:
                     continue
                 checked += 1
                 if resolution is not None:
                     resolved += 1
                 await asyncio.to_thread(
                     self._record, venue, market, resolution, now=now)
-            receipt[venue] = {"due": len(due[venue]), "checked": checked,
-                              "resolved": resolved}
-        return receipt
+            if rate_limited:
+                break
+        return {"due": due_total, "checked": checked,
+                "resolved": resolved}
 
 
 def settled_count(store) -> int:

@@ -105,9 +105,65 @@ def test_settler_never_rechecks_resolved_markets(tmp_path):
     asyncio.run(settler.settle(_Client(_answers()), now=NOW))
     client = _Client(_answers())
     receipt = asyncio.run(settler.settle(client, now=NOW))
-    assert receipt["polymarket"]["due"] == 1  # only the split market
+    # The split market was just attempted and left unresolved, so it
+    # sits in the recheck cooldown instead of re-occupying the queue;
+    # resolved markets never come back at all.
+    assert receipt["polymarket"]["due"] == 0
     assert receipt["kalshi"]["due"] == 0
     assert outcomes.settled_count(store) == 2
+    later = NOW + timedelta(hours=25)
+    receipt = asyncio.run(settler.settle(client, now=later))
+    # The split market is retried after its cooldown; cond-open joins
+    # it because its expiry passed during the 25-hour jump.
+    assert receipt["polymarket"]["due"] == 2
+    assert receipt["polymarket"]["resolved"] == 0  # still never guessed
+    assert receipt["kalshi"]["due"] == 0
+    assert outcomes.settled_count(store) == 2
+
+
+def _kalshi_store(tmp_path, tickers):
+    store = SQLiteHotStore(tmp_path / "kalshi-outcomes.sqlite")
+    ThresholdMarketsRecorder(store).initialize()
+    KalshiThresholdsRecorder(store).initialize()
+    with store.connect() as conn:
+        for ticker in tickers:
+            conn.execute(
+                "INSERT INTO rival_kalshi_threshold_snapshots"
+                " (snapshot_at, asset, contract_type, horizon,"
+                " series_ticker, market_ticker, strike_low, close_time)"
+                " VALUES (?, 'BTC', 'above', 'hourly', 'KXBTC', ?,"
+                " 90000.0, ?)",
+                ("2026-11-27T00:00:00+00:00", ticker, PAST))
+    return store
+
+
+def test_settler_drains_more_than_the_old_cap_in_one_cycle(tmp_path):
+    tickers = [f"KXBTC-{i}" for i in range(50)]
+    store = _kalshi_store(tmp_path, tickers)
+    settler = outcomes.ThresholdOutcomeSettler(store)
+    client = _Client({"KXBTC-": {"market": {"result": "yes",
+                                             "status": "finalized"}}})
+    receipt = asyncio.run(settler.settle(client, now=NOW))
+    assert receipt["kalshi"] == {"due": 50, "checked": 50, "resolved": 50}
+    assert outcomes.settled_count(store) == 50
+
+
+def test_unresolvable_market_cools_down_between_attempts(tmp_path):
+    store = _kalshi_store(tmp_path, ["KXBTC-VOID"])
+    settler = outcomes.ThresholdOutcomeSettler(store)
+    client = _Client({"KXBTC-VOID": {"market": {"result": "",
+                                                 "status": "finalized"}}})
+    receipt = asyncio.run(settler.settle(client, now=NOW))
+    assert receipt["kalshi"]["checked"] == 1
+    assert receipt["kalshi"]["resolved"] == 0
+    assert len(client.calls) == 1
+    receipt = asyncio.run(settler.settle(client, now=NOW))
+    assert receipt["kalshi"]["due"] == 0  # cooling down, not re-fetched
+    assert len(client.calls) == 1
+    later = NOW + timedelta(hours=25)
+    receipt = asyncio.run(settler.settle(client, now=later))
+    assert receipt["kalshi"]["due"] == 1  # retried after the cooldown
+    assert len(client.calls) == 2
 
 
 class _GammaClient:

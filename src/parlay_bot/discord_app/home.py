@@ -1194,7 +1194,7 @@ def _trials_sections(reports: dict, *, full: bool = False) -> dict:
         return {"name": "🧪 Test models",
                 "leader": "Trial results aren't available on this server.",
                 "table": "", "missing": "", "how_to_read": "", "count": None}
-    if not isinstance(board, dict):
+    if not isinstance(board, dict) or board.get("unavailable"):
         return {"name": "🧪 Test models",
                 "leader": ("⚠️ Couldn't load the trial table right now. Press Refresh; "
                            "this is a slow read, not missing results."),

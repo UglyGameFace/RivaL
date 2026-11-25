@@ -338,14 +338,16 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
     since = (stamp - FRESH).isoformat()
     # Each read on its own connection: on PostgreSQL a failed read (a
     # table not created yet, a timeout) would abort a shared transaction.
-    promotion = optional_rows(
+    promotion_read = optional_rows(
         store, """SELECT venue,contract,asset,horizon_minutes,evidence_json
                   FROM rival_family_promotion WHERE evaluated_at>=?""",
-        (since,), what="trial board promotion read") or []
-    stop_rows = optional_rows(
+        (since,), what="trial board promotion read")
+    promotion = promotion_read or []
+    stop_read = optional_rows(
         store, """SELECT venue,contract,horizon_minutes,family
                   FROM rival_family_early_stop""",
-        what="trial board early-stop read") or []
+        what="trial board early-stop read")
+    stop_rows = stop_read or []
     here, everywhere = [], []
     contracts = set()
     for row in promotion:
@@ -407,7 +409,10 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
             "trials": live_total, "trials_all": total,
             "passed": live_passed, "passed_all": passed,
             "cut_here": cut_here, "stopped_here": stopped_here,
-            "stops": len(stop_rows), "venues": venues, "partial": partial}
+            "stops": len(stop_rows), "venues": venues, "partial": partial,
+            # A failed read (None) is not an empty table: the board must say
+            # "couldn't load", never present the collapse as 0 trials.
+            "unavailable": promotion_read is None or stop_read is None}
 
 
 HIT_DAYS = 7

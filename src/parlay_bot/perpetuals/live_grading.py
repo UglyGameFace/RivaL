@@ -38,20 +38,16 @@ def _round(value, digits=6):
     return None if value is None else round(float(value), digits)
 
 
-def _day_cluster_ci(pairs: list[tuple[str, float]]) -> dict | None:
-    """Day-cluster interval for a mean of per-row deltas (days as units)."""
-    by_day: dict[str, list[float]] = {}
-    for day, value in pairs:
-        by_day.setdefault(day, []).append(value)
-    days = sorted(by_day)
-    if len(days) < 2:
+def _day_cluster_ci(totals: dict[str, tuple[float, int]]) -> dict | None:
+    """Same day-cluster interval from sums/counts, without retaining rows."""
+    if len(totals) < 2:
         return None
-    means = [sum(by_day[d]) / len(by_day[d]) for d in days]
+    means = [totals[d][0] / totals[d][1] for d in sorted(totals)]
     centre = sum(means) / len(means)
     var = sum((m - centre) ** 2 for m in means) / (len(means) - 1)
     half = 1.96 * math.sqrt(var / len(means))
     return {"lower": _round(centre - half), "upper": _round(centre + half),
-            "days": len(days)}
+            "days": len(means)}
 
 
 def _fair_value_block(venue: str, report: dict) -> dict:
@@ -207,69 +203,93 @@ def _convergence_block(report: dict, now: datetime) -> dict:
 def _live_model_block(store, now: datetime) -> dict:
     """Rolling grade of the live per-stream logistic vs its baseline.
 
-    The baseline is the issuance-time reference probability recorded on
-    the same row (the market-implied comparator the audit used). Perp
+    The baseline is the smoothed historical UP frequency frozen at
+    issuance on the same row, not a tradable market price. Perp
     forecasts carry no venue fee; the comparison is paired log-loss and
     Brier on identical settled rows.
     """
-    since = (now - timedelta(days=8)).isoformat()
-    with store.connect() as conn:
-        rows = conn.execute(
-            """SELECT issued_at, horizon_minutes, probability_up, baseline_up,
-                      outcome_up, model_brier, baseline_brier
-               FROM perp_forward_audit
-               WHERE model_version=? AND settled_at IS NOT NULL
-                 AND outcome_up IN (0,1) AND issued_at>=?""",
-            (LIVE_MODEL, since)).fetchall()
+    def _empty() -> dict:
+        return {"n": 0, "right": 0, "base_right": 0, "dll": 0.0,
+                "db": 0.0, "daily": {}, "targets": set()}
 
-    def _grade(selected) -> dict:
-        dll_pairs, db_pairs = [], []
-        right = base_right = 0
-        for row in selected:
-            p = min(max(float(row["probability_up"]), _EPS), 1 - _EPS)
-            b = min(max(float(row["baseline_up"]), _EPS), 1 - _EPS)
-            y = int(row["outcome_up"])
-            ll_model = -(y * math.log(p) + (1 - y) * math.log(1 - p))
-            ll_base = -(y * math.log(b) + (1 - y) * math.log(1 - b))
-            day = str(row["issued_at"])[:10]
-            dll_pairs.append((day, ll_model - ll_base))
-            db_pairs.append((day, float(row["model_brier"])
-                             - float(row["baseline_brier"])))
-            right += int((p > 0.5 and y == 1) or (p < 0.5 and y == 0))
-            base_right += int((b > 0.5 and y == 1) or (b < 0.5 and y == 0))
-        n = len(selected)
+    def _grade(group) -> dict:
+        n = group["n"]
         if not n:
             return {"settled": 0, "delta_log_loss": None,
                     "delta_log_loss_ci95": None, "delta_brier": None,
                     "delta_brier_ci95": None, "accuracy": None,
-                    "baseline_accuracy": None, "days": 0}
+                    "baseline_accuracy": None, "days": 0,
+                    "unique_target_windows": 0}
         return {
             "settled": n,
-            "delta_log_loss": _round(sum(v for _, v in dll_pairs) / n),
-            "delta_log_loss_ci95": _day_cluster_ci(dll_pairs),
-            "delta_brier": _round(sum(v for _, v in db_pairs) / n),
-            "delta_brier_ci95": _day_cluster_ci(db_pairs),
-            "accuracy": _round(right / n, 4),
-            "baseline_accuracy": _round(base_right / n, 4),
-            "days": len({d for d, _ in dll_pairs}),
+            "unique_target_windows": len(group["targets"]),
+            "delta_log_loss": _round(group["dll"] / n),
+            "delta_log_loss_ci95": _day_cluster_ci({
+                day: (v[1], v[0]) for day, v in group["daily"].items()}),
+            "delta_brier": _round(group["db"] / n),
+            "delta_brier_ci95": _day_cluster_ci({
+                day: (v[2], v[0]) for day, v in group["daily"].items()}),
+            "accuracy": _round(group["right"] / n, 4),
+            "baseline_accuracy": _round(group["base_right"] / n, 4),
+            "days": len(group["daily"]),
         }
 
-    rows = list(rows)
+    # Keep one bounded cursor chunk plus small per-day/target summaries.
+    # Materializing ~180k rows and per-row score tuples here adds pressure
+    # on the same bot whose memory plateau is still under observation.
     day_ago = (now - timedelta(days=1)).isoformat()
-    week = [r for r in rows if str(r["issued_at"]) >= (now - timedelta(days=7)).isoformat()]
+    week_ago = (now - timedelta(days=7)).isoformat()
+    week, daily, horizons = _empty(), _empty(), {}
+    with store.connect() as conn:
+        cursor = conn.execute(
+            """SELECT issued_at, asset, target_opened_at, horizon_minutes,
+                      probability_up, baseline_up, outcome_up,
+                      model_brier, baseline_brier
+               FROM perp_forward_audit
+               WHERE model_version=? AND settled_at IS NOT NULL
+                 AND outcome_up IN (0,1) AND issued_at>=?""",
+            (LIVE_MODEL, week_ago))
+        while chunk := cursor.fetchmany(2000):
+            for row in chunk:
+                issued = str(row["issued_at"])
+                if issued < week_ago:
+                    continue
+                groups = [week, horizons.setdefault(
+                    int(row["horizon_minutes"]), _empty())]
+                if issued >= day_ago:
+                    groups.append(daily)
+                p = min(max(float(row["probability_up"]), _EPS), 1 - _EPS)
+                b = min(max(float(row["baseline_up"]), _EPS), 1 - _EPS)
+                y = int(row["outcome_up"])
+                dll = -(y * math.log(p) + (1 - y) * math.log(1 - p)) \
+                    + y * math.log(b) + (1 - y) * math.log(1 - b)
+                db = float(row["model_brier"]) - float(row["baseline_brier"])
+                for group in groups:
+                    group["n"] += 1
+                    group["dll"] += dll
+                    group["db"] += db
+                    group["right"] += int((p > 0.5 and y == 1) or (p < 0.5 and y == 0))
+                    group["base_right"] += int((b > 0.5 and y == 1) or (b < 0.5 and y == 0))
+                    summary = group["daily"].setdefault(issued[:10], [0, 0.0, 0.0])
+                    summary[0] += 1
+                    summary[1] += dll
+                    summary[2] += db
+                    group["targets"].add((row["asset"], row["target_opened_at"]))
     return {
         "id": "live_model",
         "title": "Live model (per-stream logistic) — rolling grade",
         "kind": "live_model",
-        "last_24h": _grade([r for r in rows if str(r["issued_at"]) >= day_ago]),
+        "baseline_kind": "smoothed_historical_up_rate",
+        "last_24h": _grade(daily),
         "last_7d": _grade(week),
         "per_horizon_7d": {
-            str(h): _grade([r for r in week if int(r["horizon_minutes"]) == h])
-            for h in sorted({int(r["horizon_minutes"]) for r in week})
+            str(h): _grade(horizons[h]) for h in sorted(horizons)
         },
-        "note": ("Paired against the issuance-time baseline probability "
-                 "on the same settled rows. Negative deltas are better. "
-                 "This is the production model's record, not a test."),
+        "note": ("Baseline: historical UP frequency frozen at issuance, "
+                 "not a market price. Venue/horizon rows share target "
+                 "clocks; counts do not prove independent outcomes. "
+                 "Negative deltas are better. No after-cost edge is "
+                 "established by this probability score."),
     }
 
 
@@ -364,6 +384,8 @@ def _candidates_block(store) -> dict:
             "calls": cand.get("calls"), "days": cand.get("days"),
             "blocker": cand.get("blocker"), "progress": cand.get("progress"),
             "floors": cand.get("floors"),
+            "grading_version": cand.get("grading_version"),
+            "cluster_unit": cand.get("cluster_unit"),
             "evaluated_at": evaluated,
         })
     return {"status": "recorded", "snapshot_at": snapshot_at,

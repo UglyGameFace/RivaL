@@ -52,6 +52,9 @@ def test_live_model_block_grades_against_the_issuance_baseline(store):
     block = live_grading._live_model_block(store, NOW)
     week = block["last_7d"]
     assert week["settled"] == 12
+    assert week["unique_target_windows"] == 12
+    assert block["baseline_kind"] == "smoothed_historical_up_rate"
+    assert "not a market price" in block["note"]
     assert week["delta_log_loss"] < 0
     assert week["delta_brier"] == pytest.approx(0.09 - 0.25)
     assert week["delta_log_loss_ci95"]["upper"] < 0
@@ -63,7 +66,67 @@ def test_live_model_block_grades_against_the_issuance_baseline(store):
 def test_live_model_block_empty_is_zero_not_error(store):
     block = live_grading._live_model_block(store, NOW)
     assert block["last_7d"]["settled"] == 0
+    assert block["last_7d"]["unique_target_windows"] == 0
     assert block["last_7d"]["delta_log_loss"] is None
+
+
+def test_live_model_reports_target_clocks_separately_from_venue_rows(store):
+    issued = NOW - timedelta(hours=1)
+    _settled(store, issued=issued, p=0.7, baseline=0.5, up=1)
+    with store.connect() as conn:
+        conn.execute("""INSERT INTO perp_forward_audit
+            SELECT 'okx',contract,quote,asset,horizon_minutes,model_version,
+                   reference_opened_at,reference_close,issued_at,target_opened_at,
+                   probability_up,baseline_up,training_evaluated,settled_at,
+                   outcome_up,realized_close,model_brier,baseline_brier
+            FROM perp_forward_audit WHERE venue='gate'""")
+    block = live_grading._live_model_block(store, NOW)
+    assert block["last_7d"]["settled"] == 2
+    assert block["last_7d"]["unique_target_windows"] == 1
+
+
+def test_live_model_streams_rows_and_preserves_day_weighted_intervals(store, monkeypatch):
+    from contextlib import contextmanager
+
+    # Two rows on day 1, one on day 2: the point estimate is weighted
+    # by rows, while the original interval uses equally weighted days.
+    for k in range(2):
+        _settled(store, issued=NOW - timedelta(days=1, hours=k),
+                 p=0.7, baseline=0.5, up=1)
+    _settled(store, issued=NOW - timedelta(days=2),
+             p=0.5, baseline=0.5, up=1)
+    connect = store.connect
+
+    class Cursor:
+        def __init__(self, cursor):
+            self.cursor = cursor
+
+        def fetchall(self):
+            raise AssertionError("live grading must not materialize the full window")
+
+        def fetchmany(self, size):
+            assert size <= 2000
+            # Force multiple chunks even for this small fixture.
+            return self.cursor.fetchmany(1)
+
+    class Connection:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def execute(self, sql, params):
+            return Cursor(self.conn.execute(sql, params))
+
+    @contextmanager
+    def streamed_connection():
+        with connect() as conn:
+            yield Connection(conn)
+
+    monkeypatch.setattr(store, "connect", streamed_connection)
+    grade = live_grading._live_model_block(store, NOW)["last_7d"]
+    assert grade["settled"] == 3
+    assert grade["delta_brier"] == pytest.approx(-0.106667)
+    assert grade["delta_brier_ci95"] == {
+        "lower": -0.2368, "upper": 0.0768, "days": 2}
 
 
 def _fv_report(delta_brier):

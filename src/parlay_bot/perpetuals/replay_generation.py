@@ -57,8 +57,12 @@ TIER_FLOORS = {"A": {"min_rows": 1000, "min_days": 7, "min_calls": 250,
 # --- Screen G-D floors (owner-approved 2026-11-24) ---
 # G-D grades LLM-proposed masks over the exchange feature vector
 # recorded on rival_forward_model_lineage.features_json. The owner
-# approved floors mirroring tier B on 2026-11-24; the independent
-# unit (cluster) is the contract (venue+contract+quote identity).
+# approved floors mirroring tier B on 2026-11-24. Grading correction
+# 2026-11-25: clusters are asset/target clocks, shared across venues
+# and horizons, rather than instrument identities (only ~9 per asset).
+# No floor, fitted model, or already-recorded verdict is changed.
+GD_GRADING_VERSION = "gd-target-clock-v2-20261125"
+GD_CLUSTER_UNIT = "asset_target_clock"
 GD_FLOORS = {"min_rows": 500, "min_days": 7, "min_calls": 100,
              "min_clusters": 40}
 GD_FIT_MIN_ROWS = FIT_MIN_ROWS["B"]
@@ -639,7 +643,10 @@ def load_gd_record(store) -> tuple[list[dict], dict]:
     recorded (non-NULL) exchange feature vector are eligible; the
     audit row's baseline_up is the paired baseline probability and
     settled_at is the outcome-observed stamp for the walk-forward
-    embargo.
+    embargo. An asset/target clock is one measurement cluster across
+    venues and horizons, matching XMarket's target-clock convention.
+    These counts alone do not prove independence of overlapping returns;
+    score uncertainty continues to use whole UTC-day blocks.
     """
     from parlay_bot.perpetuals.forward_audit import MODEL as PERP_MODEL
 
@@ -668,11 +675,14 @@ def load_gd_record(store) -> tuple[list[dict], dict]:
         coverage["settled_rows_seen"] += 1
         issued = wb._parse_time(raw["issued_at"])
         settled = wb._parse_time(raw["settled_at"])
+        target = wb._parse_time(raw["target_opened_at"])
         try:
             features = [float(v) for v in json.loads(raw["features_json"])]
         except (TypeError, ValueError):
             features = None
-        if issued is None or settled is None or features is None \
+        if issued is None or settled is None or target is None \
+                or target + timedelta(minutes=5) <= issued \
+                or features is None \
                 or len(features) != EXCHANGE_FEATURE_COUNT \
                 or not all(math.isfinite(v) for v in features):
             coverage["unparseable_row"] += 1
@@ -680,8 +690,7 @@ def load_gd_record(store) -> tuple[list[dict], dict]:
         rows.append({
             "venue": str(raw["venue"]), "contract": str(raw["contract"]),
             "quote": str(raw["quote"]),
-            "cluster": (f"{raw['venue']}:{raw['contract']}"
-                        f":{raw['quote']}"),
+            "cluster": f"{raw['asset']}:{target.isoformat()}",
             "asset": str(raw["asset"]),
             "horizon": int(raw["horizon_minutes"]),
             "issued_at": issued, "day": issued.date().isoformat(),
@@ -725,7 +734,7 @@ def screen_llm_masks(rows: list[dict],
     <=25 Newton iterations, 5,000-row fit window, full-day embargo,
     wb._paired_block + wb._four_leg_verdict with the corrected legs),
     graded per registered candidate over its own asset's rows, with
-    GD_FLOORS (cluster = contract). A candidate whose asset has zero
+    GD_FLOORS (cluster = asset/target clock). A candidate whose asset has zero
     post-cutoff rows keeps the named cause; any other below-floor
     candidate is NOT_MEASURABLE with floor progress, never a stale
     cause.
@@ -789,6 +798,7 @@ def screen_llm_masks(rows: list[dict],
         }
         entry = {
             **verdict, "floors": floors, "score": block,
+            "grading_version": GD_GRADING_VERSION,
             "coverage": {
                 "scope_rows": len(scope), "scope_days": len(days),
                 "scored_days": scored_days,
@@ -797,6 +807,8 @@ def screen_llm_masks(rows: list[dict],
                 "pricing": "IMPLIED-PRICE (baseline-implied; no perp"
                            " fee recorded, call nets are upper bounds)",
                 "features_cutoff": GD_FEATURES_CUTOFF,
+                "cluster_unit": GD_CLUSTER_UNIT,
+                "overlap_independence_proven": False,
             },
         }
         if not scope:
@@ -811,7 +823,8 @@ def screen_llm_masks(rows: list[dict],
                           "forbids reconstructing one",
             })
         out[cand["id"]] = entry
-    return {"screen": "G-D", "candidates": out}
+    return {"screen": "G-D", "grading_version": GD_GRADING_VERSION,
+            "candidates": out}
 
 
 def llm_registrations(proposals: list[dict]) -> list[dict]:
@@ -1158,6 +1171,12 @@ def read_results_for_board(store) -> dict:
                 "cause": (detail.get("cause")
                           if isinstance(detail.get("cause"), str)
                           else None),
+                "grading_version": (detail.get("grading_version")
+                                    if isinstance(detail.get("grading_version"), str)
+                                    else None),
+                "cluster_unit": ((detail.get("coverage") or {}).get("cluster_unit")
+                                 if isinstance(detail.get("coverage"), dict)
+                                 else None),
                 "floors": floors,
                 "progress": progress,
             }

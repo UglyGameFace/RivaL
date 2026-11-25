@@ -89,6 +89,11 @@ def test_observe_query_plan_uses_shadow_observe_index(tmp_path):
                 ref=now - timedelta(minutes=5 * (i % 50), seconds=i),
                 issued=now - timedelta(minutes=i % 90),
             )
+        # The competing score_recent index also serves a range here.
+        # Without fixture statistics, SQLite 3.53 chooses that broader
+        # index; ANALYZE lets it compare the seeded equality prefixes.
+        # Keep the exact intended index assertion and production SQL.
+        conn.execute("ANALYZE perp_forward_audit")
         plan = conn.execute(
             "EXPLAIN QUERY PLAN " + OBSERVE_SQL,
             ("BTC", "hyperliquid", "BTC", "USDC", MODEL,
@@ -97,6 +102,7 @@ def test_observe_query_plan_uses_shadow_observe_index(tmp_path):
     detail = "\n".join(str(row[3]) for row in plan)
     assert "USING INDEX idx_perp_forward_shadow_observe" in detail
     assert "SCAN perp_forward_audit" not in detail
+    assert "USE TEMP B-TREE" not in detail
 
 
 def test_observe_query_returns_matching_rows_in_issued_order(tmp_path):

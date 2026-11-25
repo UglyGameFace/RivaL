@@ -166,7 +166,11 @@ function cleanPerformance(p) {
 // bounds and whitelists what the board may render.
 function cleanLiveGrading(value){
   if(!value||typeof value!=='object')return {status:'read_unavailable',tests:[],live_model:null};
-  const num=(v)=>finiteOrNull(v,1000000);
+  // Scores, confidence bounds and net outcomes are signed and often much
+  // smaller than a cent. The operations-metric helper rejects negatives
+  // and rounds to two decimals; using it here erased improvements/losses.
+  const num=(v)=>typeof v==='number'&&Number.isFinite(v)&&Math.abs(v)<=1000000?+v.toFixed(6):null;
+  const probability=(v)=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1?+v.toFixed(6):null;
   const cnt=(v)=>numberOrNull(v,100000000);
   const str=(v,m)=>typeof v==='string'?v.slice(0,m):null;
   const ci=(e)=> (e&&typeof e==='object')?{lower:num(e.lower),upper:num(e.upper),days:cnt(e.days)}:null;
@@ -218,10 +222,11 @@ function cleanLiveGrading(value){
   };
   const grade=(g)=>{
     if(!g||typeof g!=='object')return null;
-    return {settled:cnt(g.settled),delta_log_loss:num(g.delta_log_loss),
+    return {settled:cnt(g.settled),unique_target_windows:cnt(g.unique_target_windows),
+      delta_log_loss:num(g.delta_log_loss),
       delta_log_loss_ci95:ci(g.delta_log_loss_ci95),delta_brier:num(g.delta_brier),
-      delta_brier_ci95:ci(g.delta_brier_ci95),accuracy:num(g.accuracy),
-      baseline_accuracy:num(g.baseline_accuracy),days:cnt(g.days)};
+      delta_brier_ci95:ci(g.delta_brier_ci95),accuracy:probability(g.accuracy),
+      baseline_accuracy:probability(g.baseline_accuracy),days:cnt(g.days)};
   };
   const tests=[];
   for(const t of (Array.isArray(value.tests)?value.tests.slice(0,8):[])){
@@ -230,7 +235,7 @@ function cleanLiveGrading(value){
       id:str(t.id,40),title:str(t.title,80),kind:str(t.kind,30),venue:str(t.venue,30),
       status:str(t.status,40),verdict:str(t.verdict,20),
       floors:floors(t.floors),legs:legs(t.legs),
-      calls:(t.calls&&typeof t.calls==='object')?{n:cnt(t.calls.n),mean_net:num(t.calls.mean_net),win_rate:num(t.calls.win_rate)}:null,
+      calls:(t.calls&&typeof t.calls==='object')?{n:cnt(t.calls.n),mean_net:num(t.calls.mean_net),win_rate:probability(t.calls.win_rate)}:null,
       observations:cnt(t.observations),
       per_asset:perAsset(t.per_asset),
       coverage:(t.coverage&&typeof t.coverage==='object')?{
@@ -238,13 +243,13 @@ function cleanLiveGrading(value){
         window_exclusions:excl(t.coverage.window_exclusions),
         observation_exclusions:excl(t.coverage.observation_exclusions),
         exclusions:excl(t.coverage.exclusions),
-        fee_verified_rate:num(t.coverage.fee_verified_rate)}:null,
+        fee_verified_rate:probability(t.coverage.fee_verified_rate)}:null,
       accrual_deadline:isoOrNull(t.accrual_deadline),
       days_to_deadline:cnt(t.days_to_deadline),
       day_block_interval:ci(t.day_block_interval),
-      win_rate:num(t.win_rate),
+      win_rate:probability(t.win_rate),
       registered:(t.registered&&typeof t.registered==='object')?{
-        band:Array.isArray(t.registered.band)?t.registered.band.slice(0,2).map(num):null,
+        band:Array.isArray(t.registered.band)?t.registered.band.slice(0,2).map(probability):null,
         deadline:str(t.registered.deadline,20),rule:str(t.registered.rule,300)}:null,
       live_counters:null,
       note:str(t.note,500)
@@ -265,6 +270,8 @@ function cleanLiveGrading(value){
         status:str(c.status,30),verdict:str(c.verdict,10),
         graded_rows:cnt(c.graded_rows),calls:cnt(c.calls),days:cnt(c.days),
         blocker:str(c.blocker,300),progress:str(c.progress,90),
+        grading_version:str(c.grading_version,60),
+        cluster_unit:c.cluster_unit==='asset_target_clock'?c.cluster_unit:null,
         floors:floors(c.floors),evaluated_at:isoOrNull(c.evaluated_at)});
     }
   }
@@ -278,6 +285,7 @@ function cleanLiveGrading(value){
     status:str(value.status,40),
     tests,
     live_model:lm?{id:'live_model',title:str(lm.title,90),status:str(lm.status,40),
+      baseline_kind:lm.baseline_kind==='smoothed_historical_up_rate'?lm.baseline_kind:null,
       last_24h:grade(lm.last_24h),last_7d:grade(lm.last_7d),
       per_horizon_7d:perHorizon,note:str(lm.note,400)}:null,
     candidates:cb?{status:str(cb.status,30),snapshot_at:isoOrNull(cb.snapshot_at),

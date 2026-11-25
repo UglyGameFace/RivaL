@@ -52,7 +52,6 @@ CREATE TABLE IF NOT EXISTS {OUTCOMES_TABLE} (
 # backfill burst from crowding out the snapshot collectors.
 MAX_PM_PER_CYCLE = 40
 MAX_KALSHI_PER_CYCLE = 40
-_SNAPSHOT_SCAN = 4000
 
 
 def _parse_time(value) -> datetime | None:
@@ -93,26 +92,45 @@ class ThresholdOutcomeSettler:
         due: dict[str, list[dict]] = {"polymarket": [], "kalshi": []}
         seen: set[tuple[str, str]] = set()
         with self.store.connect() as conn:
-            # Column aliases are load-bearing: Postgres rows arrive as
-            # dicts keyed by the SELECT's output names, SQLite rows as
-            # tuples read by position. The normalizer below expects
-            # "key"/"expiry" -- without the aliases the dict shape has
-            # neither and _due dies with KeyError before recording
-            # anything (the production failure this fixes: the settler
-            # ran hourly from 2026-11-24 and recorded zero outcomes).
+            # Two load-bearing details:
+            # - Column aliases: Postgres rows arrive as dicts keyed by
+            #   the SELECT's output names, SQLite rows as tuples read
+            #   by position. The normalizer below expects
+            #   "key"/"expiry" -- without the aliases the dict shape
+            #   has neither and _due dies with KeyError before
+            #   recording anything (the production failure this fixes:
+            #   the settler ran hourly from 2026-11-24 and recorded
+            #   zero outcomes).
+            # - Latest snapshot PER MARKET (the snapshot tables' keys
+            #   make (market, snapshot_at) unique, so the MAX join
+            #   yields one row per market). The previous flat
+            #   latest-4000-rows scan went blind to any market whose
+            #   last snapshot aged past the window -- at ~1,400 Kalshi
+            #   snapshot rows an hour that window is under three
+            #   hours, so the markets that expired while the settler
+            #   was broken (and any future gap of the same length)
+            #   could never be recorded at all.
             pm_rows = conn.execute(
-                "SELECT condition_id AS key, asset, contract_type,"
-                " strike_low, strike_high, end_date AS expiry"
+                "SELECT s.condition_id AS key, s.asset, s.contract_type,"
+                " s.strike_low, s.strike_high, s.end_date AS expiry"
+                " FROM rival_threshold_market_snapshots s"
+                " JOIN (SELECT condition_id, MAX(snapshot_at) AS latest"
                 " FROM rival_threshold_market_snapshots"
-                " WHERE end_date IS NOT NULL"
-                " ORDER BY snapshot_at DESC LIMIT ?", (_SNAPSHOT_SCAN,)
+                " GROUP BY condition_id) m"
+                " ON m.condition_id = s.condition_id"
+                " AND m.latest = s.snapshot_at"
+                " WHERE s.end_date IS NOT NULL", ()
             ).fetchall()
             k_rows = conn.execute(
-                "SELECT market_ticker AS key, asset, contract_type,"
-                " strike_low, strike_high, close_time AS expiry"
+                "SELECT s.market_ticker AS key, s.asset, s.contract_type,"
+                " s.strike_low, s.strike_high, s.close_time AS expiry"
+                " FROM rival_kalshi_threshold_snapshots s"
+                " JOIN (SELECT market_ticker, MAX(snapshot_at) AS latest"
                 " FROM rival_kalshi_threshold_snapshots"
-                " WHERE close_time IS NOT NULL"
-                " ORDER BY snapshot_at DESC LIMIT ?", (_SNAPSHOT_SCAN,)
+                " GROUP BY market_ticker) m"
+                " ON m.market_ticker = s.market_ticker"
+                " AND m.latest = s.snapshot_at"
+                " WHERE s.close_time IS NOT NULL", ()
             ).fetchall()
         for raw, venue, key_idx in ((pm_rows, "polymarket", 0),
                                     (k_rows, "kalshi", 0)):

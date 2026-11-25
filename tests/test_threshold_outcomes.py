@@ -169,6 +169,28 @@ class _DictStore:
         return _DictConn(self._inner.connect())
 
 
+def test_settler_finds_markets_buried_beyond_a_flat_scan_window(tmp_path):
+    """An expired market stays discoverable no matter how many newer
+    snapshot rows other markets pile on top of its last one -- the
+    flat latest-N-rows scan lost exactly those markets (every market
+    that expired while the settler was down)."""
+    store = _store(tmp_path)
+    base = datetime(2026, 11, 27, 1, 0, tzinfo=UTC)
+    with store.connect() as conn:
+        for i in range(4100):
+            conn.execute(
+                "INSERT INTO rival_threshold_market_snapshots"
+                " (snapshot_at, asset, contract_type, horizon, series_id,"
+                " series_slug, condition_id, strike_low, end_date) VALUES"
+                " (?, 'BTC', 'above', 'weekly', 1, 'btc-weekly',"
+                " 'cond-open', 99000.0, ?)",
+                ((base + timedelta(minutes=i)).isoformat(), FUTURE))
+    settler = outcomes.ThresholdOutcomeSettler(store)
+    receipt = asyncio.run(settler.settle(_Client(_answers()), now=NOW))
+    assert receipt["polymarket"]["due"] == 2  # cond-yes + cond-split
+    assert outcomes.settled_count(store) == 2
+
+
 def test_settler_records_outcomes_with_dict_rows(tmp_path):
     store = _DictStore(_store(tmp_path))
     settler = outcomes.ThresholdOutcomeSettler(store)

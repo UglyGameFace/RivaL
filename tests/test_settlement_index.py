@@ -163,3 +163,47 @@ def test_ticks_streams_past_the_chunk_boundary(tmp_path):
                  row["receipt_sha256"]),
             )
     assert recorder.ticks(venue="polymarket", asset="BTC") == expected
+
+
+def test_note_drops_stale_and_future_ticks(tmp_path):
+    recorder = _recorder(tmp_path)
+    recorder.note(IndexTick(
+        venue="polymarket", asset="BTC", source_at=T0,
+        received_at=T0 + timedelta(hours=2), value=100.0,
+        avg_60s=None, receipt_sha256="ab" * 32))
+    assert recorder.pending_count() == 0
+    recorder.note(IndexTick(
+        venue="polymarket", asset="BTC", source_at=T0 + timedelta(hours=1),
+        received_at=T0, value=100.0,
+        avg_60s=None, receipt_sha256="ab" * 32))
+    assert recorder.pending_count() == 0
+    recorder.note(_tick(at=T0))
+    assert recorder.pending_count() == 1
+
+
+def test_failed_flush_keeps_the_tick_for_retry(tmp_path):
+    import pytest
+
+    class FlakyStore:
+        def __init__(self, inner):
+            self.inner = inner
+            self.fail = True
+
+        def connect(self):
+            if self.fail:
+                raise RuntimeError("db down")
+            return self.inner.connect()
+
+    flaky = FlakyStore(SQLiteHotStore(tmp_path / "idx.sqlite"))
+    recorder = SettlementIndexRecorder(flaky)
+    recorder.note(_tick(at=T0, value=100.0))
+    with pytest.raises(RuntimeError):
+        recorder.flush()
+    # The tick is still pending and the throttle clock has not moved:
+    # the retry must be able to write the very same tick.
+    assert recorder.pending_count() == 1
+    flaky.fail = False
+    assert recorder.flush() == 1
+    assert recorder.pending_count() == 0
+    rows = recorder.ticks(venue="polymarket", asset="BTC")
+    assert len(rows) == 1 and rows[0]["value"] == 100.0

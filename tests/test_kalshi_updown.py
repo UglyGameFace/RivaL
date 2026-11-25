@@ -152,3 +152,11 @@ def test_challenger_scored_against_kalshi_on_the_same_event(tmp_path):
         assert updown.challenger_summary("flow_v2", days=36500)["contracts"] == 0
     finally:
         store.close()
+
+
+def test_time_fails_closed_on_naive_timestamps():
+    from parlay_bot.perpetuals.kalshi_updown import _time
+
+    assert _time("2026-11-24T12:00:00") is None
+    assert _time("2026-11-24T12:00:00+00:00") is not None
+    assert _time(None) is None

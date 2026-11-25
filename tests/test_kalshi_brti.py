@@ -7,7 +7,7 @@ throwaway key generated for these tests only -- it guards nothing.
 import base64
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -50,26 +50,31 @@ IyGOE5vFNEGJrGr24KmtGzE=
 -----END PRIVATE KEY-----"""
 
 RECEIVED = datetime(2026, 11, 20, 12, 0, 1, tzinfo=UTC)
+# The docs example's own timestamps are from 2024; a live frame is
+# stamped at receipt time, and the parser now rejects stale frames,
+# so the fixture stamps its frame one second before RECEIVED.
+FRAME_AT = RECEIVED - timedelta(seconds=1)
+FRAME_MS = int(FRAME_AT.timestamp() * 1000)
 
 
 def _docs_message(**overrides):
     """The example frame from Kalshi's cfbenchmarks_value documentation."""
     message = {
         "type": "cfbenchmarks_value",
-        "sending_ts_ms": 1669149841234,
+        "sending_ts_ms": FRAME_MS,
         "sid": 1,
         "seq": 42,
         "msg": {
             "index_id": "BRTI",
-            "received_at": 1710000000123,
+            "received_at": FRAME_MS,
             "data": json.dumps({
                 "type": "value", "id": "BRTI",
-                "time": 1710000000123, "value": "68000.12",
+                "time": FRAME_MS, "value": "68000.12",
             }),
             "avg_60s_data": {
                 "value": "68000.12000000", "window_size": 3,
-                "window_start_ts_ms": 1709999940123,
-                "window_end_ts_exclusive": 1710000000123,
+                "window_start_ts_ms": FRAME_MS - 60000,
+                "window_end_ts_exclusive": FRAME_MS,
             },
         },
     }
@@ -84,7 +89,7 @@ def test_parse_docs_example_frame():
     assert tick.asset == "BTC"
     assert tick.value == pytest.approx(68000.12)
     assert tick.avg_60s == pytest.approx(68000.12)
-    assert tick.source_at == datetime.fromtimestamp(1710000000123 / 1000, UTC)
+    assert tick.source_at == FRAME_AT
     assert tick.received_at == RECEIVED
     assert len(tick.receipt_sha256) == 64
 
@@ -96,7 +101,7 @@ def test_parse_maps_each_index_id(index_id, asset):
     message = _docs_message()
     message["msg"]["index_id"] = index_id
     message["msg"]["data"] = json.dumps({
-        "type": "value", "id": index_id, "time": 1710000000123, "value": "100.5"})
+        "type": "value", "id": index_id, "time": FRAME_MS, "value": "100.5"})
     tick = parse_cfbenchmarks_message(message, received_at=RECEIVED)
     assert tick is not None and tick.asset == asset
 
@@ -106,10 +111,10 @@ def test_parse_maps_each_index_id(index_id, asset):
     lambda m: m["msg"].update({"index_id": "DOGEUSD_RTI"}),
     lambda m: m["msg"].update({"data": "not json"}),
     lambda m: m["msg"].update({"data": json.dumps(
-        {"type": "value", "id": "ETHUSD_RTI", "time": 1710000000123,
+        {"type": "value", "id": "ETHUSD_RTI", "time": FRAME_MS,
          "value": "1.0"})}),  # payload id disagrees with index_id
     lambda m: m["msg"].update({"data": json.dumps(
-        {"type": "value", "id": "BRTI", "time": 1710000000123,
+        {"type": "value", "id": "BRTI", "time": FRAME_MS,
          "value": "-3"})}),  # unusable price
     lambda m: m.update({"msg": "garbage"}),
 ])
@@ -133,13 +138,13 @@ def test_parse_falls_back_to_kalshi_receipt_time():
         {"type": "value", "id": "BRTI", "value": "1.0"})
     tick = parse_cfbenchmarks_message(message, received_at=RECEIVED)
     assert tick is not None
-    assert tick.source_at == datetime.fromtimestamp(1710000000123 / 1000, UTC)
+    assert tick.source_at == FRAME_AT
 
 
 def test_parse_accepts_a_dict_payload_and_missing_average():
     message = _docs_message()
     message["msg"]["data"] = {
-        "type": "value", "id": "BRTI", "time": 1710000000123, "value": "1.5"}
+        "type": "value", "id": "BRTI", "time": FRAME_MS, "value": "1.5"}
     message["msg"].pop("avg_60s_data")
     tick = parse_cfbenchmarks_message(message, received_at=RECEIVED)
     assert tick is not None and tick.avg_60s is None
@@ -214,3 +219,29 @@ def test_configured_client_accepts_ticks_to_its_sink():
     assert len(seen) == 1 and seen[0].asset == "BTC"
     assert client.accept({"type": "subscribed"}, received_at=RECEIVED) == 0
     assert client.status()["accepted_index_samples"] == 1
+
+
+def _frame_at(when):
+    message = _docs_message()
+    ms = int(when.timestamp() * 1000)
+    message["msg"]["data"] = json.dumps(
+        {"type": "value", "id": "BRTI", "time": ms, "value": "68000.12"})
+    return message
+
+
+def test_parse_drops_stale_frames():
+    stale = RECEIVED - timedelta(hours=2)
+    assert parse_cfbenchmarks_message(
+        _frame_at(stale), received_at=RECEIVED) is None
+
+
+def test_parse_drops_future_frames():
+    future = RECEIVED + timedelta(hours=1)
+    assert parse_cfbenchmarks_message(
+        _frame_at(future), received_at=RECEIVED) is None
+
+
+def test_parse_accepts_a_minute_old_frame():
+    fresh = RECEIVED - timedelta(seconds=60)
+    tick = parse_cfbenchmarks_message(_frame_at(fresh), received_at=RECEIVED)
+    assert tick is not None and tick.source_at == fresh

@@ -33,10 +33,15 @@ import json
 import math
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 VENUES = ("polymarket", "kalshi")
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
+# Defence in depth at the sink: parsers already bound tick age, but a
+# tick that reaches the recorder stale or future-dated is dropped, not
+# persisted as a live print.
+MAX_TICK_AGE = timedelta(minutes=3)
+MAX_TICK_FUTURE = timedelta(seconds=3)
 # Rows per fetchmany chunk when streaming evaluator-side reads (the #727
 # pattern): identical ORDER BY order and contents to fetchall(), without
 # materializing a whole series before the first row is processed.
@@ -130,6 +135,9 @@ class SettlementIndexRecorder:
             return
         if tick.source_at.utcoffset() is None or tick.received_at.utcoffset() is None:
             return
+        if tick.received_at - tick.source_at > MAX_TICK_AGE \
+                or tick.source_at - tick.received_at > MAX_TICK_FUTURE:
+            return
         with self._lock:
             key = (tick.venue, tick.asset)
             pending = self._pending.get(key)
@@ -148,8 +156,6 @@ class SettlementIndexRecorder:
                 if last is None or (
                         tick.source_at - last).total_seconds() >= self.throttle_seconds:
                     due.append(tick)
-                    self._persisted_at[key] = tick.source_at
-                    del self._pending[key]
             if not due:
                 return 0
             with self.store.connect() as conn:
@@ -167,6 +173,15 @@ class SettlementIndexRecorder:
                          tick.receipt_sha256),
                     )
                     written += cursor.rowcount
+            # State advances only after the write has succeeded: if the
+            # insert raised, the pending ticks and the throttle clock
+            # are untouched, so the next flush retries the same ticks
+            # instead of having permanently lost them.
+            for tick in due:
+                key = (tick.venue, tick.asset)
+                self._persisted_at[key] = tick.source_at
+                if self._pending.get(key) is tick:
+                    del self._pending[key]
         return written
 
     def ticks(self, *, venue: str, asset: str) -> list[dict]:

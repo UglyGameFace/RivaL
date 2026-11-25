@@ -255,6 +255,23 @@ function cleanLiveGrading(value){
   if(lm&&lm.per_horizon_7d&&typeof lm.per_horizon_7d==='object'){
     for(const k of Object.keys(lm.per_horizon_7d).slice(0,6))perHorizon[k]=grade(lm.per_horizon_7d[k]);
   }
+  const cb=(value.candidates&&typeof value.candidates==='object')?value.candidates:null;
+  const candList=[];
+  if(cb&&Array.isArray(cb.candidates)){
+    for(const c of cb.candidates.slice(0,40)){
+      if(!c||typeof c!=='object')continue;
+      candList.push({
+        id:str(c.id,60),display:str(c.display,90),screen:str(c.screen,10),
+        status:str(c.status,30),verdict:str(c.verdict,10),
+        graded_rows:cnt(c.graded_rows),calls:cnt(c.calls),days:cnt(c.days),
+        blocker:str(c.blocker,300),progress:str(c.progress,90),
+        floors:floors(c.floors),evaluated_at:isoOrNull(c.evaluated_at)});
+    }
+  }
+  const candCounts=(cb&&cb.counts&&typeof cb.counts==='object')?{
+    total:cnt(cb.counts.total),passed:cnt(cb.counts.passed),
+    killed:cnt(cb.counts.killed),not_measurable:cnt(cb.counts.not_measurable),
+    data_blocked:cnt(cb.counts.data_blocked),evaluated:cnt(cb.counts.evaluated)}:null;
   return {
     schema:str(value.schema,40),
     computed_at:isoOrNull(value.computed_at),
@@ -262,7 +279,9 @@ function cleanLiveGrading(value){
     tests,
     live_model:lm?{id:'live_model',title:str(lm.title,90),status:str(lm.status,40),
       last_24h:grade(lm.last_24h),last_7d:grade(lm.last_7d),
-      per_horizon_7d:perHorizon,note:str(lm.note,400)}:null
+      per_horizon_7d:perHorizon,note:str(lm.note,400)}:null,
+    candidates:cb?{status:str(cb.status,30),snapshot_at:isoOrNull(cb.snapshot_at),
+      counts:candCounts,candidates:candList,note:str(cb.note,300)}:null
   };
 }
 

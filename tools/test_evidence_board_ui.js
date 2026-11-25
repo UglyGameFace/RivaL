@@ -225,6 +225,17 @@ assert.match(cx.opsGrading(),/graded as settlements land/);
 assert.match(cx.opsGrading(),/90 \/ 2,500/);
 assert.match(cx.opsGrading(),/passing so far/);
 assert.match(cx.opsGrading(),/Live model — rolling grade/);
+cx.state.evidence.live_grading.candidates={status:'recorded',snapshot_at:at,
+ counts:{total:2,passed:0,killed:1,not_measurable:1,data_blocked:0,evaluated:0},
+ candidates:[{id:'llm-mask-btc-trend',display:'AI-suggested mask · BTC',screen:'G-D',
+  status:'NOT_MEASURABLE',verdict:null,graded_rows:0,calls:0,days:0,
+  blocker:'its exchange features were not recorded; no grader reads them yet',progress:null,floors:{},evaluated_at:at},
+ {id:'gen-book-all',display:'Book model · all book signals',screen:'G-A',
+  status:'EVALUATED',verdict:'KILL',graded_rows:2100,calls:2000,days:14,
+  blocker:null,progress:null,floors:{},evaluated_at:at}],note:'recorded by the last workbench run'};
+assert.match(cx.opsGrading(),/Candidate factory/);
+assert.match(cx.opsGrading(),/no grader reads them yet/);
+assert.match(cx.opsGrading(),/1 not measurable yet/);
 cx.state.evidence.live_grading={status:'read_unavailable'};
 assert.match(cx.opsGrading(),/unavailable in the latest receipt/);
 cx.state.evidence.live_grading=null;

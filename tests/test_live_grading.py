@@ -141,3 +141,29 @@ def test_read_live_grading_degrades_per_block_on_an_empty_store(store):
     assert n3["status"] == "external_recorder"
     assert n3["live_counters"] is None
     assert section["live_model"]["last_7d"]["settled"] == 0
+
+
+def test_candidates_block_names_blockers(store):
+    from parlay_bot.perpetuals import replay_generation as gen
+
+    at = "2026-11-20T17:00:00+00:00"
+    gen.record_results(store, [
+        {"candidate_id": "llm-mask-btc-trend", "screen": "G-D",
+         "factory": "lab", "display": "AI-suggested mask · BTC",
+         "status": "NOT_MEASURABLE", "verdict": None, "graded_rows": 0,
+         "calls": 0, "days": 0, "evaluated_at": at,
+         "detail": {"cause": "exchange_features_not_recorded"}},
+        {"candidate_id": "gen-book-all", "screen": "G-A",
+         "factory": "lab", "display": "Book model · all book signals",
+         "status": "EVALUATED", "verdict": "KILL", "graded_rows": 2100,
+         "calls": 2000, "days": 14, "evaluated_at": at, "detail": {}},
+    ])
+    block = live_grading.read_live_grading(store, NOW)["candidates"]
+    assert block["status"] == "recorded"
+    assert block["snapshot_at"] == at
+    assert block["counts"] == {"total": 2, "passed": 0, "killed": 1,
+                               "not_measurable": 1, "data_blocked": 0,
+                               "evaluated": 0}
+    by_id = {c["id"]: c for c in block["candidates"]}
+    assert "no grader reads them yet" in by_id["llm-mask-btc-trend"]["blocker"]
+    assert by_id["gen-book-all"]["blocker"] is None

@@ -313,4 +313,56 @@ def read_live_grading(store, now: datetime | None = None) -> dict:
         out["live_model"] = _live_model_block(store, clock)
     except Exception:  # noqa: BLE001
         out["live_model"] = {"id": "live_model", "status": "read_unavailable"}
+    try:
+        out["candidates"] = _candidates_block(store)
+    except Exception:  # noqa: BLE001
+        out["candidates"] = {"status": "read_unavailable"}
     return out
+
+
+def _candidates_block(store) -> dict:
+    """The candidate factory's recorded state: EVERY candidate with
+    its status, its specific blocker and its floor progress, from the
+    workbench results table (written by workbench runs; the snapshot
+    timestamp travels with it so a stale snapshot reads as stale).
+    Felix (2026-11-24): the "not measurable yet" pile must be
+    watchable draining, candidate by candidate -- never a bare count.
+    """
+    from parlay_bot.perpetuals import replay_generation
+
+    record = replay_generation.read_results_for_board(store)
+    candidates = []
+    counts = {"total": 0, "passed": 0, "killed": 0,
+              "not_measurable": 0, "data_blocked": 0, "evaluated": 0}
+    snapshot_at = None
+    for cand in record.get("candidates") or []:
+        counts["total"] += 1
+        if cand.get("verdict") == "PASS":
+            counts["passed"] += 1
+        elif cand.get("verdict") == "KILL":
+            counts["killed"] += 1
+        elif cand.get("status") == "NOT_MEASURABLE":
+            counts["not_measurable"] += 1
+        elif cand.get("status") == "DATA-BLOCKED":
+            counts["data_blocked"] += 1
+        else:
+            counts["evaluated"] += 1
+        evaluated = cand.get("evaluated_at")
+        if isinstance(evaluated, str) and (
+                snapshot_at is None or evaluated > snapshot_at):
+            snapshot_at = evaluated
+        candidates.append({
+            "id": cand.get("candidate_id"), "display": cand.get("display"),
+            "screen": cand.get("screen"), "status": cand.get("status"),
+            "verdict": cand.get("verdict"),
+            "graded_rows": cand.get("graded_rows"),
+            "calls": cand.get("calls"), "days": cand.get("days"),
+            "blocker": cand.get("blocker"), "progress": cand.get("progress"),
+            "floors": cand.get("floors"),
+            "evaluated_at": evaluated,
+        })
+    return {"status": "recorded", "snapshot_at": snapshot_at,
+            "counts": counts, "candidates": candidates,
+            "note": ("Recorded by the last workbench run; candidates "
+                     "re-grade when the workbench runs, and their "
+                     "blockers name what each one is waiting on.")}

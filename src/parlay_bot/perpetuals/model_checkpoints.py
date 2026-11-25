@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import threading
 from datetime import UTC, datetime
 
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.learning import WalkForwardResult, _sigmoid
+
+_LOG = logging.getLogger(__name__)
 
 FEATURE_CONTRACT = "relative-rsi-macd-bollinger-atr-volume-40x5m-v1"
 TARGET_CONTRACT = "future-5m-close-above-reference-close-with-horizon-delay-v1"
@@ -118,6 +121,7 @@ class LiveModelCheckpoints:
         # trusted when a different process has changed the durable checkpoint.
         self._checkpoint_cache = {}
         self._cache_hits = 0
+        self._skipped_untrained = 0
 
     def _cache_checkpoint(self, identity, row, state_json: str):
         # The cache holds the persisted JSON text, not the parsed state: a
@@ -326,10 +330,22 @@ class LiveModelCheckpoints:
                 self._loaded += 1
             cursor = tuple(state["cursor"]) if state["cursor"] else None
             trained = 0
+            skipped_untrained = 0
             for sample in sorted(ordered, key=lambda s: (utc(s.label_known_at), utc(s.issued_at))):
                 known, issued = utc(sample.label_known_at), utc(sample.issued_at)
                 key = (known.isoformat(), issued.isoformat())
-                if known > now or (cursor is not None and key <= cursor):
+                if known > now:
+                    continue
+                if cursor is not None and key <= cursor:
+                    # Below the high-water cursor: normally already trained.
+                    # A matured sample first presented only now (its label
+                    # arrived out of order) was never trained, and the cursor
+                    # would hide it forever — count it so the skip is visible
+                    # instead of silent (defect sweep D-2). Training order is
+                    # deliberately unchanged: the production builder presents
+                    # samples in label order, so this stays at zero there.
+                    if key[1] not in state["recent"]:
+                        skipped_untrained += 1
                     continue
                 cutoff = state["historical_training_cutoff"]
                 if cutoff and known <= utc(datetime.fromisoformat(cutoff)):
@@ -343,6 +359,13 @@ class LiveModelCheckpoints:
                 state["cursor"] = list(key)
                 cursor = key
                 trained += 1
+            if skipped_untrained:
+                self._skipped_untrained += skipped_untrained
+                _LOG.warning(
+                    "RivaL checkpoint fit skipped %d matured sample(s) below "
+                    "the training cursor with no trained fingerprint "
+                    "(stream %s %s %s %s); they do not train under the "
+                    "cursor rule", skipped_untrained, *identity[:4])
             # Bounded source-overlap validation; learned weights retain all
             # prior updates, even when their candles leave the hot window.
             state["recent"] = {
@@ -415,6 +438,7 @@ class LiveModelCheckpoints:
                 "latest_trained_at": max((r["trained_at"] for r in rows), default=None),
                 "reused_this_process": self._loaded, "fitted_this_process": self._fitted,
                 "verified_checkpoint_cache_hits": self._cache_hits,
+                "skipped_untrained_this_process": self._skipped_untrained,
                 "historical_seeded_checkpoints": sum(bool(s and s["historical_seed"]) for s in valid),
                 "feature_contract": self.feature_contract, "target_contract": self.target_contract,
                 "model_version": STATE_VERSION}

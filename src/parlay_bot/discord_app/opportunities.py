@@ -16,6 +16,7 @@ from parlay_bot.discord_app.embed_text import fit_embed_field_value
 from parlay_bot.discord_app.out_the_gate import (
     JUST_WATCH,
     below_line_label,
+    direction_of,
     lean_line,
     live_lean,
     otg_snapshot,
@@ -217,7 +218,7 @@ def recent_watches(
                 "price_observed_at": observed,
                 "model_version": selected_version,
                 "probability_up": probability,
-                "direction": "UP" if probability > 0.5 else "DOWN",
+                "direction": direction_of(probability),
                 "direction_probability": max(probability, 1 - probability),
                 "training_evaluated": selected_training,
             })
@@ -369,7 +370,7 @@ def recent_multi_watches(
                 "issued": issued, "target": target, "price": price,
                 "price_observed_at": observed,
                 "probability_up": probability,
-                "direction": "UP" if probability > 0.5 else "DOWN",
+                "direction": direction_of(probability),
                 "direction_probability": max(probability, 1 - probability),
                 "training_evaluated": 0,
                 "engine": "multi",

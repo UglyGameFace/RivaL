@@ -907,6 +907,13 @@ def summarize_host(report: dict | None) -> tuple[dict, dict]:
             lineage.get("streams_with_verified_weight_updates")
         )
         db["compared_streams"] = _nonnegative(lineage.get("streams_with_before_after"))
+    elif isinstance(lineage, dict) and lineage.get("status") in (
+        "read_unavailable", "unavailable"
+    ):
+        # The in-host lineage read itself failed: keep that distinct from
+        # "no lineage recorded" so the per-source detail can say failed
+        # read instead of no_records_found (defect sweep D-4).
+        db["status"] = "read_unavailable"
     paper = report.get("forward_proof")
     if isinstance(paper, dict) and paper.get("status") == "recorded":
         db["qualified_paper_scopes"] = _nonnegative(paper.get("qualified_paper_scopes"))
@@ -1448,6 +1455,14 @@ def _host_source_details(host: dict, db: dict, errors: dict,
         details["postgres"] = _source_detail("ok", None, checked_at)
     elif "database" in errors:
         details["postgres"] = _error_detail(errors["database"], checked_at)
+    elif db.get("status") == "read_unavailable":
+        # The in-host lineage read failed: a failed read, not an empty
+        # database. Calling it no_records_found hid exactly the
+        # Postgres-distress episodes this receipt exists to surface
+        # (defect sweep D-4). Every other state (no_lineage, or the host
+        # read itself unavailable) keeps the no_records label.
+        details["postgres"] = _source_detail(
+            "failed_read", "read_unavailable", checked_at)
     else:
         details["postgres"] = _source_detail(
             "no_records", "no_records_found", checked_at)

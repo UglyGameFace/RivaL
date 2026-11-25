@@ -444,7 +444,7 @@ PERP_MODEL = "prospective-logistic-persistent-v3"
 
 # Table shapes copied from forward_audit._initialize_schema DDL.
 _GD_DDL = (
-    "CREATE TABLE perp_forward_audit ("
+    ("CREATE TABLE perp_forward_audit ("
     " venue TEXT NOT NULL, contract TEXT NOT NULL, quote TEXT NOT NULL,"
     " asset TEXT NOT NULL, horizon_minutes INTEGER NOT NULL,"
     " model_version TEXT NOT NULL, reference_opened_at TEXT NOT NULL,"
@@ -456,8 +456,8 @@ _GD_DDL = (
     " outcome_up INTEGER, realized_close DOUBLE PRECISION,"
     " model_brier DOUBLE PRECISION, baseline_brier DOUBLE PRECISION,"
     " PRIMARY KEY (venue, contract, quote, horizon_minutes,"
-    " model_version, reference_opened_at))",
-    "CREATE TABLE rival_forward_model_lineage ("
+    " model_version, reference_opened_at))"),
+    ("CREATE TABLE rival_forward_model_lineage ("
     " venue TEXT NOT NULL, contract TEXT NOT NULL, quote TEXT NOT NULL,"
     " horizon_minutes INTEGER NOT NULL, model_version TEXT NOT NULL,"
     " reference_opened_at TEXT NOT NULL, issued_at TEXT NOT NULL,"
@@ -467,7 +467,7 @@ _GD_DDL = (
     " online_training_updates INTEGER NOT NULL,"
     " historical_seed_sha256 TEXT,"
     " PRIMARY KEY (venue, contract, quote, horizon_minutes,"
-    " model_version, reference_opened_at))",
+    " model_version, reference_opened_at))"),
 )
 
 
@@ -631,8 +631,8 @@ def test_gd_metrics_match_a_second_hand_computation(tmp_path):
                 + (_math.log(base) if y else _math.log(1 - base)))
             deltas_brier.append((g - y) ** 2 - (base - y) ** 2)
             price = base if g > 0.5 else 1 - base
-            call_nets.append(((1.0 if (y == 1) == (g > 0.5) else 0.0)
-                              - price))
+            call_nets.append((1.0 if (y == 1) == (g > 0.5) else 0.0)
+                              - price)
     score = cand["score"]
     # First score day is fit-floor-skipped (280 fit rows < 300).
     assert score["rows"] == len(deltas_ll) == 80

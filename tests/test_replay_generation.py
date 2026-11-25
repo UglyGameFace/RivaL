@@ -196,7 +196,7 @@ def test_estate_coverage_and_not_measurable(tmp_path):
                 " strike, option_type, mark_price, mark_iv) VALUES"
                 " (?, 'BTC', ?, '2026-11-27T08:00:00+00:00', 100000.0,"
                 " 'call', 0.05, 50.0)",
-                (f"2026-11-20T0{i}:00:00+00:00", f"BTC-27NOV26-100000-C"))
+                (f"2026-11-20T0{i}:00:00+00:00", "BTC-27NOV26-100000-C"))
         conn.execute(
             "INSERT INTO rival_threshold_market_snapshots"
             " (snapshot_at, asset, contract_type, horizon, series_id,"

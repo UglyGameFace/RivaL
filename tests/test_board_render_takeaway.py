@@ -262,3 +262,35 @@ def test_contest_text_within_field_limit():
     assert "\n**Takeaway:**" in text
     assert len(fit_embed_field_value(text)) <= 1024
     assert len(text) <= 1024
+
+
+def test_workbench_takeaway_closest_never_names_a_decided_candidate(tmp_path):
+    # Regression (live board, 2026-11-25): the takeaway named a
+    # KILLED book model "Closest" because its long-met floors and
+    # 26k graded rows topped the floor ranking. Decided candidates
+    # are out of the running by definition.
+    store = SQLiteHotStore(tmp_path / "decided.sqlite")
+    gen.record_results(store, [
+        _entry("dead", "G-A", "EVALUATED",
+               {"floors": {"rows": {"have": 26198, "need": 500},
+                           "calls": {"have": 26198, "need": 250}}},
+               verdict="KILL", display="Dead model",
+               graded_rows=26198, calls=26198, days=19),
+        _entry("live", "G-D", "NOT_MEASURABLE",
+               {"floors": {"rows": {"have": 120, "need": 500},
+                           "calls": {"have": 30, "need": 100}}},
+               display="Live candidate", graded_rows=120, calls=30,
+               days=2),
+    ])
+    text = workbench_takeaway(gen.read_results_for_board(store))
+    assert "Closest: Live candidate" in text
+    assert "Closest: Dead model" not in text
+    # With only the decided candidate recorded, nothing is close.
+    store2 = SQLiteHotStore(tmp_path / "only-dead.sqlite")
+    gen.record_results(store2, [
+        _entry("dead", "G-A", "EVALUATED",
+               {"floors": {"rows": {"have": 26198, "need": 500}}},
+               verdict="KILL", display="Dead model",
+               graded_rows=26198, calls=26198, days=19)])
+    text2 = workbench_takeaway(gen.read_results_for_board(store2))
+    assert "Nothing is close to qualifying yet." in text2

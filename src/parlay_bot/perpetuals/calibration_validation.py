@@ -12,7 +12,12 @@ from datetime import UTC, datetime, timedelta
 MIN_UNIQUE_WINDOWS = 150
 MIN_UTC_DAYS = 21
 MAX_ECE = 0.10
-MIN_PAIRED_BRIER_GAIN = 0.005
+# Corrected gain leg (research sweep #3; crypto-zero audit 2026-11-24):
+# the old 0.005 minimum was the same mis-scaled bar as governance's --
+# a ~7.07pp corrected bias by the Murphy identity. The leg is now
+# positivity of the paired gain; the day-block lower bound and the
+# 80%-positive-days rule below supply the significance discipline.
+MIN_PAIRED_BRIER_GAIN = 0.0
 
 
 def unique_window_calibration(rows: list[dict]) -> dict:
@@ -79,7 +84,7 @@ def unique_window_calibration(rows: list[dict]) -> dict:
         status, reason = "insufficient", "Need 150 unique UTC outcomes across 21 days"
     elif ece > MAX_ECE:
         status, reason = "not_calibrated", "Observed probabilities fail calibration screen"
-    elif prior_brier - brier < MIN_PAIRED_BRIER_GAIN:
+    elif prior_brier - brier <= MIN_PAIRED_BRIER_GAIN:
         status, reason = "not_better", "Model does not beat the same-window baseline"
     elif lower is None or lower <= 0 or positive < math.ceil(.8*d):
         status, reason = "unstable", "Paired day-block improvement is not stable"

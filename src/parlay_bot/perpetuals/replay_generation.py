@@ -32,7 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 
 from parlay_bot.perpetuals import replay_workbench as wb
 
@@ -930,9 +930,10 @@ def _results_table_exists(store) -> bool:
 # carries its specific blocker and its progress toward its floors.
 CAUSE_TEXT = {
     "exchange_features_not_recorded": (
-        "legacy registration: its exchange features were not on the "
-        "settled record it was registered against; the G-D grader "
-        "now reads the recorded vectors on the live model lineage"),
+        "correction: its exchange features ARE recorded on the live "
+        "lineage -- the real blocker was that no grader read them. "
+        "The G-D grader now reads the recorded vectors; it was built "
+        "2026-11-25, and older snapshots carry the old registration"),
     "no_post_cutoff_lineage_rows": (
         "no settled lineage rows with a recorded exchange feature "
         "vector exist for its asset at or after the features column "
@@ -948,6 +949,83 @@ DATA_BLOCKED_TEXT = {
         "for the record window (verified 2026-11-20); the remaining "
         "sources are paid or API-keyed"),
 }
+# Canonical SHORT blocker phrases for the board views. A board line
+# must carry a complete phrase or nothing: the full explanation above
+# appears only in the Full evidence view, and no board render may cut
+# a long blocker mid-sentence to make it fit. A candidate whose
+# recorded blocker has no registered short form falls back to
+# GENERIC_BLOCKER_SHORT -- never to a slice of the long text.
+CAUSE_SHORT_TEXT = {
+    "exchange_features_not_recorded": (
+        "grader built 2026-11-25; grades at the next workbench run"),
+    "no_post_cutoff_lineage_rows": (
+        "waiting for settled rows with recorded features"),
+    "no_settled_threshold_outcomes": (
+        "outcome recorder added; first settlements Nov 27"),
+}
+DATA_BLOCKED_SHORT_TEXT = {
+    "liq-cascade-v1": "needs a paid data source; owner's decision",
+}
+FLOOR_BLOCKER_SHORT = "accruing toward its floors"
+GENERIC_BLOCKER_SHORT = "blocked — full reason in Full evidence"
+_REASON_SHORT_LIMIT = 72
+
+
+def _burn_in_short(detail: dict) -> str | None:
+    """Short blocker for a walk-forward candidate still in burn-in.
+
+    The G-D grader scores nothing until BURN_IN_DAYS scope days have
+    elapsed, so a candidate can sit on tens of thousands of recorded
+    rows with every scored floor at zero -- "rows 0/500" reads as
+    "no data", which is false. When the recorded coverage shows
+    scope rows but zero scored days within the burn-in window, the
+    blocker is the burn-in itself. The scoring-start date is derived
+    from the recorded features cutoff: scope day 1 is the first full
+    day after the cutoff (the column landed 2026-11-20T22:24Z), and
+    the first scored day is scope day BURN_IN_DAYS + 1. Without a
+    parseable cutoff the phrase carries no date rather than a
+    guessed one.
+    """
+    coverage = detail.get("coverage")
+    if not isinstance(coverage, dict):
+        return None
+    try:
+        scope_rows = int(coverage.get("scope_rows") or 0)
+        scope_days = int(coverage.get("scope_days") or 0)
+        scored_days = int(coverage.get("scored_days") or 0)
+    except (TypeError, ValueError):
+        return None
+    if scored_days != 0 or scope_rows <= 0 or scope_days > BURN_IN_DAYS:
+        return None
+    cutoff = coverage.get("features_cutoff")
+    if isinstance(cutoff, str):
+        try:
+            start = (datetime.fromisoformat(cutoff).date()
+                     + timedelta(days=1 + BURN_IN_DAYS))
+        except ValueError:
+            start = None
+        if start is not None:
+            return f"in walk-forward burn-in; scoring starts {start.isoformat()}"
+    return "in walk-forward burn-in; no scored days yet"
+
+
+def _scope_progress(detail: dict) -> str | None:
+    """What a candidate's recorded scope actually holds, e.g.
+    "scope 29,507 rows · 5 days · 0 scored days" -- the antidote to
+    floor progress that shows only zero scored counts."""
+    coverage = detail.get("coverage")
+    if not isinstance(coverage, dict):
+        return None
+    try:
+        scope_rows = int(coverage.get("scope_rows") or 0)
+        scope_days = int(coverage.get("scope_days") or 0)
+        scored_days = int(coverage.get("scored_days") or 0)
+    except (TypeError, ValueError):
+        return None
+    if scope_rows <= 0:
+        return None
+    return (f"scope {scope_rows:,} rows · {scope_days} days · "
+            f"{scored_days} scored days")
 _FLOOR_LABELS = (("calls", "calls"), ("call_days", "days"),
                  ("days", "days"), ("rows", "rows"),
                  ("clusters", "clusters"))
@@ -993,6 +1071,40 @@ def _candidate_blocker(candidate_id: str, status: str | None,
     return None
 
 
+def _candidate_blocker_short(candidate_id: str, status: str | None,
+                             detail: dict) -> str | None:
+    """The canonical short form of a candidate's blocker, or None.
+
+    Mirrors :func:`_candidate_blocker`'s resolution order but only
+    ever returns a complete registered phrase (or a recorded reason
+    short enough to be complete as recorded) -- never a truncation.
+    """
+    if status not in ("NOT_MEASURABLE", "DATA-BLOCKED"):
+        return None
+    reason = detail.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        reason = reason.strip()
+        if len(reason) <= _REASON_SHORT_LIMIT:
+            return reason
+    cause = detail.get("cause")
+    if isinstance(cause, str) and cause in CAUSE_SHORT_TEXT:
+        return CAUSE_SHORT_TEXT[cause]
+    if candidate_id in DATA_BLOCKED_SHORT_TEXT:
+        return DATA_BLOCKED_SHORT_TEXT[candidate_id]
+    burn_in = _burn_in_short(detail)
+    if burn_in:
+        return burn_in
+    _, progress = _floor_progress(detail.get("floors"))
+    if progress:
+        return FLOOR_BLOCKER_SHORT
+    if (isinstance(reason, str) and reason.strip()
+            or isinstance(cause, str) and cause in CAUSE_TEXT
+            or status == "DATA-BLOCKED"
+            and candidate_id in DATA_BLOCKED_TEXT):
+        return GENERIC_BLOCKER_SHORT
+    return None
+
+
 def read_results_for_board(store) -> dict:
     """Latest recorded result per candidate, newest first.
 
@@ -1021,6 +1133,16 @@ def read_results_for_board(store) -> dict:
             if not isinstance(detail, dict):
                 detail = {}
             floors, progress = _floor_progress(detail.get("floors"))
+            scope = _scope_progress(detail)
+            if scope and _burn_in_short(detail):
+                # In burn-in the scored floors are all zero by
+                # construction; the scope it actually holds is the
+                # honest progress display.
+                progress = scope
+            elif scope and progress:
+                progress = f"{scope} · {progress}"
+            elif scope:
+                progress = scope
             latest[item["candidate_id"]] = {
                 "candidate_id": item["candidate_id"],
                 "screen": item["screen"], "factory": item["factory"],
@@ -1031,6 +1153,11 @@ def read_results_for_board(store) -> dict:
                 "evaluated_at": item["evaluated_at"],
                 "blocker": _candidate_blocker(
                     item["candidate_id"], item["status"], detail),
+                "blocker_short": _candidate_blocker_short(
+                    item["candidate_id"], item["status"], detail),
+                "cause": (detail.get("cause")
+                          if isinstance(detail.get("cause"), str)
+                          else None),
                 "floors": floors,
                 "progress": progress,
             }

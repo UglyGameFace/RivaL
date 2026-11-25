@@ -145,6 +145,7 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
         _health_text,
         _scoreboard_text,
         _trials_sections,
+        workbench_takeaway,
         workbench_text,
     )
 
@@ -205,7 +206,10 @@ def build(coin, horizon, reports, *, section, now, venues=(), details_renderer):
         field("Activity", activity_summary(reports, now))
     elif section == "models":
         trials = _trials_sections(reports)
-        embed.description = f"**{coin} · {horizon}m comparisons**\n" + trials["leader"]
+        takeaway = workbench_takeaway(reports.get("workbench")) \
+            if "workbench" in reports else ""
+        embed.description = f"**{coin} · {horizon}m comparisons**\n" \
+            + ((takeaway + "\n") if takeaway else "") + trials["leader"]
         field("XMarket activity · all timeframes", xmarket_summary(reports.get("xmarket"), horizon=horizon),
               "xmarket")
         rows = (reports.get("trials") or {}).get("rows", []) if isinstance(reports.get("trials"), dict) else []

@@ -26,8 +26,9 @@ def _features(ratio=0.7, frac=0.25, overround=0.05):
 
 def _row(*, day_offset=0, ratio=0.7, label=1, p=0.6, baseline=0.5,
          horizon=15, price=0.5, fee_rate=0.0, frac=0.25, overround=0.05,
-         observed_offset=timedelta(hours=2)):
-    issued = T0 + timedelta(days=day_offset)
+         observed_offset=timedelta(hours=2), minute_offset=0):
+    # minute_offset: distinct market per row (see test_replay_workbench).
+    issued = T0 + timedelta(days=day_offset, minutes=minute_offset)
     return {
         "slug": f"btc-updown-15m-{int(issued.timestamp())}-{day_offset}",
         "asset": "BTC", "horizon": horizon, "issued_at": issued,
@@ -50,7 +51,7 @@ def _signal_rows(days=21, per_day=150, *, price=0.5, flip_every=0):
             if flip_every and (i + 1) % flip_every == 0:
                 label = 1 - label
             rows.append(_row(day_offset=d, ratio=ratio, label=label,
-                             price=price))
+                             price=price, minute_offset=i))
     return rows
 
 

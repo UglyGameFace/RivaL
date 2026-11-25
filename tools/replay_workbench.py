@@ -28,7 +28,10 @@ Screens:
                       registered candidates are graded as far as their
                       records allow (NOT MEASURABLE today).
     llm-intake        G-D: the frozen proposer's stored feature masks,
-                      validated, deduplicated, registered.
+                      validated, deduplicated, registered, and graded
+                      against the settled lineage record (the recorded
+                      exchange feature vectors in
+                      rival_forward_model_lineage).
 
 Phase-2 screens record their per-candidate results into the
 workbench's own results table (the Models board reads it). Phase-1
@@ -302,23 +305,41 @@ def main(argv: list[str] | None = None) -> int:
     if args.screen == "llm-intake":
         proposals, rejected = gen.load_llm_proposals(store)
         registrations = gen.llm_registrations(proposals)
-        entries = [{
-            "candidate_id": reg["id"], "screen": reg["screen"],
-            "factory": reg["factory"], "display": reg["display"],
-            "status": reg["status"], "verdict": None,
-            "graded_rows": 0, "calls": 0, "days": 0,
-            "evaluated_at": now.isoformat(),
-            "detail": {"cause": reg["cause"], "asset": reg["asset"],
-                       "mask": reg["mask"],
-                       "proposed_at": reg["proposed_at"]},
-        } for reg in registrations]
+        gd_rows, gd_coverage = gen.load_gd_record(store)
+        graded = gen.screen_llm_masks(gd_rows, registrations)
+        entries = []
+        for reg in registrations:
+            cand = graded["candidates"][reg["id"]]
+            score = cand.get("score") or {}
+            detail = {"legs": cand.get("legs"),
+                      "floors": cand.get("floors"),
+                      "asset": reg["asset"], "mask": reg["mask"],
+                      "proposed_at": reg["proposed_at"],
+                      "coverage": cand.get("coverage")}
+            if cand.get("cause"):
+                detail["cause"] = cand["cause"]
+            if cand.get("reason"):
+                detail["reason"] = cand["reason"]
+            entries.append({
+                "candidate_id": reg["id"], "screen": reg["screen"],
+                "factory": reg["factory"], "display": reg["display"],
+                "status": cand.get("status"),
+                "verdict": cand.get("verdict"),
+                "graded_rows": score.get("rows") or 0,
+                "calls": (score.get("calls") or {}).get("n") or 0,
+                "days": score.get("days") or 0,
+                "evaluated_at": now.isoformat(),
+                "detail": detail,
+            })
         recorded = gen.record_results(store, entries)
         report = gen.base_report("G-D", now=now)
         report.update({
-            "status": "INTAKE",
+            "status": "GRADED",
             "verified_proposals": len(proposals),
             "rejected": rejected,
             "registrations": registrations,
+            "candidates": graded["candidates"],
+            "loader_coverage": gd_coverage,
             "recorded_results": recorded,
             "registry": gen.generation_registry(),
         })

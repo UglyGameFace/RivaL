@@ -54,6 +54,29 @@ TIER_FLOORS = {"A": {"min_rows": 1000, "min_days": 7, "min_calls": 250,
                      "min_clusters": 100},
                "B": {"min_rows": 500, "min_days": 7, "min_calls": 100,
                      "min_clusters": 40}}
+# --- Screen G-D floors (owner-approved 2026-11-24) ---
+# G-D grades LLM-proposed masks over the exchange feature vector
+# recorded on rival_forward_model_lineage.features_json. The owner
+# approved floors mirroring tier B on 2026-11-24; the independent
+# unit (cluster) is the contract (venue+contract+quote identity).
+GD_FLOORS = {"min_rows": 500, "min_days": 7, "min_calls": 100,
+             "min_clusters": 40}
+GD_FIT_MIN_ROWS = FIT_MIN_ROWS["B"]
+# Grading cutoff: features_json landed on lineage rows in commit
+# c2a8d4a9ecd29ecc93d0520791a200fefb789b2f ("Record decision-time
+# exchange features on lineage rows", 2026-11-20T22:24:10Z). Rows
+# issued before that instant cannot carry a recorded vector (the
+# column is nullable and pre-change rows keep NULL), so the G-D
+# loader grades only rows issued at or after it AND with a non-NULL
+# recorded vector -- never a reconstructed one (design section 4.1).
+GD_FEATURES_CUTOFF = "2026-11-20T22:24:10+00:00"
+# Exchange feature vector layout (features.feature_vector /
+# features._window_features, 10 values): 0 last-bar log return x100,
+# 1 5-bar log close ratio x100, 2 return volatility x100, 3 bar range
+# pct, 4 volume log-ratio, 5 RSI state, 6 MACD state, 7 Bollinger
+# z-score, 8 ATR pct, 9 indicator volume regime. The proposal masks
+# (NAMED_MASKS / valid_feature_indices) index exactly this vector.
+EXCHANGE_FEATURE_COUNT = 10
 LOGISTIC_L2 = 1.0
 LOGISTIC_MAX_ITER = 25
 LOGISTIC_TOL = 1e-7
@@ -178,7 +201,10 @@ NAMED_MASKS = {
     "trend_only": (0, 1), "momentum_only": (0, 1),
     "volatility_only": (2, 3, 8), "volume_only": (4, 9),
 }
-LLM_CAUSE = "exchange_features_not_recorded"
+# Named cause kept ONLY for the case where literally zero
+# post-cutoff lineage rows exist for a candidate's asset: there is
+# then no recorded exchange-feature sample to grade at all.
+LLM_CAUSE = "no_post_cutoff_lineage_rows"
 
 
 def _mask_slug(indices) -> str:
@@ -602,8 +628,199 @@ def load_llm_proposals(store) -> tuple[list[dict], dict]:
     return proposals, rejected
 
 
+def load_gd_record(store) -> tuple[list[dict], dict]:
+    """Settled perp rows joined to their decision-time lineage vector.
+
+    Join key: the lineage table's full primary key against
+    perp_forward_audit -- (venue, contract, quote, horizon_minutes,
+    model_version, reference_opened_at) -- plus issued_at equality
+    (the exact join the live lineage readers use). Only settled audit
+    rows (outcome_up 0/1) issued at or after GD_FEATURES_CUTOFF with a
+    recorded (non-NULL) exchange feature vector are eligible; the
+    audit row's baseline_up is the paired baseline probability and
+    settled_at is the outcome-observed stamp for the walk-forward
+    embargo.
+    """
+    from parlay_bot.perpetuals.forward_audit import MODEL as PERP_MODEL
+
+    sql = (
+        "SELECT l.venue, l.contract, l.quote, l.horizon_minutes,"
+        " l.reference_opened_at, l.issued_at, l.features_json,"
+        " f.asset, f.target_opened_at, f.probability_up, f.baseline_up,"
+        " f.outcome_up, f.settled_at"
+        " FROM rival_forward_model_lineage l"
+        " JOIN perp_forward_audit f"
+        " ON f.venue=l.venue AND f.contract=l.contract"
+        " AND f.quote=l.quote AND f.horizon_minutes=l.horizon_minutes"
+        " AND f.model_version=l.model_version"
+        " AND f.reference_opened_at=l.reference_opened_at"
+        " AND f.issued_at=l.issued_at"
+        " WHERE l.model_version=? AND l.features_json IS NOT NULL"
+        " AND l.issued_at>=? AND f.settled_at IS NOT NULL"
+        " AND f.outcome_up IN (0,1) AND f.settled_at>f.issued_at"
+        " AND f.baseline_up>0 AND f.baseline_up<1"
+        " ORDER BY l.issued_at, l.venue, l.contract, l.quote,"
+        " l.horizon_minutes"
+    )
+    rows: list[dict] = []
+    coverage = {"settled_rows_seen": 0, "unparseable_row": 0}
+    for raw in wb._stream(store, sql, (PERP_MODEL, GD_FEATURES_CUTOFF)):
+        coverage["settled_rows_seen"] += 1
+        issued = wb._parse_time(raw["issued_at"])
+        settled = wb._parse_time(raw["settled_at"])
+        try:
+            features = [float(v) for v in json.loads(raw["features_json"])]
+        except (TypeError, ValueError):
+            features = None
+        if issued is None or settled is None or features is None \
+                or len(features) != EXCHANGE_FEATURE_COUNT \
+                or not all(math.isfinite(v) for v in features):
+            coverage["unparseable_row"] += 1
+            continue
+        rows.append({
+            "venue": str(raw["venue"]), "contract": str(raw["contract"]),
+            "quote": str(raw["quote"]),
+            "cluster": (f"{raw['venue']}:{raw['contract']}"
+                        f":{raw['quote']}"),
+            "asset": str(raw["asset"]),
+            "horizon": int(raw["horizon_minutes"]),
+            "issued_at": issued, "day": issued.date().isoformat(),
+            "probability_up": float(raw["probability_up"]),
+            "market_baseline": float(raw["baseline_up"]),
+            "label": int(raw["outcome_up"]),
+            "direction": "UP" if int(raw["outcome_up"]) == 1 else "DOWN",
+            "outcome_observed_at": settled,
+            "features": tuple(features),
+        })
+    coverage["eligible_rows"] = len(rows)
+    return rows, coverage
+
+
+def _gd_call(row: dict, g: float) -> tuple[float, float] | None:
+    """Implied-price call for a perp candidate probability.
+
+    Perp rows carry no book and no recorded fee, so -- exactly as
+    screen X1-X5 prices shadow-ledger calls -- the call is priced at
+    the baseline-implied price (baseline_up for an UP call,
+    1-baseline_up for DOWN), labelled IMPLIED-PRICE; nets are upper
+    bounds. No call when g is exactly 0.5 or the implied price is not
+    in (0, 1).
+    """
+    if g == 0.5:
+        return None
+    up = g > 0.5
+    price = float(row["market_baseline"]) if up \
+        else 1.0 - float(row["market_baseline"])
+    if not 0.0 < price < 1.0:
+        return None
+    won = (int(row["label"]) == 1) == up
+    return (1.0 if won else 0.0) - price, price
+
+
+def screen_llm_masks(rows: list[dict],
+                     registrations: list[dict]) -> dict:
+    """Screen G-D: walk-forward mask refits on the lineage record.
+
+    Same fit spec and leg machinery as G-A (batch logistic, L2 1.0,
+    <=25 Newton iterations, 5,000-row fit window, full-day embargo,
+    wb._paired_block + wb._four_leg_verdict with the corrected legs),
+    graded per registered candidate over its own asset's rows, with
+    GD_FLOORS (cluster = contract). A candidate whose asset has zero
+    post-cutoff rows keeps the named cause; any other below-floor
+    candidate is NOT_MEASURABLE with floor progress, never a stale
+    cause.
+    """
+    out = {}
+    for cand in registrations:
+        mask = tuple(int(i) for i in cand["mask"])
+        scope = [r for r in rows if r["asset"] == cand["asset"]]
+        scope.sort(key=lambda r: r["issued_at"])
+        days = sorted({r["day"] for r in scope})
+        score_days = days[BURN_IN_DAYS:]
+        observations: list[dict] = []
+        weights = None
+        scored_days = 0
+        unscored_fit_floor = 0
+        fit_sizes: list[int] = []
+        for day in score_days:
+            day_start = datetime.combine(
+                datetime.fromisoformat(day).date(), time.min, tzinfo=UTC)
+            fit_rows = [r for r in scope
+                        if r["outcome_observed_at"] < day_start]
+            fit_rows = fit_rows[-FIT_WINDOW:]
+            if len(fit_rows) < GD_FIT_MIN_ROWS:
+                unscored_fit_floor += 1
+                continue
+            scored_days += 1
+            fit_sizes.append(len(fit_rows))
+            weights = fit_logistic(
+                [(r["features"], r["label"]) for r in fit_rows],
+                mask, warm=weights)
+            for row in (r for r in scope if r["day"] == day):
+                g = wb._clamp(predict_logistic(
+                    weights, mask, row["features"]))
+                y = int(row["label"])
+                baseline = float(row["market_baseline"])
+                call = _gd_call(row, g)
+                observations.append({
+                    "issued_at": row["issued_at"], "day": row["day"],
+                    "delta_log_loss": wb._log_loss(g, y)
+                    - wb._log_loss(baseline, y),
+                    "delta_brier": (g - y) ** 2 - (baseline - y) ** 2,
+                    "call_net": call[0] if call else None,
+                    "call_cost": call[1] if call else None,
+                    "cluster": row["cluster"], "asset": row["asset"],
+                    "horizon": row["horizon"],
+                })
+        block = wb._paired_block(observations,
+                                 family_size=max(1, len(registrations)))
+        verdict = wb._four_leg_verdict(
+            block, min_rows=GD_FLOORS["min_rows"],
+            min_days=GD_FLOORS["min_days"],
+            min_calls=GD_FLOORS["min_calls"],
+            min_clusters=GD_FLOORS["min_clusters"])
+        floors = {
+            "rows": {"have": block["rows"], "need": GD_FLOORS["min_rows"]},
+            "days": {"have": block["days"], "need": GD_FLOORS["min_days"]},
+            "calls": {"have": block["calls"]["n"],
+                      "need": GD_FLOORS["min_calls"]},
+            "clusters": {"have": block.get("clusters"),
+                         "need": GD_FLOORS["min_clusters"]},
+        }
+        entry = {
+            **verdict, "floors": floors, "score": block,
+            "coverage": {
+                "scope_rows": len(scope), "scope_days": len(days),
+                "scored_days": scored_days,
+                "unscored_days_fit_floor": unscored_fit_floor,
+                "fit_rows_last_day": fit_sizes[-1] if fit_sizes else 0,
+                "pricing": "IMPLIED-PRICE (baseline-implied; no perp"
+                           " fee recorded, call nets are upper bounds)",
+                "features_cutoff": GD_FEATURES_CUTOFF,
+            },
+        }
+        if not scope:
+            entry.update({
+                "status": "NOT_MEASURABLE", "verdict": None,
+                "cause": LLM_CAUSE,
+                "reason": "no settled lineage rows with a recorded "
+                          "exchange feature vector exist for this "
+                          "asset at or after the features column "
+                          "landed (2026-11-20); earlier rows keep no "
+                          "recorded vector and design section 4.1 "
+                          "forbids reconstructing one",
+            })
+        out[cand["id"]] = entry
+    return {"screen": "G-D", "candidates": out}
+
+
 def llm_registrations(proposals: list[dict]) -> list[dict]:
-    """Deduplicated registry entries for the verified proposals."""
+    """Deduplicated registry entries for the verified proposals.
+
+    Registrations carry the owner-approved GD floors only; whether a
+    candidate is measurable is the G-D grader's decision
+    (screen_llm_masks over load_gd_record), never hard-coded here.
+    """
     seen: set = set()
     out: list[dict] = []
     for proposal in proposals:
@@ -624,14 +841,7 @@ def llm_registrations(proposals: list[dict]) -> list[dict]:
             "falsification": proposal["falsification"],
             "proposed_at": proposal["attempted_at"],
             "record_sha256": proposal["record_sha256"],
-            "status": "NOT_MEASURABLE", "verdict": None,
-            "cause": LLM_CAUSE,
-            "reason": "the mask indexes the exchange feature vector "
-                      "(features.feature_vector), which is not recorded "
-                      "at the settled record's decision points (book "
-                      "vector only) nor on the frozen trial ledger "
-                      "(probabilities only); design section 4.1 forbids "
-                      "reconstructing it from later data",
+            "floors": dict(GD_FLOORS),
         })
     return out
 
@@ -720,9 +930,13 @@ def _results_table_exists(store) -> bool:
 # carries its specific blocker and its progress toward its floors.
 CAUSE_TEXT = {
     "exchange_features_not_recorded": (
-        "its exchange features were not on the settled record it was "
-        "registered against; they are recorded on the live model "
-        "lineage now, but no grader reads them yet"),
+        "legacy registration: its exchange features were not on the "
+        "settled record it was registered against; the G-D grader "
+        "now reads the recorded vectors on the live model lineage"),
+    "no_post_cutoff_lineage_rows": (
+        "no settled lineage rows with a recorded exchange feature "
+        "vector exist for its asset at or after the features column "
+        "landed on 2026-11-20"),
     "no_settled_threshold_outcomes": (
         "settled threshold outcomes only started recording on "
         "2026-11-24; the weekly contracts it grades settle from "

@@ -481,6 +481,8 @@ def estate_coverage(store) -> dict:
             ticks[str(item["venue"])] = {
                 "rows": int(item["n"]), "first": item["first"],
                 "last": item["last"]}
+    from parlay_bot.perpetuals.threshold_outcomes import settled_count
+
     return {
         "options_surface": _coverage(
             store, "rival_options_surface_snapshots", "snapshot_at"),
@@ -489,7 +491,7 @@ def estate_coverage(store) -> dict:
         "threshold_kalshi": _coverage(
             store, "rival_kalshi_threshold_snapshots", "snapshot_at"),
         "settlement_index_ticks": ticks,
-        "settled_threshold_outcomes": 0,
+        "settled_threshold_outcomes": settled_count(store),
     }
 
 
@@ -500,10 +502,11 @@ def screen_estate(store) -> dict:
         candidates[cand["id"]] = {
             "status": "NOT_MEASURABLE", "verdict": None,
             "cause": cand["cause"],
-            "reason": "the estate records threshold snapshots but no "
-                      "settled threshold outcomes; the weekly contracts "
-                      "settle from 2026-11-27 and no outcome source is "
-                      "recorded for them",
+            "reason": "the estate records threshold snapshots; settled "
+                      "threshold outcomes began recording with the "
+                      "outcome settler (2026-11-24), and the weekly "
+                      "contracts settle from 2026-11-27 -- no settled "
+                      "sample exists yet to grade against",
             "coverage": coverage,
         }
     return {"screen": "G-C", "coverage": coverage, "candidates": candidates,
@@ -721,9 +724,9 @@ CAUSE_TEXT = {
         "registered against; they are recorded on the live model "
         "lineage now, but no grader reads them yet"),
     "no_settled_threshold_outcomes": (
-        "no settled threshold outcomes are recorded yet -- the weekly "
-        "contracts it grades settle from 2026-11-27 and no outcome "
-        "recorder exists"),
+        "settled threshold outcomes only started recording on "
+        "2026-11-24; the weekly contracts it grades settle from "
+        "2026-11-27, so no settled sample exists yet"),
 }
 DATA_BLOCKED_TEXT = {
     "liq-cascade-v1": (

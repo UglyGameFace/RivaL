@@ -103,6 +103,7 @@ from parlay_bot.perpetuals.spike_watch import SpikeWatch
 from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
 from parlay_bot.perpetuals.stream_shadow import SUPPORTED_VENUES, StreamShadowLedger
 from parlay_bot.perpetuals.threshold_markets import ThresholdMarketsRecorder
+from parlay_bot.perpetuals.threshold_outcomes import ThresholdOutcomeSettler
 from parlay_bot.perpetuals.unattended_acceptance import unattended_acceptance_receipt
 from parlay_bot.perpetuals.volcal_model import VolcalModelSet, is_volcal_document
 from parlay_bot.perpetuals.xmarket_model import XmarketModelSet, is_xmarket_document
@@ -694,6 +695,10 @@ class RivalDiscordClient(discord.Client):
         self.options_surface = OptionsSurfaceRecorder(self.store)
         self.threshold_markets = ThresholdMarketsRecorder(self.store)
         self.kalshi_thresholds = KalshiThresholdsRecorder(self.store)
+        # Settled outcomes for the same estate (sweep fix 2026-11-24):
+        # the G-C candidates were unmeasurable because nothing
+        # recorded how threshold markets settled. Recording only.
+        self.threshold_outcomes = ThresholdOutcomeSettler(self.store)
         self._n1_collection_task: asyncio.Task[None] | None = None
         self.kalshi_forward = KalshiForwardResearch(self.store)
         self.kalshi_browser = KalshiCryptoBrowser(forward=self.kalshi_forward)
@@ -2386,6 +2391,9 @@ class RivalDiscordClient(discord.Client):
             await asyncio.to_thread(self.threshold_markets.initialize)
         if self.settings.rival_n1_kalshi_threshold_enabled:
             await asyncio.to_thread(self.kalshi_thresholds.initialize)
+        if self.settings.rival_n1_threshold_enabled \
+                or self.settings.rival_n1_kalshi_threshold_enabled:
+            await asyncio.to_thread(self.threshold_outcomes.initialize)
         async with httpx.AsyncClient(
                 timeout=httpx.Timeout(30.0)) as client:
             while not self.is_closed():
@@ -2454,6 +2462,20 @@ class RivalDiscordClient(discord.Client):
                     else:
                         total += result["rows"]
                 _LOG.info("RivaL N1 Kalshi threshold snapshot rows=%d", total)
+        if self.settings.rival_n1_threshold_enabled \
+                or self.settings.rival_n1_kalshi_threshold_enabled:
+            try:
+                receipt = await self.threshold_outcomes.settle(
+                    client, now=now)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - isolate outcome settling
+                _LOG.exception("RivaL threshold outcome settle cycle failed")
+            else:
+                resolved = sum(v["resolved"] for v in receipt.values())
+                if resolved:
+                    _LOG.info(
+                        "RivaL threshold outcomes resolved=%d", resolved)
 
     async def _convergence_quote_loop(self) -> None:
         """Read-only executable book snapshots for the PM-lag re-measurement.

@@ -13,7 +13,15 @@ from datetime import UTC, datetime
 
 MIN_TARGETS = 100
 MIN_DAYS = 7
-MIN_GAIN = 0.005
+# Corrected gain leg (research sweep #3, 2026-11-20; crypto-zero audit
+# 2026-11-24 section 2): the old MIN_GAIN = 0.005 demanded a ~7.07pp
+# corrected bias -- correcting bias b gains b^2 in Brier (Murphy
+# decomposition) -- against an incumbent that itself grades at the
+# market price, when every bias ever measured is 1-3pp. The leg is now
+# positivity of the paired gain; significance is supplied by the
+# day-block stress bound and the 80%-positive-days rule below, which
+# a lucky or inconsistent gain cannot pass.
+MIN_GAIN = 0.0
 DAY_MARGIN = 2.58  # Conservative screening margin, not an exact p-value.
 
 
@@ -78,7 +86,7 @@ def score_paired_forward(rows: list[tuple[str, float, float]]) -> GovernanceEvid
     if n < MIN_TARGETS or days < MIN_DAYS:
         status, reason = "insufficient", "Need 100 unique UTC targets across 7 days"
     elif delta <= MIN_GAIN:
-        status, reason = "rejected_shadow", "Paired Brier gain below minimum"
+        status, reason = "rejected_shadow", "Paired Brier gain not positive"
     elif winning < math.ceil(0.8 * days):
         status, reason = "rejected_shadow", "Paired benefit inconsistent across days"
     elif bound <= 0:

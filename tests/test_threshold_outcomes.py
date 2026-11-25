@@ -1,0 +1,115 @@
+"""Threshold outcome settler (sweep fix 2026-11-24).
+
+The G-C estate candidates were NOT_MEASURABLE because nothing
+recorded how threshold markets settled. The settler must resolve
+expired markets from the venues' own records, leave indecisive or
+unfinal markets unresolved (never guessed), and never re-check a
+market it already resolved.
+"""
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime, timedelta
+
+import httpx
+
+from parlay_bot.perpetuals import threshold_outcomes as outcomes
+from parlay_bot.perpetuals.kalshi_thresholds import KalshiThresholdsRecorder
+from parlay_bot.perpetuals.threshold_markets import ThresholdMarketsRecorder
+from parlay_bot.storage.hot import SQLiteHotStore
+
+NOW = datetime(2026, 11, 28, 12, 0, tzinfo=UTC)
+PAST = (NOW - timedelta(days=1)).isoformat()
+FUTURE = (NOW + timedelta(days=1)).isoformat()
+
+
+class _Client:
+    """Canned venue answers keyed by URL fragment."""
+
+    def __init__(self, answers):
+        self.answers = answers
+        self.calls = []
+
+    async def get(self, url, params=None):
+        self.calls.append(url)
+        haystack = url + " " + str(params or {})
+        request = httpx.Request("GET", url)
+        for fragment, payload in self.answers.items():
+            if fragment in haystack:
+                return httpx.Response(200, json=payload, request=request)
+        return httpx.Response(404, json={}, request=request)
+
+
+def _store(tmp_path):
+    store = SQLiteHotStore(tmp_path / "outcomes.sqlite")
+    ThresholdMarketsRecorder(store).initialize()
+    KalshiThresholdsRecorder(store).initialize()
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO rival_threshold_market_snapshots (snapshot_at,"
+            " asset, contract_type, horizon, series_id, series_slug,"
+            " condition_id, strike_low, end_date) VALUES"
+            " (?, 'BTC', 'above', 'weekly', 1, 'btc-weekly', 'cond-yes',"
+            " 90000.0, ?)", ("2026-11-27T00:00:00+00:00", PAST))
+        conn.execute(
+            "INSERT INTO rival_threshold_market_snapshots (snapshot_at,"
+            " asset, contract_type, horizon, series_id, series_slug,"
+            " condition_id, strike_low, end_date) VALUES"
+            " (?, 'BTC', 'above', 'weekly', 1, 'btc-weekly', 'cond-split',"
+            " 95000.0, ?)", ("2026-11-27T00:00:00+00:00", PAST))
+        conn.execute(
+            "INSERT INTO rival_threshold_market_snapshots (snapshot_at,"
+            " asset, contract_type, horizon, series_id, series_slug,"
+            " condition_id, strike_low, end_date) VALUES"
+            " (?, 'BTC', 'above', 'weekly', 1, 'btc-weekly', 'cond-open',"
+            " 99000.0, ?)", ("2026-11-27T00:00:00+00:00", FUTURE))
+        conn.execute(
+            "INSERT INTO rival_kalshi_threshold_snapshots (snapshot_at,"
+            " asset, contract_type, horizon, series_ticker, market_ticker,"
+            " strike_low, close_time) VALUES"
+            " (?, 'BTC', 'above', 'weekly', 'KXBTCW', 'KXBTCW-1',"
+            " 90000.0, ?)", ("2026-11-27T00:00:00+00:00", PAST))
+    return store
+
+
+def _answers():
+    return {
+        "cond-yes": [{"closed": True, "outcomePrices": '["1", "0"]'}],
+        "cond-split": [{"closed": True, "outcomePrices": '["0.5", "0.5"]'}],
+        "KXBTCW-1": {"market": {"result": "no", "status": "finalized"}},
+    }
+
+
+def test_settler_records_decisive_outcomes_only(tmp_path):
+    store = _store(tmp_path)
+    settler = outcomes.ThresholdOutcomeSettler(store)
+    client = _Client(_answers())
+    receipt = asyncio.run(settler.settle(client, now=NOW))
+    assert receipt["polymarket"] == {"due": 2, "checked": 2, "resolved": 1}
+    assert receipt["kalshi"] == {"due": 1, "checked": 1, "resolved": 1}
+    assert outcomes.settled_count(store) == 2
+    with store.connect() as conn:
+        rows = {r[1]: r for r in conn.execute(
+            "SELECT venue, market_key, resolved_yes, strike_low"
+            " FROM rival_threshold_outcomes", ()).fetchall()}
+    assert rows["cond-yes"][2] == 1
+    assert rows["cond-yes"][3] == 90000.0
+    assert rows["cond-split"][2] is None  # split market: never guessed
+    assert rows["KXBTCW-1"][2] == 0
+    assert "cond-open" not in rows  # not yet expired: untouched
+
+
+def test_settler_never_rechecks_resolved_markets(tmp_path):
+    store = _store(tmp_path)
+    settler = outcomes.ThresholdOutcomeSettler(store)
+    asyncio.run(settler.settle(_Client(_answers()), now=NOW))
+    client = _Client(_answers())
+    receipt = asyncio.run(settler.settle(client, now=NOW))
+    assert receipt["polymarket"]["due"] == 1  # only the split market
+    assert receipt["kalshi"]["due"] == 0
+    assert outcomes.settled_count(store) == 2
+
+
+def test_settled_count_is_zero_without_the_table(tmp_path):
+    store = SQLiteHotStore(tmp_path / "empty.sqlite")
+    assert outcomes.settled_count(store) == 0

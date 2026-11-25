@@ -340,17 +340,22 @@ def test_issuance_off_follows_the_forward_audit_switches(monkeypatch):
     from parlay_bot.discord_app.trial_board import issuance_off
     from parlay_bot.perpetuals import forward_audit
 
-    # Every switch is off on current main (price-first pivot, PR #704).
-    assert issuance_off("gaussian_nb_v1")
-    assert issuance_off("knn21_v1")
-    assert issuance_off("pooled_5m_1273de73aa15")
-    assert issuance_off("lab_5m_24a17f9781")
-    assert issuance_off("cross_all_v1")
-    assert issuance_off("calib_incumbent_v1")
-    assert not issuance_off("some_future_family_v1")
-    monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", True)
+    # Trials resumed 2026-11-25: every switch the 2026-11-19 stop
+    # (PR #704) turned off is on again at the shipped defaults.
     assert not issuance_off("gaussian_nb_v1")
-    assert issuance_off("pooled_5m_1273de73aa15")   # its own switch still off
+    assert not issuance_off("knn21_v1")
+    assert not issuance_off("pooled_5m_1273de73aa15")
+    assert not issuance_off("lab_5m_24a17f9781")
+    assert not issuance_off("cross_all_v1")
+    assert not issuance_off("calib_incumbent_v1")
+    assert not issuance_off("some_future_family_v1")
+    # Families retired before the stop stay off on their own records.
+    assert issuance_off("flow_v1")
+    assert issuance_off("liq_v1")
+    assert issuance_off("regime_v2")
+    monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", False)
+    assert issuance_off("gaussian_nb_v1")
+    assert not issuance_off("pooled_5m_1273de73aa15")   # its own switch still on
 
 
 def _board_with_evidence(tmp_path, evidence, name="board.sqlite"):
@@ -379,12 +384,18 @@ def _board_with_evidence(tmp_path, evidence, name="board.sqlite"):
     return store, now
 
 
-def test_switch_off_families_leave_the_board_but_stay_in_the_full_record(tmp_path):
+def test_switch_off_families_leave_the_board_but_stay_in_the_full_record(tmp_path, monkeypatch):
     """The owner's press-test (2026-11-20): the Models leaderboard paraded
     families whose issuance PR #704 stopped as if they were live
     contenders. They must leave the leaderboard, land in ONE summary
-    count, and stay fully visible in Full evidence."""
+    count, and stay fully visible in Full evidence. (Trials resumed
+    2026-11-25, so this scenario pins the two families' switches off
+    in-test; the split it exercises is the same.)"""
     from parlay_bot.discord_app.home import _trials_sections
+    from parlay_bot.perpetuals import forward_audit
+
+    monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", False)
+    monkeypatch.setattr(forward_audit, "ISSUE_REGIME_V1_CHALLENGERS", False)
 
     store, now = _board_with_evidence(tmp_path, {
         "gaussian_nb_v1": _info(20, 4938, -.006),
@@ -418,14 +429,21 @@ def test_switch_off_families_leave_the_board_but_stay_in_the_full_record(tmp_pat
         store.close()
 
 
-def test_board_with_no_live_contenders_says_so_and_counts_the_hidden(tmp_path):
+def test_board_with_no_live_contenders_says_so_and_counts_the_hidden(tmp_path, monkeypatch):
     """The production case after PR #704: every family on the board is
     retired, so the section says no comparisons are active and counts
     the hidden record instead of listing dead rows. The Full page used
     to keep listing the frozen rows as contenders; the owner ordered
     the board taken down until trials resume (2026-11-25), so with no
-    live trial it now shows the paused state instead."""
+    live trial it now shows the paused state instead. (Trials resumed
+    later that day, so this scenario pins the families' switches off
+    in-test; the paused state still governs any market with no live
+    trial.)"""
     from parlay_bot.discord_app.home import _trials_sections
+    from parlay_bot.perpetuals import forward_audit
+
+    monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", False)
+    monkeypatch.setattr(forward_audit, "ISSUE_POOLED_CHALLENGERS", False)
 
     store, now = _board_with_evidence(tmp_path, {
         "gaussian_nb_v1": _info(20, 4938, -.006),

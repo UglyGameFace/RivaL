@@ -110,14 +110,14 @@ class Settings(BaseSettings):
     rival_shadow_learning_enabled: bool = Field(default=True)
     # Deterministic research reconciliation uses Drive and never calls the LLM.
     rival_research_loop_enabled: bool = Field(default=True)
-    # Price-first pivot (2026-11-19): stop feeding directional trials. The
-    # Model Lab keeps scoring and closing its existing designs, but review()
-    # opens no replacement designs while refill is off.
-    rival_lab_refill_enabled: bool = Field(default=False)
-    # Price-first pivot (2026-11-19): the research-loop driver keeps
-    # advancing and closing experiments already open, but opens no new
-    # scheduled variants while this is off.
-    rival_scheduled_variants_enabled: bool = Field(default=False)
+    # Model Lab refill: review() opens a replacement design when one
+    # closes. Stopped 2026-11-19 by the price-first pivot; resumed
+    # 2026-11-25 on the owner's direct order (trials resume).
+    rival_lab_refill_enabled: bool = Field(default=True)
+    # Scheduled variants: the research-loop driver opens new scheduled
+    # variants as well as advancing and closing experiments already
+    # open. Stopped 2026-11-19; resumed 2026-11-25 with the trials.
+    rival_scheduled_variants_enabled: bool = Field(default=True)
     rival_shadow_eval_seconds: int = Field(default=3600, ge=900, le=21600)
 
     # Private bot: only these Discord user IDs (comma-separated) may use it.

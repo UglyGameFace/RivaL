@@ -555,7 +555,7 @@ def test_kill_switch_stops_gbm_issuance_in_cycle(tmp_path, monkeypatch, gbm_doc)
     its kill-switch state -- the same cycle issues nothing new for
     gbm_v1, while the incumbent cycle still runs.
     """
-    assert forward_audit.ISSUE_GBM_V1_CHALLENGERS is False  # pivot stop
+    assert forward_audit.ISSUE_GBM_V1_CHALLENGERS is True  # trials resumed 2026-11-25
     now = datetime.now(UTC)
     store = SQLiteHotStore(tmp_path / "gbm-cycle.sqlite")
     market = PerpetualMarketStore(store)
@@ -576,7 +576,7 @@ def test_kill_switch_stops_gbm_issuance_in_cycle(tmp_path, monkeypatch, gbm_doc)
                 ).fetchone()["n"]
             return shadow, incumbent
 
-        # The competition funnel is gated off too since the pivot; open it
+        # The competition funnel is the entry path; force it on
         # so this test isolates the family kill switch.
         monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", True)
         monkeypatch.setattr(forward_audit, "ISSUE_GBM_V1_CHALLENGERS", True)

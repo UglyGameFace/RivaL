@@ -1135,9 +1135,8 @@ def _best_sections(reports: dict) -> tuple[str | None, str | None]:
                         f"evidence is accruing; {closed} closed so far.{lead} "
                         f"Full record in Full evidence.\n{footnote}")
         else:
-            lab_text = (f"🧬 Model Lab: {testing} designs testing, {closed} closed so far; "
-                        f"new designs are paused, so open designs only finish and "
-                        f"close.{lead}\n{footnote}")
+            lab_text = (f"🧬 Model Lab: {testing} designs testing, {closed} closed so far, "
+                        f"each loser replaced automatically.{lead}\n{footnote}")
         return ("\n".join(leaders) if leaders else None), lab_text
     return ("\n".join(leaders + [footnote]) if leaders else None), None
 

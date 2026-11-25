@@ -81,13 +81,16 @@ HORIZONS = RESEARCH_HORIZONS
 MIN_PREVIOUS_EVALUATED = 20
 MAX_STREAMS_PER_CYCLE = 40
 MAX_PENDING_SETTLEMENTS = 120
-# Price-first pivot stop (2026-11-19, the owner's decision): every directional
-# trial family's issuance switch in this block is OFF, and the calibrated,
-# pooled and competition paths further below are gated off the same way.
-# No new directional trial forecasts are issued. Settlement and grading of
-# already-issued rows are never gated and keep running; the live per-stream
-# logistic (MODEL) is not a trial family and is untouched. Re-enabling any
-# family is a new decision, not a default.
+# Trial issuance was stopped 2026-11-19 (price-first pivot, PR #704) and
+# RESUMED 2026-11-25 on the owner's direct order: every switch the stop
+# turned off is on again below, including the calibrated, pooled and
+# competition paths. Settlement and grading of already-issued rows were
+# never gated and kept running throughout; the live per-stream logistic
+# (MODEL) is not a trial family and was untouched either way. Promotion
+# gates are unchanged — resuming issuance only lets evidence accrue
+# again. Families retired BEFORE the stop (flow_v1-v3, liq_v1,
+# regime_v2, each with its own retirement note below) stay off: they
+# were retired on their own graded records, not by the pivot.
 # flow_v1/flow_v2 are retired: over 7 days of graded outcomes (to Nov 5, 2026)
 # they lost to every venue's up-rate at every horizon (60m: -0.047/-0.054
 # Brier) and their ~78%-UP calls came true 33-44% of the time. A calibrated,
@@ -104,7 +107,7 @@ ISSUE_FLOW_V3_CHALLENGERS = False
 # artifact is imported; it never serves until Route B promotes it.
 # Kill switch for issuance; serving is gated separately by promotion.
 # Existing rows keep settling either way.
-ISSUE_ARCHIVE_V1_CHALLENGERS = False
+ISSUE_ARCHIVE_V1_CHALLENGERS = True
 # liq_v1 shadow issuance (Phase 3, spec §2.10.2): the live liquidity
 # challenger issues shadow forecasts from the buckets being recorded
 # right now; it never serves until Route B promotes it (and cannot
@@ -126,14 +129,14 @@ ISSUE_LIQ_V1_CHALLENGERS = False
 # it. Kill switch for issuance; serving is gated separately by
 # promotion. Existing rows keep settling either way. It shares the
 # archive vector (same 32-feature contract, same restored bytes).
-ISSUE_GBM_V1_CHALLENGERS = False
+ISSUE_GBM_V1_CHALLENGERS = True
 # regime_v1 shadow issuance (spec rival-regime-gated-spec-20261107, D6):
 # the regime-gated challenger issues the incumbent's own call as a shadow
 # forecast only on trending cycles (ER > 0.30 over 20 closed bars); it
 # never serves until Route B promotes it. Kill switch for issuance;
 # serving is gated separately by promotion. Existing rows keep settling
 # either way.
-ISSUE_REGIME_V1_CHALLENGERS = False
+ISSUE_REGIME_V1_CHALLENGERS = True
 # regime_wild_v1 shadow issuance (audit Step 5, 2026-11-10): the
 # wild-only challenger issues the incumbent's own call as a shadow
 # forecast only when the market-condition stamp recorded at issuance
@@ -142,7 +145,7 @@ ISSUE_REGIME_V1_CHALLENGERS = False
 # it. Kill switch for issuance; serving is gated separately by
 # promotion. Existing rows keep settling either way. The family starts
 # with no track record and proves nothing until 150 targets + 21 days.
-ISSUE_REGIME_WILD_V1_CHALLENGERS = False
+ISSUE_REGIME_WILD_V1_CHALLENGERS = True
 # regime_v2 shadow issuance (spec rival-regime-v2-spec-20261108, D6):
 # the trending-subset trained logistic issues shadow forecasts only on
 # trending cycles (same frozen gate) AND only when a pinned artifact is
@@ -161,8 +164,8 @@ ISSUE_REGIME_V2_CHALLENGERS = False
 # incumbent 10 + vol/compression/volume/DC-leg features, rebuilt
 # RivaL-native from Obi-Stoned Kenobi's perp-engine ideas (his DM
 # permission, 2026-11-11); no weights or code copied from their engine.
-ISSUE_VOLCAL_V1_CHALLENGERS = False
-ISSUE_XMARKET_V1_CHALLENGERS = False
+ISSUE_VOLCAL_V1_CHALLENGERS = True
+ISSUE_XMARKET_V1_CHALLENGERS = True
 # regime live-learning shadow issuance (spec
 # rival-regime-live-learning-spec-20261108, D8): each live family issues
 # its own learner's call as a shadow forecast only on trending cycles
@@ -170,8 +173,8 @@ ISSUE_XMARKET_V1_CHALLENGERS = False
 # switch per family (default True); serving is gated separately by
 # promotion. Existing rows keep settling either way. Regime_v1 keeps
 # issuing as the control.
-ISSUE_REGIME_LIVE_V1_CHALLENGERS = False
-ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS = False
+ISSUE_REGIME_LIVE_V1_CHALLENGERS = True
+ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS = True
 # Cross-exchange shadow issuance (cross_model.py, 2026-11-10): cross_v1 is
 # one learner per coin and horizon that reads every exchange at once;
 # cross_all_v1 shares one learner per horizon across coins. Both issue the
@@ -179,7 +182,7 @@ ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS = False
 # once a learner has a day of graded lessons, and never serve until Route B
 # promotes them. One kill switch for issuance and learning of both;
 # existing rows keep settling either way.
-ISSUE_CROSS_V1_CHALLENGERS = False
+ISSUE_CROSS_V1_CHALLENGERS = True
 # The Model Lab (model_lab.py, 2026-11-11): RivaL's own search for better
 # models. Up to SLOTS_PER_HORIZON live-learning designs per timeframe; a
 # closed design is replaced by one the lab has never tried. Test-only like
@@ -200,22 +203,22 @@ _GRADED_SETTLE_SQL = """UPDATE perp_forward_audit
        WHERE venue=? AND contract=? AND quote=?
          AND horizon_minutes=? AND model_version=?
          AND reference_opened_at=? AND settled_at IS NULL"""
-ISSUE_LAB_CHALLENGERS = False
+ISSUE_LAB_CHALLENGERS = True
 # Calibrated incumbent shadow issuance (calibrated_challenger.py): the
 # Platt-refit clone of the incumbent issues beside the live model on its
 # own rows. Kill switch for issuance only; the refit keeps running and
 # existing rows keep settling either way.
-ISSUE_CALIBRATED_CHALLENGERS = False
+ISSUE_CALIBRATED_CHALLENGERS = True
 # Pooled multi-year ("6-year") shadow issuance: _pooled_calls rows enter
 # the same competition ledger as every other challenger family. Kill
 # switch for issuance only; existing rows keep settling either way.
-ISSUE_POOLED_CHALLENGERS = False
+ISSUE_POOLED_CHALLENGERS = True
 # Shadow-model competition issuance (model_competition.py): the NB/kNN
 # pattern families plus the imported boosted/historical artifact
 # candidates all enter through ShadowModelCompetition.issue(). Kill
 # switch for that call (and its prepare()) only; competition settlement
 # keeps grading existing rows either way.
-ISSUE_COMPETITION_CHALLENGERS = False
+ISSUE_COMPETITION_CHALLENGERS = True
 
 # The per-cycle fast pass grades recent targets; the hourly full pass (same
 # place) still grades anything older. 3 days made every batch walk ~19k

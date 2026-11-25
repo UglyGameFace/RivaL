@@ -30,7 +30,7 @@ FRESH_FOR = timedelta(hours=48)
 MAX_FORECASTS_PER_FAMILY = 24000
 # Kill switch 2 (spec §2.8, §3.5 #6): a family in this set can never serve,
 # even with a fresh promoted_paper row. Default: empty. Changing this set
-# requires Felix's explicit approval of the specific change.
+# requires the owner's explicit approval of the specific change.
 BLOCKED_FAMILIES: set[str] = set()
 # Rows per fetchmany chunk when streaming one family's evaluation input.
 # Scoring consumes rows incrementally, so the family's whole window (up to

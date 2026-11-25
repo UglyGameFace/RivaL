@@ -1,5 +1,5 @@
 """Phase-2 generation grid for the replay workbench (amendment
-``rival-replay-workbench-phase2-amendment-20261120``, Felix-approved
+``rival-replay-workbench-phase2-amendment-20261120``, owner-approved
 2026-11-20).
 
 Phase 1 (``replay_workbench``) built the grading engine and graded the
@@ -105,7 +105,7 @@ MASK_CANDIDATES = (
     {"id": "gen-book-60m-all", "factory": "lab", "screen": "G-A",
      "tier": "B", "display": "Book model 60m · all signals",
      "mask": _mask("levels", "shape", "depth", "timing"), "horizon": 60,
-     "mechanism": "Felix's 60m priority: the horizon where the X2 fit "
+     "mechanism": "The owner's 60m priority: the horizon where the X2 fit "
                   "showed skill, tested with a fresh design on the "
                   "live record (a new design on a different record -- "
                   "X2 itself stays KILL, unregraded)."},
@@ -715,7 +715,7 @@ def _results_table_exists(store) -> bool:
 
 
 # Why a candidate cannot be measured, in the plain words the boards
-# show. Felix (2026-11-24): a bare "not measurable yet" count hides
+# show. The owner (2026-11-24): a bare "not measurable yet" count hides
 # exactly the thing he needs to see drain -- every blocked candidate
 # carries its specific blocker and its progress toward its floors.
 CAUSE_TEXT = {

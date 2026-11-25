@@ -73,7 +73,7 @@ reporting and parameter-freeze only; none of them moves a frozen number):
    stale): Kalshi snapshots carry receipt time, not a source clock, so
    a trigger fired against a minutes-old unchanged book would measure
    Polymarket converging to a ghost.
-3. (Process condition: the portfolio stop rule lives with Felix, not in
+3. (Process condition: the portfolio stop rule lives with the owner, not in
    code. This tool only refuses to print a verdict early.)
 """
 from __future__ import annotations

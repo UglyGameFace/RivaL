@@ -1,6 +1,6 @@
 """Delivery 1 scheduler evidence: run-timing diagnosis and the workflow patch.
 
-The patch itself lives outside the repo (Felix places workflow files by hand):
+The patch itself lives outside the repo (the owner places workflow files by hand):
 ~/workspace/your_files/evidence-board-scheduler-workflow.patch. These tests
 assert the diagnosis numbers from the in-repo fixture always, and the patch
 contents whenever the patch file is present.

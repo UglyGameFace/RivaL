@@ -1,6 +1,6 @@
 """Offline replay workbench: the Model Lab's grading engine, re-pointed.
 
-Design: ``rival-replay-workbench-design-20261120.md`` (Felix-approved
+Design: ``rival-replay-workbench-design-20261120.md`` (owner-approved
 2026-11-20). The lab is a model factory: candidate designs from either
 factory -- the Model Lab or XMarket -- are graded OFFLINE against the
 settled record RivaL already owns, paired against the market's own

@@ -1,6 +1,6 @@
 """Price-first pivot (2026-11-19): directional trial issuance is stopped.
 
-Pins Felix's scope decision at the shipped defaults:
+Pins the owner's scope decision at the shipped defaults:
 (i) the config defaults stop the three feeding intakes (Model Lab refill,
     scheduled variants, LLM hypotheses) while Track 1 convergence
     collection and the research loop's advancing stay on;

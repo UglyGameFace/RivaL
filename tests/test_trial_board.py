@@ -380,7 +380,7 @@ def _board_with_evidence(tmp_path, evidence, name="board.sqlite"):
 
 
 def test_switch_off_families_leave_the_board_but_stay_in_the_full_record(tmp_path):
-    """Felix's press-test (2026-11-20): the Models leaderboard paraded
+    """The owner's press-test (2026-11-20): the Models leaderboard paraded
     families whose issuance PR #704 stopped as if they were live
     contenders. They must leave the leaderboard, land in ONE summary
     count, and stay fully visible in Full evidence."""

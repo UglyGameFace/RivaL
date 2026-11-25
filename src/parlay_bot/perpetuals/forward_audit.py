@@ -81,7 +81,7 @@ HORIZONS = RESEARCH_HORIZONS
 MIN_PREVIOUS_EVALUATED = 20
 MAX_STREAMS_PER_CYCLE = 40
 MAX_PENDING_SETTLEMENTS = 120
-# Price-first pivot stop (2026-11-19, Felix's decision): every directional
+# Price-first pivot stop (2026-11-19, the owner's decision): every directional
 # trial family's issuance switch in this block is OFF, and the calibrated,
 # pooled and competition paths further below are gated off the same way.
 # No new directional trial forecasts are issued. Settlement and grading of

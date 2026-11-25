@@ -1,7 +1,7 @@
 """VolCal (volcal_v1) feature contract.
 
 RivaL-native rebuild of the useful ideas in Obi-Stoned Kenobi's perp
-engine (permission: his Discord DM to Felix, 2026-11-11 21:41 EST —
+engine (permission: his Discord DM to the owner, 2026-11-11 21:41 EST —
 "[...] use the engines, codes, data sets, and everything else I've
 sent you for your bots/websites"). Nothing is copied from their code
 and none of their fitted weights is imported: every feature below is

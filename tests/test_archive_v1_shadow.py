@@ -449,7 +449,7 @@ def test_kill_switch_stops_archive_issuance_in_cycle(tmp_path, monkeypatch):
     kill-switch state -- the same cycle issues nothing new for archive_v1,
     while the incumbent cycle still runs.
     """
-    assert forward_audit.ISSUE_ARCHIVE_V1_CHALLENGERS is False  # pivot stop
+    assert forward_audit.ISSUE_ARCHIVE_V1_CHALLENGERS is True  # trials resumed 2026-11-25
     now = datetime.now(UTC)
     store = SQLiteHotStore(tmp_path / "archive-cycle.sqlite")
     market = PerpetualMarketStore(store)
@@ -471,7 +471,7 @@ def test_kill_switch_stops_archive_issuance_in_cycle(tmp_path, monkeypatch):
                 ).fetchone()["n"]
             return shadow, incumbent
 
-        # The competition funnel is gated off too since the pivot; open it
+        # The competition funnel is the entry path; force it on
         # so this test isolates the family kill switch.
         monkeypatch.setattr(forward_audit, "ISSUE_COMPETITION_CHALLENGERS", True)
         monkeypatch.setattr(forward_audit, "ISSUE_ARCHIVE_V1_CHALLENGERS", True)

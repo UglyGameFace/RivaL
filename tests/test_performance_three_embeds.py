@@ -183,15 +183,16 @@ def test_three_embeds_carry_every_number_from_the_old_card():
     assert "**15m** · **6-year** +8.0 edge · 696 results over 8 days, not proven yet" in best
     assert "**60m** · **6-year** +23.4 edge · 171 results over 8 days, not proven yet" in best
     lab = fields["🧬 Model Lab"]
-    # Lab issuance is off by default (price-first stop, PR #704): the field
-    # states the freeze instead of implying the designs are still testing.
-    assert "paused — issuance is off" in lab
-    assert "its 12 open designs are frozen and no new evidence is accruing" in lab
+    # Lab issuance is on at the defaults (trials resumed 2026-11-25,
+    # reversing the PR #704 stop): the field states the designs are
+    # testing and losers are replaced, not frozen.
+    assert "12 designs testing" in lab
+    assert "each loser replaced automatically" in lab
     assert "0 closed so far" in lab
-    assert "designs testing" not in lab and "finish and close" not in lab
-    assert "Frozen record — leading so far (all coins):" in lab
+    assert "paused — issuance is off" not in lab
+    assert "Leading so far (all coins):" in lab
+    assert "Frozen record" not in lab
     assert "**Design unavailable** on 15-min (early, not proven)" in lab
-    assert "Full record in Full evidence" in lab
     assert "Lab 2e87c2" not in lab
 
     # Embed 3: the contest verdict, all six rows, then health.

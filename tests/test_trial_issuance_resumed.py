@@ -1,16 +1,23 @@
-"""Price-first pivot (2026-11-19): directional trial issuance is stopped.
+"""Trial issuance: stopped 2026-11-19 (price-first pivot, PR #704),
+resumed 2026-11-25 on the owner's direct order.
 
-Pins the owner's scope decision at the shipped defaults:
-(i) the config defaults stop the three feeding intakes (Model Lab refill,
-    scheduled variants, LLM hypotheses) while Track 1 convergence
-    collection and the research loop's advancing stay on;
-(ii) a forecast cycle at the default issuance switches issues the live
-    per-stream logistic and zero shadow-family rows — even with a full
-    Model Lab roster open;
-(iii) settlement and grading of already-issued forecasts (incumbent and
+Pins the resumed state at the shipped defaults:
+(i) the config defaults reopen the feeding intakes the stop closed
+    (Model Lab refill, scheduled variants) while Track 1 convergence
+    collection and the research loop's advancing stay on, as they were
+    throughout;
+(ii) every issuance switch the stop turned off defaults ON again, and
+    the families retired BEFORE the stop (flow_v1-v3, liq_v1,
+    regime_v2 — each retired on its own graded record) stay OFF;
+(iii) a forecast cycle at the default issuance switches issues the live
+    per-stream logistic AND shadow-family rows;
+(iv) settlement and grading of already-issued forecasts (incumbent and
     shadow alike) keep processing;
-(iv) the research-loop driver advances/closes but opens nothing while
-    scheduled variants are disabled.
+(v) the research-loop driver opens new scheduled variants at the
+    default, and opens nothing when they are explicitly disabled.
+
+Promotion gates are untouched by the resume: issuance only lets
+evidence accrue again.
 """
 from __future__ import annotations
 
@@ -38,20 +45,20 @@ _FLAG_ENV = (
 )
 
 
-def test_config_defaults_stop_the_intakes_only(monkeypatch):
+def test_config_defaults_reopen_the_intakes(monkeypatch):
     for name in _FLAG_ENV:
         monkeypatch.delenv(name, raising=False)
     settings = Settings(_env_file=None)
-    # The three intakes stop.
-    assert settings.rival_lab_refill_enabled is False
-    assert settings.rival_scheduled_variants_enabled is False
+    # The two intakes the stop closed are open again.
+    assert settings.rival_lab_refill_enabled is True
+    assert settings.rival_scheduled_variants_enabled is True
     # Track 1 convergence collection stays on, untouched.
     assert settings.rival_convergence_quotes_enabled is True
     # The research loop still advances and closes open experiments.
     assert settings.rival_research_loop_enabled is True
 
 
-def test_issuance_switches_default_to_stopped():
+def test_issuance_switches_default_to_issuing():
     for name in (
         "ISSUE_ARCHIVE_V1_CHALLENGERS",
         "ISSUE_GBM_V1_CHALLENGERS",
@@ -67,6 +74,18 @@ def test_issuance_switches_default_to_stopped():
         "ISSUE_POOLED_CHALLENGERS",
         "ISSUE_COMPETITION_CHALLENGERS",
     ):
+        assert getattr(forward_audit, name) is True, name
+
+
+def test_retired_families_stay_off():
+    # Retired on their own graded records before the 2026-11-19 stop;
+    # the resume does not revive them.
+    for name in (
+        "ISSUE_FLOW_CHALLENGERS",
+        "ISSUE_FLOW_V3_CHALLENGERS",
+        "ISSUE_LIQ_V1_CHALLENGERS",
+        "ISSUE_REGIME_V2_CHALLENGERS",
+    ):
         assert getattr(forward_audit, name) is False, name
 
 
@@ -80,17 +99,17 @@ def _counts(store):
     return shadow, incumbent
 
 
-def test_cycle_at_defaults_issues_incumbent_and_no_shadow_rows(tmp_path):
+def test_cycle_at_defaults_issues_incumbent_and_shadow_rows(tmp_path):
     # Fixed past stamp (as in test_model_lab's cycle test) so the +5/+10
     # minute cycles stay behind the wall clock the cycle validates against.
     now = datetime(2026, 11, 11, 12, tzinfo=UTC)
-    store = SQLiteHotStore(tmp_path / "pivot-cycle.sqlite")
+    store = SQLiteHotStore(tmp_path / "resumed-cycle.sqlite")
     market = PerpetualMarketStore(store)
     try:
         _seed_shape_candles(market, now=now, shape="trend")
-        # A full lab roster is open, so lab challengers WOULD issue here
-        # if their switch were on: zero rows proves the gate, not an
-        # empty lab.
+        # A full lab roster is open, and lab issuance is on at the
+        # defaults: shadow rows prove the resume end to end, not just
+        # the switch values.
         market.model_lab = ModelLab(store, refill_enabled=True)
         market.model_lab.review(now)
         assert market.model_lab.active(5)
@@ -100,7 +119,7 @@ def test_cycle_at_defaults_issues_incumbent_and_no_shadow_rows(tmp_path):
         monitor.run_once(now=now + timedelta(minutes=10))
         shadow, incumbent = _counts(store)
         assert incumbent >= 1  # the live logistic is untouched
-        assert shadow == 0
+        assert shadow >= 1     # trial families issue again
     finally:
         store.close()
 
@@ -111,7 +130,7 @@ def test_cycle_still_settles_preexisting_forecasts(tmp_path):
     reference = boundary - timedelta(minutes=65)
     target = boundary - timedelta(minutes=60)
     issued = reference + timedelta(minutes=5)
-    store = SQLiteHotStore(tmp_path / "pivot-settle.sqlite")
+    store = SQLiteHotStore(tmp_path / "resumed-settle.sqlite")
     market = PerpetualMarketStore(store)
     try:
         _seed_shape_candles(market, now=now, shape="trend")
@@ -148,26 +167,32 @@ def test_cycle_still_settles_preexisting_forecasts(tmp_path):
                 "SELECT settled_at, outcome_up FROM perp_forward_audit "
                 "WHERE model_version=?", (MODEL,)).fetchall()
             shadow = conn.execute(
-                "SELECT settled_at, outcome_up FROM rival_model_shadow_forecasts"
+                "SELECT issued_at, settled_at, outcome_up "
+                "FROM rival_model_shadow_forecasts"
             ).fetchall()
-        # The pre-existing pair settled and graded...
+        # The pre-existing pair settled and graded.
         assert any(row["settled_at"] is not None and row["outcome_up"] is not None
                    for row in incumbent)
-        assert len(shadow) == 1
-        assert shadow[0]["settled_at"] is not None
-        assert shadow[0]["outcome_up"] is not None
-        # ...and settling issued nothing new for any shadow family.
-        assert _counts(store)[0] == 1
+        preexisting = [row for row in shadow
+                       if row["issued_at"] == issued.isoformat()]
+        assert len(preexisting) == 1
+        assert preexisting[0]["settled_at"] is not None
+        assert preexisting[0]["outcome_up"] is not None
     finally:
         store.close()
 
 
 @pytest.mark.asyncio
-async def test_tick_opens_nothing_while_scheduled_variants_disabled(tmp_path):
-    store = _store(tmp_path)
+async def test_tick_opens_at_default_and_nothing_when_disabled(tmp_path, monkeypatch):
+    for name in _FLAG_ENV:
+        monkeypatch.delenv(name, raising=False)
+    # Disabled leg (fresh store): the tick opens nothing.
+    (tmp_path / "disabled").mkdir()
+    store = _store(tmp_path / "disabled")
     try:
         drive = _FakeDrive()
-        out = await drive_research_loop_tick(store, drive=drive, now=NOW)
+        out = await drive_research_loop_tick(
+            store, drive=drive, now=NOW, scheduled_variants_enabled=False)
         assert out["status"] == "nothing_to_advance", out
         with store.connect() as conn:
             tables = {row["name"] for row in conn.execute(
@@ -178,9 +203,18 @@ async def test_tick_opens_nothing_while_scheduled_variants_disabled(tmp_path):
                     "SELECT COUNT(*) AS n FROM research_experiments"
                 ).fetchone()["n"]
         assert opened == 0
-        # Control: the same tick opens when the flag is explicitly on.
+    finally:
+        store.close()
+    # Default leg (fresh store): production wires the driver's flag
+    # from Settings (bot.py), and at the resumed default that is on,
+    # so the same tick opens.
+    (tmp_path / "default").mkdir()
+    store = _store(tmp_path / "default")
+    try:
         out = await drive_research_loop_tick(
-            store, drive=drive, now=NOW, scheduled_variants_enabled=True)
+            store, drive=_FakeDrive(), now=NOW,
+            scheduled_variants_enabled=(
+                Settings(_env_file=None).rival_scheduled_variants_enabled))
         assert out["status"] == "opened", out
     finally:
         store.close()

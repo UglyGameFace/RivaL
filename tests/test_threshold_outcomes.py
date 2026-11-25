@@ -110,6 +110,44 @@ def test_settler_never_rechecks_resolved_markets(tmp_path):
     assert outcomes.settled_count(store) == 2
 
 
+class _GammaClient:
+    """Emulates Gamma's real listing behaviour: closed markets are
+    omitted from the default /markets listing and only appear when
+    the request asks for them (closed=true)."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def get(self, url, params=None):
+        self.calls.append(dict(params or {}))
+        request = httpx.Request("GET", url)
+        if (params or {}).get("closed") == "true":
+            return httpx.Response(
+                200, json=[{"closed": True,
+                            "outcomePrices": '["1", "0"]'}],
+                request=request)
+        return httpx.Response(200, json=[], request=request)
+
+
+def test_settler_asks_gamma_for_closed_markets(tmp_path):
+    # Regression (live-verified 2026-11-25): without closed=true the
+    # Gamma fallback could never resolve any market, so Polymarket
+    # outcomes older than the settlement index's coverage stalled at
+    # the head of the due queue forever.
+    store = _store(tmp_path)
+    settler = outcomes.ThresholdOutcomeSettler(store)
+    client = _GammaClient()
+    receipt = asyncio.run(settler.settle(client, now=NOW))
+    assert receipt["polymarket"]["resolved"] == 2
+    assert any(c.get("closed") == "true" for c in client.calls)
+    with store.connect() as conn:
+        rows = {r[1]: r for r in conn.execute(
+            "SELECT venue, market_key, resolved_yes"
+            " FROM rival_threshold_outcomes", ()).fetchall()}
+    assert rows["cond-yes"][2] == 1
+    assert rows["cond-split"][2] == 1
+
+
 def test_settled_count_is_zero_without_the_table(tmp_path):
     store = SQLiteHotStore(tmp_path / "empty.sqlite")
     assert outcomes.settled_count(store) == 0

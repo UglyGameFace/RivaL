@@ -159,12 +159,23 @@ class ThresholdOutcomeSettler:
     # -- venue resolution -----------------------------------------
     async def _resolve_polymarket(self, client: httpx.AsyncClient,
                                   market_key: str) -> tuple[int, float] | None:
-        response = await client.get(
-            GAMMA_BASE + "/markets",
-            params={"condition_ids": market_key})
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, list) or not payload:
+        # Gamma's default /markets listing omits closed markets, and a
+        # settler only ever asks about closed ones (verified live
+        # 2026-11-25: the same condition id returns n=0 without the
+        # flag and the settled market with it). Ask for closed markets
+        # explicitly; fall back to the plain query if that returns
+        # nothing, so an open market's answer shape is unchanged.
+        payload = None
+        for params in ({"condition_ids": market_key, "closed": "true"},
+                       {"condition_ids": market_key}):
+            response = await client.get(GAMMA_BASE + "/markets",
+                                        params=params)
+            response.raise_for_status()
+            candidate = response.json()
+            if isinstance(candidate, list) and candidate:
+                payload = candidate
+                break
+        if not payload:
             return None
         market = payload[0]
         if not isinstance(market, dict) or not market.get("closed"):

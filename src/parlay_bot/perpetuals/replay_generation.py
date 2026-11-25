@@ -711,24 +711,99 @@ def _results_table_exists(store) -> bool:
         return conn.execute(sql, (RESULTS_TABLE,)).fetchone() is not None
 
 
+# Why a candidate cannot be measured, in the plain words the boards
+# show. Felix (2026-11-24): a bare "not measurable yet" count hides
+# exactly the thing he needs to see drain -- every blocked candidate
+# carries its specific blocker and its progress toward its floors.
+CAUSE_TEXT = {
+    "exchange_features_not_recorded": (
+        "its exchange features were not on the settled record it was "
+        "registered against; they are recorded on the live model "
+        "lineage now, but no grader reads them yet"),
+    "no_settled_threshold_outcomes": (
+        "no settled threshold outcomes are recorded yet -- the weekly "
+        "contracts it grades settle from 2026-11-27 and no outcome "
+        "recorder exists"),
+}
+DATA_BLOCKED_TEXT = {
+    "liq-cascade-v1": (
+        "no free archive of timestamped liquidation events exists "
+        "for the record window (verified 2026-11-20); the remaining "
+        "sources are paid or API-keyed"),
+}
+_FLOOR_LABELS = (("calls", "calls"), ("call_days", "days"),
+                 ("days", "days"), ("rows", "rows"),
+                 ("clusters", "clusters"))
+
+
+def _floor_progress(floors: object) -> tuple[dict | None, str | None]:
+    """Normalise a recorded floors dict to {label: {have, need}} plus
+    a compact "calls 30/250 · days 5/7" progress string."""
+    if not isinstance(floors, dict):
+        return None, None
+    out: dict[str, dict] = {}
+    for key, label in _FLOOR_LABELS:
+        entry = floors.get(key)
+        if isinstance(entry, dict) and label not in out:
+            try:
+                out[label] = {"have": int(entry.get("have") or 0),
+                              "need": int(entry.get("need") or 0)}
+            except (TypeError, ValueError):
+                continue
+    if not out:
+        return None, None
+    text = " · ".join(f"{label} {v['have']:,}/{v['need']:,}"
+                      for label, v in out.items())
+    return out, text
+
+
+def _candidate_blocker(candidate_id: str, status: str | None,
+                       detail: dict) -> str | None:
+    """The specific reason a candidate is not measured, or None."""
+    if status not in ("NOT_MEASURABLE", "DATA-BLOCKED"):
+        return None
+    reason = detail.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        return reason.strip()
+    cause = detail.get("cause")
+    if isinstance(cause, str) and cause in CAUSE_TEXT:
+        return CAUSE_TEXT[cause]
+    if status == "DATA-BLOCKED":
+        return DATA_BLOCKED_TEXT.get(candidate_id)
+    _, progress = _floor_progress(detail.get("floors"))
+    if progress:
+        return "below its measurement floors"
+    return None
+
+
 def read_results_for_board(store) -> dict:
     """Latest recorded result per candidate, newest first.
 
     A missing results table is a true "no results yet" (the workbench
     has not recorded a run); any other read failure raises, so the
-    board shows "couldn't load" rather than a false zero.
+    board shows "couldn't load" rather than a false zero. Each
+    candidate carries its specific blocker and floor progress when it
+    is not measured, resolved from the recorded detail -- the boards
+    never show a bare aggregate count for the limbo pile.
     """
     if not _results_table_exists(store):
         return {"candidates": []}
     rows = list(wb._stream(
         store,
         f"SELECT candidate_id, screen, factory, display, status,"
-        f" verdict, graded_rows, calls, days, evaluated_at"
+        f" verdict, graded_rows, calls, days, evaluated_at, detail_json"
         f" FROM {RESULTS_TABLE} ORDER BY evaluated_at DESC", ()))
     latest: dict[str, dict] = {}
     for raw in rows:
         item = dict(raw)
         if item["candidate_id"] not in latest:
+            try:
+                detail = json.loads(item.get("detail_json") or "{}")
+            except (TypeError, ValueError):
+                detail = {}
+            if not isinstance(detail, dict):
+                detail = {}
+            floors, progress = _floor_progress(detail.get("floors"))
             latest[item["candidate_id"]] = {
                 "candidate_id": item["candidate_id"],
                 "screen": item["screen"], "factory": item["factory"],
@@ -737,6 +812,10 @@ def read_results_for_board(store) -> dict:
                 "graded_rows": int(item["graded_rows"]),
                 "calls": int(item["calls"]), "days": int(item["days"]),
                 "evaluated_at": item["evaluated_at"],
+                "blocker": _candidate_blocker(
+                    item["candidate_id"], item["status"], detail),
+                "floors": floors,
+                "progress": progress,
             }
     return {"candidates": list(latest.values())}
 
@@ -801,6 +880,9 @@ def import_phase1_reports(reports: list[dict]) -> list[dict]:
                 "detail": {"imported_from": "phase1-report"},
             })
         elif screen == "R2":
+            detail = {"imported_from": "phase1-report"}
+            if isinstance(report.get("reason"), str) and report["reason"]:
+                detail["reason"] = report["reason"]
             entries.append({
                 "candidate_id": "liq-cascade-v1", "screen": "R2",
                 "factory": factories.get("liq-cascade-v1", "lab"),
@@ -808,7 +890,7 @@ def import_phase1_reports(reports: list[dict]) -> list[dict]:
                 "status": report.get("status") or "DATA-BLOCKED",
                 "verdict": None, "graded_rows": 0, "calls": 0, "days": 0,
                 "evaluated_at": evaluated_at,
-                "detail": {"imported_from": "phase1-report"},
+                "detail": detail,
             })
     return entries
 

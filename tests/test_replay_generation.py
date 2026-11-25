@@ -366,3 +366,66 @@ def test_phase1_import_maps_all_four_report_shapes():
     assert by_id["xmarket-btc-60m-425d49"]["factory"] == "xmarket"
     assert by_id["cb-premium-v1"]["status"] == "NOT_MEASURABLE"
     assert by_id["liq-cascade-v1"]["status"] == "DATA-BLOCKED"
+
+
+# --- Limbo visibility: every blocked candidate names its blocker ---
+
+def _limbo_store(tmp_path):
+    store = SQLiteHotStore(tmp_path / "limbo.sqlite")
+    at = "2026-11-20T17:00:00+00:00"
+    gen.record_results(store, [
+        {"candidate_id": "llm-mask-btc-trend", "screen": "G-D",
+         "factory": "lab", "display": "AI-suggested mask · BTC",
+         "status": "NOT_MEASURABLE", "verdict": None, "graded_rows": 0,
+         "calls": 0, "days": 0, "evaluated_at": at,
+         "detail": {"cause": "exchange_features_not_recorded"}},
+        {"candidate_id": "opt-implied-btc-weekly", "screen": "G-C",
+         "factory": "lab", "display": "Options-implied · BTC weekly",
+         "status": "NOT_MEASURABLE", "verdict": None, "graded_rows": 0,
+         "calls": 0, "days": 0, "evaluated_at": at,
+         "detail": {"cause": "no_settled_threshold_outcomes"}},
+        {"candidate_id": "cond-tight-book", "screen": "G-B",
+         "factory": "screen", "display": "Main model's calls · tight book only",
+         "status": "NOT_MEASURABLE", "verdict": None, "graded_rows": 900,
+         "calls": 30, "days": 3, "evaluated_at": at,
+         "detail": {"floors": {"calls": {"have": 30, "need": 250},
+                               "call_days": {"have": 3, "need": 7}}}},
+        {"candidate_id": "liq-cascade-v1", "screen": "R2",
+         "factory": "lab", "display": "Liquidation cascade screen",
+         "status": "DATA-BLOCKED", "verdict": None, "graded_rows": 0,
+         "calls": 0, "days": 0, "evaluated_at": at,
+         "detail": {"imported_from": "phase1-report"}},
+    ])
+    return store
+
+
+def test_board_blockers_and_progress(tmp_path):
+    board = gen.read_results_for_board(_limbo_store(tmp_path))
+    by_id = {c["candidate_id"]: c for c in board["candidates"]}
+    assert "no grader reads them yet" in by_id["llm-mask-btc-trend"]["blocker"]
+    assert "2026-11-27" in by_id["opt-implied-btc-weekly"]["blocker"]
+    assert by_id["cond-tight-book"]["blocker"] == "below its measurement floors"
+    assert by_id["cond-tight-book"]["progress"] == "calls 30/250 · days 3/7"
+    assert by_id["cond-tight-book"]["floors"]["calls"] == {"have": 30, "need": 250}
+    assert "liquidation" in by_id["liq-cascade-v1"]["blocker"]
+
+
+def test_workbench_text_names_every_blocker(tmp_path):
+    record = gen.read_results_for_board(_limbo_store(tmp_path))
+    full = workbench_text(record, full=True)
+    assert "15 not measurable" not in full  # counts come from the record
+    for needle in ("AI-suggested mask · BTC", "no grader reads them yet",
+                   "Options-implied · BTC weekly", "2026-11-27",
+                   "tight book only", "calls 30/250 · days 3/7",
+                   "Liquidation cascade screen"):
+        assert needle in full, needle
+    compact = workbench_text(record)
+    assert "calls 30/250 · days 3/7" in compact
+
+
+def test_r2_import_records_the_reason():
+    entries = gen.import_phase1_reports([{
+        "screen": "R2", "status": "DATA-BLOCKED",
+        "evaluated_at": "2026-11-20T17:00:00+00:00",
+        "reason": "no liquidation archive"}])
+    assert entries[0]["detail"]["reason"] == "no liquidation archive"

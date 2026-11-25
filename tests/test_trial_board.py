@@ -421,7 +421,10 @@ def test_switch_off_families_leave_the_board_but_stay_in_the_full_record(tmp_pat
 def test_board_with_no_live_contenders_says_so_and_counts_the_hidden(tmp_path):
     """The production case after PR #704: every family on the board is
     retired, so the section says no comparisons are active and counts
-    the hidden record instead of listing dead rows."""
+    the hidden record instead of listing dead rows. The Full page used
+    to keep listing the frozen rows as contenders; the owner ordered
+    the board taken down until trials resume (2026-11-25), so with no
+    live trial it now shows the paused state instead."""
     from parlay_bot.discord_app.home import _trials_sections
 
     store, now = _board_with_evidence(tmp_path, {
@@ -443,7 +446,10 @@ def test_board_with_no_live_contenders_says_so_and_counts_the_hidden(tmp_path):
                 in section["leader"])
 
         full = _trials_sections({"trials": board}, full=True)
-        assert full["count"] == 2
-        assert "6-year" in full["table"] and "Naive Bayes" in full["table"]
+        assert full["count"] == 0
+        assert full["table"] == ""
+        assert "Test models are paused" in full["leader"]
+        assert "6-year" not in full["leader"]
+        assert "2 stopped trial comparison(s) on record" in full["how_to_read"]
     finally:
         store.close()

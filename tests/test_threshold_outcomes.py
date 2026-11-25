@@ -137,7 +137,9 @@ def _kalshi_store(tmp_path, tickers):
     return store
 
 
-def test_settler_drains_more_than_the_old_cap_in_one_cycle(tmp_path):
+def test_settler_drains_more_than_the_old_cap_in_one_cycle(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(outcomes, "REQUEST_SPACING_SECONDS", 0)
     tickers = [f"KXBTC-{i}" for i in range(50)]
     store = _kalshi_store(tmp_path, tickers)
     settler = outcomes.ThresholdOutcomeSettler(store)

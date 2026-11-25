@@ -100,13 +100,19 @@ def _finite(value) -> float | None:
     return float(value) if math.isfinite(value) else None
 
 
-def _families(store, asset: str, now: datetime) -> dict[str, dict[int, list]]:
-    """name -> horizon -> [(venue, contract, family, info)], best version per name."""
+def _families(store, asset: str, now: datetime) -> tuple[dict[str, dict[int, list]], bool]:
+    """(name -> horizon -> [(venue, contract, family, info)], read_failed).
+
+    Best version per name. ``read_failed`` is True when the promotion read
+    itself failed (optional_rows returned None): the mapping is then empty
+    because it is unknown, not because nothing is on trial.
+    """
     since = (now - FRESH).isoformat()
-    rows = optional_rows(
+    rows_read = optional_rows(
         store, """SELECT venue,contract,horizon_minutes,evidence_json
                   FROM rival_family_promotion WHERE asset=? AND evaluated_at>=?""",
-        (asset, since), what="model page promotion read") or []
+        (asset, since), what="model page promotion read")
+    rows = rows_read or []
     retired = retired_families()
     from parlay_bot.perpetuals.model_lab import load_family_designs
 
@@ -137,13 +143,13 @@ def _families(store, asset: str, now: datetime) -> dict[str, dict[int, list]]:
             best = max(versions.values(), key=lambda scopes: (
                 max(i["days"] for *_, i in scopes), max(i["targets"] for *_, i in scopes)))
             out.setdefault(name, {})[horizon] = best
-    return out
+    return out, rows_read is None
 
 
 def trial_models(store, asset: str, now: datetime | None = None) -> list[str]:
     """Every model on trial for this coin, longest-running first (one point read)."""
     stamp = (now or datetime.now(UTC)).astimezone(UTC)
-    found = _families(store, asset, stamp)
+    found, _read_failed = _families(store, asset, stamp)
     return sorted(found, key=lambda name: (
         -max(max(i["days"] for *_, i in scopes) for scopes in found[name].values()), name))
 
@@ -208,7 +214,11 @@ def model_report(store, asset: str, name: str, now: datetime | None = None) -> d
     timeframe (14 days, on the (asset,horizon,family,issued_at) index).
     """
     stamp = (now or datetime.now(UTC)).astimezone(UTC)
-    models = _families(store, asset, stamp)
+    models, families_unavailable = _families(store, asset, stamp)
+    if families_unavailable:
+        # A failed read is not "not on trial": say so, so the page can.
+        return {"asset": asset, "name": name, "horizons": {},
+                "ledger_days": LEDGER_DAYS, "unavailable": True}
     found = models.get(name)
     if found is None:
         legacy = re.fullmatch(r"Lab ([0-9a-f]{6,10})", name)
@@ -223,12 +233,14 @@ def model_report(store, asset: str, name: str, now: datetime | None = None) -> d
     horizons: dict[int, dict] = {}
     # Every read on its own connection (see storage.optional_reads): one
     # slow ledger read must not turn the other timeframes into "no calls".
+    stop_read = optional_rows(
+        store, "SELECT venue,contract,horizon_minutes,family "
+               "FROM rival_family_early_stop",
+        what="model page early-stop read")
+    stops_known = stop_read is not None
     stops = {(str(r["venue"]), str(r["contract"]), int(r["horizon_minutes"]),
               str(r["family"]))
-             for r in optional_rows(
-                 store, "SELECT venue,contract,horizon_minutes,family "
-                        "FROM rival_family_early_stop",
-                 what="model page early-stop read") or []}
+             for r in stop_read or []}
     for horizon in HORIZONS:
         scopes = found.get(horizon)
         if not scopes:
@@ -242,7 +254,8 @@ def model_report(store, asset: str, name: str, now: datetime | None = None) -> d
             if gain is not None and n:
                 weighted += gain * n
                 weight += n
-            cut = (venue, contract, horizon, family) in stops
+            cut = ((venue, contract, horizon, family) in stops
+                   if stops_known else None)
             exchanges.append({"venue": venue, "results": n, "gain": gain,
                               "days": int(info["days"]), "cut": cut,
                               "passed": bool(info.get("qualified"))})
@@ -270,7 +283,8 @@ def model_report(store, asset: str, name: str, now: datetime | None = None) -> d
             "gain": weighted / weight if weight else None,
             "ahead": sum((e["gain"] or 0) > LEVEL_WITHIN for e in exchanges),
             "exchanges": sorted(exchanges, key=lambda e: -e["results"]),
-            "cut": sum(e["cut"] for e in exchanges),
+            "cut": sum(1 for e in exchanges if e["cut"]),
+            "cut_unknown": any(e["cut"] is None for e in exchanges),
             "passed": any(e["passed"] for e in exchanges),
             "fees": {k: v[0] / v[1] for k, v in fees.items() if v[1]},
             "fee_windows": {k: v[1] for k, v in fees.items()},
@@ -486,7 +500,9 @@ def _checklist(report: dict) -> str:
         + (f"({severe:+.1f} bps per trade over {h['fee_windows']['severe']:,} windows)"
            if severe is not None else "(not measured yet)"),
         ("🛑 cut for losing on " + f"{h['cut']} of {len(h['exchanges'])} exchanges"
-         if h["cut"] else "✅ never cut for losing"),
+         if h["cut"] else
+         "❔ cut status unknown — the early-stop record couldn't be read"
+         if h.get("cut_unknown") else "✅ never cut for losing"),
     ]
     conservative = h["fees"].get("conservative")
     if conservative is not None:
@@ -497,6 +513,12 @@ def _checklist(report: dict) -> str:
 def model_embed(report: dict | None, *, asset: str, name: str) -> discord.Embed:
     name = (report or {}).get("name") or (short_name(name)
         if name.startswith(("lab_", "Lab ")) else name)
+    if report is not None and report.get("unavailable"):
+        return discord.Embed(
+            title=f"🧪 {name} · {asset}",
+            description="⚠️ Couldn't load this model's trial record right now — "
+                        "the read failed. That is not an empty record; press Refresh.",
+            color=discord.Color.orange())
     if report is None or not report["horizons"]:
         return discord.Embed(
             title=f"🧪 {name} · {asset}",

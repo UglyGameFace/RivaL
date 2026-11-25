@@ -225,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
                               "exactly one ledger artifact"}
                 continue
             block = wb.screen_xmarket(
-                rows, asset=spec["asset"], horizon=spec["horizon"])
+                rows, asset=spec["asset"], horizon=spec["horizon"],
+                family_size=len(wb.XMARKET_SCOPES))
             block["screen"] = spec["screen"]
             block["artifact_sha256"] = sha
             scopes[key] = block

@@ -23,8 +23,12 @@ def _features(up=0.5, down=0.5, up_off=0.0, down_off=0.0):
 
 def _row(*, day_offset=0, p=0.7, baseline=0.5, label=1, asset="BTC",
          horizon=15, up_price=0.5, down_price=0.5, fee_rate=None,
-         observed_offset=timedelta(hours=2)):
-    issued = T0 + timedelta(days=day_offset)
+         observed_offset=timedelta(hours=2), minute_offset=0):
+    # minute_offset staggers issuance within the day so each row is a
+    # distinct market (distinct slug = distinct cluster); without it
+    # every row in a day shared one slug and no cluster floor could
+    # ever be exercised.
+    issued = T0 + timedelta(days=day_offset, minutes=minute_offset)
     return {
         "slug": f"{asset.lower()}-updown-15m-{int(issued.timestamp())}",
         "asset": asset, "horizon": horizon, "issued_at": issued,
@@ -114,7 +118,8 @@ def _history(days=9, per_day=200, *, skill=0.8):
         for i in range(per_day):
             label = 1 if (i % 10) < skill * 10 else 0
             p = 0.85 if label else 0.3
-            rows.append(_row(day_offset=d, p=p, label=label))
+            rows.append(_row(day_offset=d, p=p, label=label,
+                             minute_offset=i))
     return rows
 
 
@@ -142,7 +147,8 @@ def _skilled_history(days=21, per_day=300):
         for i in range(per_day):
             label = 1 if (i % 5) < 4 else 0  # 80% up
             p = 0.8 if label else 0.2
-            rows.append(_row(day_offset=d, p=p, label=label))
+            rows.append(_row(day_offset=d, p=p, label=label,
+                             minute_offset=i))
     return rows
 
 
@@ -162,7 +168,7 @@ def test_recalibration_kill_when_model_is_the_market():
             label = 1 if i % 2 == 0 else 0
             rows.append(_row(day_offset=d, p=0.5 + (0.1 if label else -0.1),
                              baseline=0.5 + (0.1 if label else -0.1),
-                             label=label))
+                             label=label, minute_offset=i))
     result = wb.screen_recalibration(rows)
     shrink = result["candidates"]["recal-shrink50"]
     # p == baseline everywhere: shrink is the identity, deltas are 0,
@@ -374,3 +380,101 @@ def test_loader_eligibility_and_book_verification(tmp_path):
     assert coverage["unpriceable_book"] == 1
     assert rows[0]["label"] == 1
     assert MODEL == wb.MODEL
+
+
+# --- Corrected template legs (2026-11-24 defect sweep) ---
+
+def _synth_obs(*, day, idx, dll=-0.01, db=-0.003, call_net=0.02,
+               cluster=None, asset="BTC", horizon=60):
+    issued = datetime(2026, 11, 1, tzinfo=UTC) + timedelta(
+        days=day, minutes=idx)
+    return {"issued_at": issued, "day": issued.date().isoformat(),
+            "delta_log_loss": dll, "delta_brier": db,
+            "call_net": call_net,
+            "call_cost": 0.5 if call_net is not None else None,
+            "cluster": cluster if cluster is not None else f"m-{day}-{idx}",
+            "asset": asset, "horizon": horizon}
+
+
+def _verdict_for(observations, **floors):
+    block = wb._paired_block(observations)
+    floors.setdefault("min_rows", 100)
+    floors.setdefault("min_days", 4)
+    floors.setdefault("min_calls", 100)
+    floors.setdefault("min_clusters", 40)
+    return block, wb._four_leg_verdict(block, **floors)
+
+
+def test_brier_leg_is_the_corrected_ci_form():
+    # X2's shape: delta_brier -0.00283, tight across days. The old
+    # -0.005 point leg killed it; the corrected CI leg passes it.
+    obs = [_synth_obs(day=d, idx=i, db=-0.00283, dll=-0.0057)
+           for d in range(8) for i in range(250)]
+    block, verdict = _verdict_for(obs)
+    assert block["delta_brier"] == -0.00283
+    assert block["delta_brier_ci95"]["upper"] < 0
+    assert verdict["status"] == "EVALUATED"
+    assert verdict["legs"]["paired_brier"] is True
+
+
+def test_brier_leg_rejects_a_noisy_point_estimate_the_old_leg_passed():
+    # Mean delta_brier -0.006 (would pass the old -0.005 point leg)
+    # but alternating days make the cluster CI cross zero.
+    obs = []
+    for d in range(8):
+        db = -0.030 if d % 2 == 0 else 0.018
+        obs += [_synth_obs(day=d, idx=i, db=db) for i in range(250)]
+    block, verdict = _verdict_for(obs)
+    assert block["delta_brier"] <= -0.005
+    assert block["delta_brier_ci95"]["upper"] > 0
+    assert verdict["legs"]["paired_brier"] is False
+
+
+def test_one_call_second_half_is_not_measurable():
+    # The audit F4 reproduction: 200 calls in the first half, exactly
+    # one call in the second. Pooled floors are met; the per-half
+    # floor must refuse a verdict.
+    obs = []
+    for i in range(400):
+        call_net = 0.02 if i < 200 else None
+        if i == 399:
+            call_net = 0.48
+        obs.append(_synth_obs(day=i // 50, idx=i, call_net=call_net))
+    block, verdict = _verdict_for(obs)
+    assert block["calls"]["n"] == 201
+    assert verdict["status"] == "NOT_MEASURABLE"
+    assert verdict["floors"]["calls_second_half"] == {"have": 1,
+                                                      "need": 25}
+
+
+def test_cluster_floor_detects_concentration():
+    # 400 graded rows on ONE market: plenty of calls, one independent
+    # unit. The cluster floor must refuse a verdict.
+    obs = [_synth_obs(day=i // 50, idx=i, cluster="one-market")
+           for i in range(400)]
+    block, verdict = _verdict_for(obs)
+    assert block["clusters"] == 1
+    assert verdict["status"] == "NOT_MEASURABLE"
+    assert verdict["floors"]["clusters"] == {"have": 1, "need": 40}
+
+
+def test_stratified_reporting_shows_the_split():
+    obs = ([_synth_obs(day=d, idx=i, db=-0.02, asset="BTC")
+            for d in range(4) for i in range(100)]
+           + [_synth_obs(day=d, idx=i, db=0.01, asset="ETH")
+              for d in range(4, 8) for i in range(100)])
+    block, _ = _verdict_for(obs)
+    cuts = block["stratified"]["asset"]
+    assert cuts["BTC"]["delta_brier"] == -0.02
+    assert cuts["ETH"]["delta_brier"] == 0.01
+    assert cuts["BTC"]["rows"] + cuts["ETH"]["rows"] == block["rows"]
+
+
+def test_family_size_widens_cluster_intervals():
+    obs = [_synth_obs(day=d, idx=i, dll=-0.01 - 0.002 * d)
+           for d in range(8) for i in range(50)]
+    single = wb._paired_block(obs)
+    family = wb._paired_block(obs, family_size=5)
+    width = lambda ci: ci["upper"] - ci["lower"]
+    assert width(family["delta_log_loss_ci95"]) \
+        > width(single["delta_log_loss_ci95"])

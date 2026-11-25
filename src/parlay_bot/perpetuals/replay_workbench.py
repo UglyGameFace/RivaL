@@ -55,7 +55,19 @@ RECAL_VARIANTS = (
     "recal-raw", "recal-platt", "recal-isotonic",
     "recal-shrink50", "recal-shrink25",
 )
-PASS_BRIER = -0.005
+RECAL_MIN_CLUSTERS = 100
+# Corrected Brier leg (research sweep #3, 2026-11-20; crypto-zero audit
+# 2026-11-24 section 2): the old PASS_BRIER = -0.005 point leg demanded
+# a ~7.07pp corrected bias -- correcting bias b gains b^2 in Brier
+# (Murphy decomposition) -- when every bias ever measured is 1-3pp.
+# The template leg is now the CI form: delta_brier < 0 with its
+# day-cluster interval entirely below 0, the same discipline as leg 1.
+# Completed screens' saved verdicts were produced under the legs frozen
+# at their run time and are never recomputed.
+# A chronological half whose call mean rests on fewer calls than this
+# is not evidence; the both-halves call leg floors each half separately
+# (audit F4: X2's second half passed on a single call).
+MIN_CALLS_PER_HALF = 25
 
 # --- Screen R3 (Coinbase premium) frozen criteria, design 5.3 ---
 PREMIUM_BAND = 0.0010
@@ -67,6 +79,7 @@ XMARKET_FAMILY = "xmarket_v1"
 XMARKET_MIN_ROWS = 1000
 XMARKET_MIN_DAYS = 4
 XMARKET_MIN_CALLS = 100
+XMARKET_MIN_CLUSTERS = 40
 XMARKET_VALUE_EDGE = 0.05
 XMARKET_CALL_BUFFER = 0.025
 XMARKET_SCOPES = (
@@ -152,7 +165,8 @@ def _mean(values) -> float | None:
     return sum(values) / len(values) if values else None
 
 
-def _day_cluster_interval(observations, key: str) -> dict | None:
+def _day_cluster_interval(observations, key: str, *,
+                          alpha: float = 0.05) -> dict | None:
     """Day-clustered bootstrap 95% interval for a mean (seeded)."""
     by_day: dict[str, list[float]] = {}
     for obs in observations:
@@ -173,8 +187,9 @@ def _day_cluster_interval(observations, key: str) -> dict | None:
             count += len(values)
         means.append(total / count)
     means.sort()
-    return {"lower": means[int(0.025 * len(means))],
-            "upper": means[min(len(means) - 1, int(0.975 * len(means)))],
+    return {"lower": means[int((alpha / 2) * len(means))],
+            "upper": means[min(len(means) - 1,
+                               int((1 - alpha / 2) * len(means)))],
             "days": len(days), "replicates": len(means)}
 
 
@@ -197,52 +212,144 @@ def _call_block(observations) -> dict:
     }
 
 
-def _paired_block(observations) -> dict:
-    """Paired-grading metrics over graded observations (fair-value shape)."""
+def _span_days(observations) -> float | None:
+    if not observations:
+        return None
+    stamps = [o["issued_at"] for o in observations]
+    return (max(stamps) - min(stamps)).total_seconds() / 86400.0
+
+
+def _cluster_count(observations) -> int | None:
+    """Distinct independent units (market slugs / target windows).
+
+    None when any observation lacks a cluster key: a partial count
+    would understate concentration, so the block reports unknown
+    rather than a wrong number (audit F3: floors counted calls while
+    power lives in clusters)."""
+    if not observations or any(
+            o.get("cluster") is None for o in observations):
+        return None
+    return len({o["cluster"] for o in observations})
+
+
+def _stratified(observations) -> dict:
+    """Per-key paired cuts, REPORTING ONLY -- verdicts never read this.
+
+    A pooled number hid the BTC-EOD split (Above -0.0196 / Dip -0.0058
+    / Reach +0.0085 pooled to -0.00327); every key carried by all
+    observations gets its own cut so a split is visible on the face of
+    the report (audit F5). A key missing from any observation is
+    skipped rather than silently dropping rows."""
+    out: dict = {}
+    for key in ("asset", "horizon", "contract_type"):
+        if any(o.get(key) is None for o in observations):
+            continue
+        groups: dict[str, list] = {}
+        for o in observations:
+            groups.setdefault(str(o[key]), []).append(o)
+        if len(groups) < 2:
+            continue
+        out[key] = {
+            name: {
+                "rows": len(group),
+                "clusters": _cluster_count(group),
+                "delta_log_loss": _mean(
+                    [x["delta_log_loss"] for x in group]),
+                "delta_brier": _mean([x["delta_brier"] for x in group]),
+                "calls": _call_block(group),
+            }
+            for name, group in sorted(groups.items())
+        }
+    return out
+
+
+def _paired_block(observations, *, family_size: int = 1) -> dict:
+    """Paired-grading metrics over graded observations (fair-value shape).
+
+    family_size is the number of candidates graded as one screen
+    family; the day-cluster intervals use the Sidak-adjusted alpha
+    1-(1-0.05)**(1/family_size) so a family of screens does not spend
+    the same 5% on every candidate (the Model Lab search_bar pattern,
+    extended to this template)."""
     n = len(observations)
     if not n:
-        return {"rows": 0, "days": 0, "delta_log_loss": None,
+        return {"rows": 0, "days": 0, "clusters": None,
+                "delta_log_loss": None,
                 "delta_log_loss_ci95": None, "delta_brier": None,
                 "delta_brier_ci95": None, "chronological_halves": None,
-                "calls": _call_block(observations)}
+                "stratified": {}, "calls": _call_block(observations)}
+    alpha = (1.0 - (1.0 - 0.05) ** (1.0 / family_size)
+             if family_size > 1 else 0.05)
     first, second = _halves(observations)
+    first_calls = _call_block(first)
+    second_calls = _call_block(second)
     return {
         "rows": n,
         "days": len({o["day"] for o in observations}),
+        "clusters": _cluster_count(observations),
         "delta_log_loss": _mean([o["delta_log_loss"] for o in observations]),
         "delta_log_loss_ci95": _day_cluster_interval(
-            observations, "delta_log_loss"),
+            observations, "delta_log_loss", alpha=alpha),
         "delta_brier": _mean([o["delta_brier"] for o in observations]),
         "delta_brier_ci95": _day_cluster_interval(
-            observations, "delta_brier"),
+            observations, "delta_brier", alpha=alpha),
         "chronological_halves": {
             "first_delta_log_loss": _mean(
                 [o["delta_log_loss"] for o in first]),
             "second_delta_log_loss": _mean(
                 [o["delta_log_loss"] for o in second]),
-            "first_call_mean_net": _call_block(first)["mean_net"],
-            "second_call_mean_net": _call_block(second)["mean_net"],
+            "first_call_mean_net": first_calls["mean_net"],
+            "second_call_mean_net": second_calls["mean_net"],
+            "first_call_n": first_calls["n"],
+            "second_call_n": second_calls["n"],
             "first_n": len(first), "second_n": len(second),
+            # Halves split by count (the frozen screens' method); the
+            # spans are reported so a half covering a much shorter
+            # clock span than the other is visible, not hidden.
+            "first_span_days": _span_days(first),
+            "second_span_days": _span_days(second),
         },
+        "stratified": _stratified(observations),
         "calls": _call_block(observations),
     }
 
 
 def _four_leg_verdict(block: dict, *, min_rows: int, min_days: int,
-                      min_calls: int) -> dict:
-    """The frozen four-leg verdict shared by screens R1 and X1-X5."""
+                      min_calls: int, min_clusters: int = 0,
+                      min_calls_per_half: int = MIN_CALLS_PER_HALF
+                      ) -> dict:
+    """The four-leg verdict template shared by screens R1, X1-X5, G-A.
+
+    Legs corrected 2026-11-24 (defect sweep): leg 2 is the CI form of
+    the Brier leg (the old -0.005 point leg was mis-scaled, see the
+    note at RECAL_MIN_CLUSTERS), maturity additionally requires a
+    minimum number of independent clusters and a minimum call count
+    in EACH chronological half. Completed screens' saved verdicts were
+    produced under the legs frozen at their run time; this template
+    governs future screens only."""
+    halves = block["chronological_halves"] or {}
     floors = {
         "graded_rows": {"have": block["rows"], "need": min_rows},
         "distinct_days": {"have": block["days"], "need": min_days},
         "calls": {"have": block["calls"]["n"], "need": min_calls},
+        "clusters": {"have": block.get("clusters"), "need": min_clusters},
+        "calls_first_half": {"have": halves.get("first_call_n") or 0,
+                             "need": min_calls_per_half},
+        "calls_second_half": {"have": halves.get("second_call_n") or 0,
+                              "need": min_calls_per_half},
     }
     mature = (block["rows"] >= min_rows and block["days"] >= min_days
-              and block["calls"]["n"] >= min_calls)
+              and block["calls"]["n"] >= min_calls
+              and (min_clusters == 0
+                   or (block.get("clusters") is not None
+                       and block["clusters"] >= min_clusters))
+              and (halves.get("first_call_n") or 0) >= min_calls_per_half
+              and (halves.get("second_call_n") or 0) >= min_calls_per_half)
     if not mature:
         return {"status": "NOT_MEASURABLE", "verdict": None,
                 "floors": floors, "legs": None}
-    halves = block["chronological_halves"] or {}
     ci = block["delta_log_loss_ci95"] or {}
+    brier_ci = block["delta_brier_ci95"] or {}
     legs = {
         "paired_log_loss": bool(
             block["delta_log_loss"] is not None
@@ -250,7 +357,9 @@ def _four_leg_verdict(block: dict, *, min_rows: int, min_days: int,
             and ci.get("upper") is not None and ci["upper"] < 0),
         "paired_brier": bool(
             block["delta_brier"] is not None
-            and block["delta_brier"] <= PASS_BRIER),
+            and block["delta_brier"] < 0
+            and brier_ci.get("upper") is not None
+            and brier_ci["upper"] < 0),
         "both_halves_log_loss": bool(
             (halves.get("first_delta_log_loss") or 0.0) < 0
             and (halves.get("second_delta_log_loss") or 0.0) < 0),
@@ -475,13 +584,17 @@ def screen_recalibration(rows: list[dict]) -> dict:
                     "delta_brier": (g - y) ** 2 - (baseline - y) ** 2,
                     "call_net": call[0] if call else None,
                     "call_cost": call[1] if call else None,
+                    "cluster": row["slug"], "asset": row["asset"],
+                    "horizon": row["horizon"],
                 })
     candidates = {}
     for variant in RECAL_VARIANTS:
-        block = _paired_block(observations[variant])
+        block = _paired_block(observations[variant],
+                              family_size=len(RECAL_VARIANTS))
         verdict = _four_leg_verdict(
             block, min_rows=RECAL_MIN_SCORED_ROWS,
-            min_days=RECAL_MIN_SCORED_DAYS, min_calls=RECAL_MIN_CALLS)
+            min_days=RECAL_MIN_SCORED_DAYS, min_calls=RECAL_MIN_CALLS,
+            min_clusters=RECAL_MIN_CLUSTERS)
         candidates[variant] = {**verdict, "score": block}
     return {
         "screen": "R1",
@@ -587,7 +700,8 @@ def screen_premium(rows: list[dict], premium_points) -> dict:
 # 5.4). Pure: rows are raw ledger rows for one scope + pinned SHA.
 # ---------------------------------------------------------------------------
 
-def screen_xmarket(rows: list[dict], *, asset: str, horizon: int) -> dict:
+def screen_xmarket(rows: list[dict], *, asset: str, horizon: int,
+                   family_size: int = 1) -> dict:
     exclusions = {"outcome_missing": 0, "probability_out_of_range": 0,
                   "issued_after_target_close": 0}
     observations: list[dict] = []
@@ -628,11 +742,13 @@ def screen_xmarket(rows: list[dict], *, asset: str, horizon: int) -> dict:
             "delta_log_loss": _log_loss(p, y) - _log_loss(baseline, y),
             "delta_brier": (p - y) ** 2 - (baseline - y) ** 2,
             "call_net": call_net, "call_cost": call_cost,
+            "cluster": str(row["target_opened_at"]),
+            "asset": asset, "horizon": horizon,
         })
-    block = _paired_block(observations)
+    block = _paired_block(observations, family_size=family_size)
     verdict = _four_leg_verdict(
         block, min_rows=XMARKET_MIN_ROWS, min_days=XMARKET_MIN_DAYS,
-        min_calls=XMARKET_MIN_CALLS)
+        min_calls=XMARKET_MIN_CALLS, min_clusters=XMARKET_MIN_CLUSTERS)
     return {**verdict, "score": block,
             "coverage": {"ledger_rows": len(rows), "exclusions": exclusions},
             "pricing": "IMPLIED-PRICE (baseline-implied; spread uncharged,"

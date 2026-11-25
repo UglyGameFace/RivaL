@@ -50,8 +50,10 @@ FEATURE_COUNT = 10
 # --- Screen G-A fit spec (amendment section 3, frozen) ---
 FIT_WINDOW = 5000
 FIT_MIN_ROWS = {"A": 1000, "B": 300}
-TIER_FLOORS = {"A": {"min_rows": 1000, "min_days": 7, "min_calls": 250},
-               "B": {"min_rows": 500, "min_days": 7, "min_calls": 100}}
+TIER_FLOORS = {"A": {"min_rows": 1000, "min_days": 7, "min_calls": 250,
+                     "min_clusters": 100},
+               "B": {"min_rows": 500, "min_days": 7, "min_calls": 100,
+                     "min_clusters": 40}}
 LOGISTIC_L2 = 1.0
 LOGISTIC_MAX_ITER = 25
 LOGISTIC_TOL = 1e-7
@@ -368,11 +370,15 @@ def screen_generation_masks(rows: list[dict],
                     "delta_brier": (g - y) ** 2 - (baseline - y) ** 2,
                     "call_net": call[0] if call else None,
                     "call_cost": call[1] if call else None,
+                    "cluster": row["slug"], "asset": row["asset"],
+                    "horizon": row["horizon"],
                 })
-        block = wb._paired_block(observations)
+        block = wb._paired_block(observations,
+                                 family_size=len(candidates))
         verdict = wb._four_leg_verdict(
             block, min_rows=floors["min_rows"],
-            min_days=floors["min_days"], min_calls=floors["min_calls"])
+            min_days=floors["min_days"], min_calls=floors["min_calls"],
+            min_clusters=floors["min_clusters"])
         out[cand["id"]] = {
             **verdict, "score": block,
             "coverage": {

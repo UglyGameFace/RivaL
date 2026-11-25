@@ -9,6 +9,8 @@ with and without it prove the purge.
 import math
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from parlay_bot.perpetuals import replay_workbench as wb
 from parlay_bot.perpetuals.polymarket_learning import after_fee_call_net
 from parlay_bot.storage.hot import SQLiteHotStore
@@ -411,7 +413,7 @@ def test_brier_leg_is_the_corrected_ci_form():
     obs = [_synth_obs(day=d, idx=i, db=-0.00283, dll=-0.0057)
            for d in range(8) for i in range(250)]
     block, verdict = _verdict_for(obs)
-    assert block["delta_brier"] == -0.00283
+    assert block["delta_brier"] == pytest.approx(-0.00283)
     assert block["delta_brier_ci95"]["upper"] < 0
     assert verdict["status"] == "EVALUATED"
     assert verdict["legs"]["paired_brier"] is True
@@ -465,8 +467,8 @@ def test_stratified_reporting_shows_the_split():
               for d in range(4, 8) for i in range(100)])
     block, _ = _verdict_for(obs)
     cuts = block["stratified"]["asset"]
-    assert cuts["BTC"]["delta_brier"] == -0.02
-    assert cuts["ETH"]["delta_brier"] == 0.01
+    assert cuts["BTC"]["delta_brier"] == pytest.approx(-0.02)
+    assert cuts["ETH"]["delta_brier"] == pytest.approx(0.01)
     assert cuts["BTC"]["rows"] + cuts["ETH"]["rows"] == block["rows"]
 
 

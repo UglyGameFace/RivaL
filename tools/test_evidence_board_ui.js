@@ -220,22 +220,31 @@ cx.state.evidence.live_grading={schema:'rival-live-grading-v1',computed_at:at,te
   calls:{n:30,mean_net:0.015,win_rate:0.6},per_asset:{BTC:{calls:30,delta_brier:-0.0028,call_mean_net:0.015}},note:'interim only'},
  {id:'n3',title:'N3',kind:'n3',venue:'polymarket',status:'external_recorder',live_counters:null,
   registered:{band:[0.9,0.97],deadline:'2027-03-31',rule:'band rule'},note:'external'}],
- live_model:{title:'Live model',last_7d:{settled:12000,delta_log_loss:0.006,delta_log_loss_ci95:{lower:0.004,upper:0.008,days:7},delta_brier:0.001,accuracy:0.61,baseline_accuracy:0.62,days:7},last_24h:null,per_horizon_7d:{},note:'rolling'}};
+ live_model:{title:'Live model',baseline_kind:'smoothed_historical_up_rate',last_7d:{settled:12000,unique_target_windows:1334,delta_log_loss:0.006,delta_log_loss_ci95:{lower:0.004,upper:0.008,days:7},delta_brier:0.001,accuracy:0.5034,baseline_accuracy:0.5123,days:7},last_24h:null,per_horizon_7d:{},note:'rolling'}};
 assert.match(cx.opsGrading(),/graded as settlements land/);
 assert.match(cx.opsGrading(),/90 \/ 2,500/);
 assert.match(cx.opsGrading(),/passing so far/);
 assert.match(cx.opsGrading(),/Live model — rolling grade/);
+assert.match(cx.opsGrading(),/Baseline: Historical UP frequency/);
+assert.match(cx.opsGrading(),/1,334/);
+assert.match(cx.opsGrading(),/50.3% vs 51.2%/);
+assert.match(cx.opsGrading(),/-0.002800/);
+assert.match(cx.opsGrading(),/-0.000500/);
+assert.equal(cx.opsGradeNum(-0.00283),'-0.002830');
+assert.equal(cx.opsGradeNum(0.000123),'0.000123');
+assert.equal(cx.opsGradeNum(null),'—');
 cx.state.evidence.live_grading.candidates={status:'recorded',snapshot_at:at,
  counts:{total:2,passed:0,killed:1,not_measurable:1,data_blocked:0,evaluated:0},
  candidates:[{id:'llm-mask-btc-trend',display:'AI-suggested mask · BTC',screen:'G-D',
   status:'NOT_MEASURABLE',verdict:null,graded_rows:0,calls:0,days:0,
-  blocker:'its exchange features were not recorded; no grader reads them yet',progress:null,floors:{},evaluated_at:at},
+  blocker:'its exchange features were not recorded; no grader reads them yet',progress:null,floors:{},cluster_unit:'asset_target_clock',evaluated_at:at},
  {id:'gen-book-all',display:'Book model · all book signals',screen:'G-A',
   status:'EVALUATED',verdict:'KILL',graded_rows:2100,calls:2000,days:14,
   blocker:null,progress:null,floors:{},evaluated_at:at}],note:'recorded by the last workbench run'};
 assert.match(cx.opsGrading(),/Candidate factory/);
 assert.match(cx.opsGrading(),/no grader reads them yet/);
 assert.match(cx.opsGrading(),/1 not measurable yet/);
+assert.match(cx.opsGrading(),/Cluster unit: coin \/ target clock, shared across venues/);
 cx.state.evidence.live_grading={status:'read_unavailable'};
 assert.match(cx.opsGrading(),/unavailable in the latest receipt/);
 cx.state.evidence.live_grading=null;

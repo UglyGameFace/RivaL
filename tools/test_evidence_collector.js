@@ -124,11 +124,53 @@ async function main(){
  const corrupted=Buffer.from(parts[2],'base64url');corrupted[0]^=1;parts[2]=corrupted.toString('base64url');
  assert.equal((await cx.worker.fetch(make(parts.join('.')),env)).status,403);
  assert.equal(records.size,0,'Unverified callers must never change receipts');
+ payload.live_grading={schema:'rival-live-grading-v1',computed_at:now,status:'observed',
+  tests:[{id:'fair_value_polymarket',kind:'fair_value',status:'ACCRUAL',
+   floors:{evaluated_windows:{have:100,need:2500}},
+   legs:{paired_brier_frozen:{value:-0.00283,bar:-0.005,first:-0.000456,
+    second:0.000321,ci95:{lower:-0.004912,upper:-0.000011,days:6},passing_now:false}},
+   calls:{n:100,mean_net:-0.022345,win_rate:0.5432},
+   per_asset:{BTC:{delta_brier:-0.00283,delta_log_loss:0.000123,
+    mean_net:-0.022345,call_mean_net:-0.012345}},
+   day_block_interval:{lower:-0.02,upper:0.01,days:6}}],
+  live_model:{baseline_kind:'smoothed_historical_up_rate',
+   last_7d:{settled:500,unique_target_windows:59,delta_log_loss:-0.000123,
+    delta_log_loss_ci95:{lower:-0.002321,upper:0.000123,days:7},
+    delta_brier:-0.00283,accuracy:0.5034,baseline_accuracy:0.5123,days:7}}};
  const putsBeforeIngest=putCount;
  assert.equal((await cx.worker.fetch(make(valid),env)).status,202);
  assert.equal(putCount-putsBeforeIngest,3,
   'one accepted receipt costs 3 KV writes (latest, metrics-series, bookkeeping) plus a 4th (github-snapshot) when the receipt carries a github section — the free tier allows 1,000/day');
  const receipt=JSON.parse(records.get('latest'));
+ const grading=receipt.live_grading;
+ assert.equal(grading.tests[0].legs.paired_brier_frozen.value,-0.00283);
+ assert.equal(grading.tests[0].legs.paired_brier_frozen.bar,-0.005);
+ assert.equal(grading.tests[0].legs.paired_brier_frozen.first,-0.000456);
+ assert.equal(grading.tests[0].legs.paired_brier_frozen.second,0.000321);
+ assert.equal(grading.tests[0].legs.paired_brier_frozen.ci95.upper,-0.000011);
+ assert.equal(grading.tests[0].calls.mean_net,-0.022345);
+ assert.equal(grading.tests[0].per_asset.BTC.delta_log_loss,0.000123);
+ assert.equal(grading.tests[0].per_asset.BTC.mean_net,-0.022345);
+ assert.equal(grading.tests[0].day_block_interval.lower,-0.02);
+ assert.equal(grading.live_model.last_7d.accuracy,0.5034);
+ assert.equal(grading.live_model.last_7d.baseline_accuracy,0.5123);
+ assert.equal(grading.live_model.last_7d.unique_target_windows,59);
+ assert.equal(grading.live_model.baseline_kind,'smoothed_historical_up_rate');
+ // Signed metrics remain bounded; probability/count contracts stay
+ // nonnegative. Unknown or invalid measurements never become zero.
+ const invalidGrade=cx.cleanLiveGrading({tests:[{calls:{n:-1,win_rate:-0.1,
+  mean_net:Infinity},legs:{bad:{value:NaN,bar:'-0.005',first:-1000001}}}],
+  live_model:{last_7d:{accuracy:1.01,baseline_accuracy:'0.5',settled:-1,
+   unique_target_windows:-1}}});
+ assert.equal(invalidGrade.tests[0].calls.n,null);
+ assert.equal(invalidGrade.tests[0].calls.win_rate,null);
+ assert.equal(invalidGrade.tests[0].calls.mean_net,null);
+ assert.equal(invalidGrade.tests[0].legs.bad.value,null);
+ assert.equal(invalidGrade.tests[0].legs.bad.bar,null);
+ assert.equal(invalidGrade.tests[0].legs.bad.first,null);
+ assert.equal(invalidGrade.live_model.last_7d.accuracy,null);
+ assert.equal(invalidGrade.live_model.last_7d.baseline_accuracy,null);
+ assert.equal(invalidGrade.live_model.last_7d.unique_target_windows,null);
  assert.equal(receipt.provenance.verified,true);
  assert.equal(receipt.host.recent_forward_calls.status,'observed');
  assert.equal(receipt.host.recent_forward_calls.rows.length,2);

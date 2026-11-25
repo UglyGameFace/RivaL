@@ -7,7 +7,7 @@ hand-computed call blocks.
 """
 import hashlib
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 from parlay_bot.discord_app.home import workbench_text
 from parlay_bot.perpetuals import replay_generation as gen
@@ -479,21 +479,21 @@ def _gd_features(label):
 
 
 def _gd_insert(conn, *, issued, label, asset="BTC", contract="BTCUSDT",
-               features="recorded", baseline=0.5, horizon=15):
+               features="recorded", baseline=0.5, horizon=15, venue="binance"):
     reference = issued - timedelta(minutes=horizon)
     target = reference + timedelta(minutes=horizon)
     settled = issued + timedelta(minutes=horizon)
     conn.execute(
         "INSERT INTO perp_forward_audit VALUES (?,?,?,?,?,?,?,?,?,?,?,?,"
         "?,?,?,?,?,?)",
-        ("binance", contract, "USDT", asset, horizon, PERP_MODEL,
+        (venue, contract, "USDT", asset, horizon, PERP_MODEL,
          reference.isoformat(), 100.0, issued.isoformat(),
          target.isoformat(), 0.6, baseline, 1, settled.isoformat(),
          label, 101.0 if label else 99.0, 0.2, 0.25))
     conn.execute(
         "INSERT INTO rival_forward_model_lineage VALUES (?,?,?,?,?,?,?,"
         "?,?,?,?,?,?,?)",
-        ("binance", contract, "USDT", horizon, PERP_MODEL,
+        (venue, contract, "USDT", horizon, PERP_MODEL,
          reference.isoformat(), issued.isoformat(), "w" * 64, "f" * 64,
          None if features is None else json.dumps(
              _gd_features(label) if features == "recorded" else features),
@@ -541,8 +541,8 @@ def test_gd_loader_excludes_pre_cutoff_and_unrecorded_rows(tmp_path):
         gen.GD_FEATURES_CUTOFF) for r in rows)
     assert all(len(r["features"]) == gen.EXCHANGE_FEATURE_COUNT == 10
                for r in rows)
-    assert {r["cluster"] for r in rows} <= {
-        f"binance:BTC-{i}:USDT" for i in range(3)}
+    assert len({r["cluster"] for r in rows}) == 4
+    assert all(r["cluster"].startswith("BTC:2026-") for r in rows)
 
 
 def test_gd_below_floor_reports_floor_progress(tmp_path):
@@ -557,7 +557,7 @@ def test_gd_below_floor_reports_floor_progress(tmp_path):
         "rows": {"have": 100, "need": 500},
         "days": {"have": 2, "need": 7},
         "calls": {"have": 100, "need": 100},
-        "clusters": {"have": 5, "need": 40}}
+        "clusters": {"have": 100, "need": 40}}
     # ...and that progress is what the board surfaces.
     gen.record_results(store, [{
         "candidate_id": "llm-mask-btc-trend", "screen": "G-D",
@@ -587,7 +587,9 @@ def test_gd_zero_post_cutoff_rows_keeps_the_named_cause(tmp_path):
 
 
 def test_gd_separable_case_passes_floors_and_legs(tmp_path):
-    store = _gd_store(tmp_path, days=18, per_day=60, contracts=50)
+    # One real instrument accrues distinct target clocks over time. The
+    # former instrument-identity floor could never clear for this case.
+    store = _gd_store(tmp_path, days=18, per_day=60, contracts=1)
     rows, coverage = gen.load_gd_record(store)
     assert coverage["eligible_rows"] == 18 * 60
     cand = gen.screen_llm_masks(rows, [_gd_registration()]
@@ -596,8 +598,82 @@ def test_gd_separable_case_passes_floors_and_legs(tmp_path):
     assert cand["verdict"] == "PASS"
     assert all(cand["legs"].values())
     assert cand["score"]["rows"] == 11 * 60
-    assert cand["score"]["clusters"] == 50
+    assert cand["score"]["clusters"] == 660
     assert cand["floors"]["rows"] == {"have": 660, "need": 500}
+    assert cand["grading_version"] == gen.GD_GRADING_VERSION
+    assert cand["coverage"]["cluster_unit"] == "asset_target_clock"
+    assert cand["coverage"]["overlap_independence_proven"] is False
+
+
+def test_gd_target_clocks_deduplicate_venues_and_horizons(tmp_path):
+    store = _gd_store(tmp_path, days=0, per_day=0)
+    issued = GD_T0 + timedelta(days=1)
+    with store.connect() as conn:
+        for venue in ("binance", "okx", "hyperliquid"):
+            for horizon in (5, 15, 60):
+                _gd_insert(conn, issued=issued, label=1,
+                           venue=venue, horizon=horizon)
+        _gd_insert(conn, issued=issued + timedelta(minutes=5), label=0)
+    rows, coverage = gen.load_gd_record(store)
+    assert coverage["eligible_rows"] == 10
+    # Nine venue/horizon observations at one target are one clock;
+    # the same instrument at a later target contributes a new clock.
+    assert len({r["cluster"] for r in rows}) == 2
+
+
+def test_gd_target_clock_is_required_and_normalizes_timezones(tmp_path):
+    store = _gd_store(tmp_path, days=1, per_day=3)
+    with store.connect() as conn:
+        conn.execute("UPDATE perp_forward_audit SET target_opened_at='bad' "
+                     "WHERE contract='BTC-0'")
+        conn.execute("UPDATE perp_forward_audit SET target_opened_at=? "
+                     "WHERE contract='BTC-1'",
+                     ((GD_T0 - timedelta(days=1)).isoformat(),))
+        target = GD_T0 + timedelta(minutes=20)
+        offset_target = target.astimezone(timezone(timedelta(hours=-5)))
+        conn.execute("UPDATE perp_forward_audit SET target_opened_at=? "
+                     "WHERE contract='BTC-2'", (offset_target.isoformat(),))
+    rows, coverage = gen.load_gd_record(store)
+    assert coverage["unparseable_row"] == 2
+    assert len(rows) == 1
+    assert rows[0]["cluster"] == f"BTC:{target.isoformat()}"
+
+
+def test_gd_cli_persists_versioned_results_without_rewriting_history(tmp_path, monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "tools/replay_workbench.py"
+    spec = importlib.util.spec_from_file_location("gd_workbench_cli", path)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    store = _gd_store(tmp_path, days=9, per_day=50, contracts=1)
+    proposals = [{"asset": "BTC", "hypothesis": "trend_only", "mask": (0, 1),
+                  "rationale": "past trend might help", "falsification": "fails paired scores",
+                  "attempted_at": GD_T0.isoformat(), "record_sha256": "a" * 64}]
+    cid = "llm-mask-btc-trend"
+    gen.record_results(store, [{
+        "candidate_id": cid, "screen": "G-D", "factory": "lab",
+        "display": "AI-suggested mask · BTC", "status": "NOT_MEASURABLE",
+        "verdict": None, "graded_rows": 100, "calls": 100, "days": 2,
+        "evaluated_at": "2026-11-24T00:00:00+00:00",
+        "detail": {"grading_version": "legacy-instrument-unit"}}])
+    monkeypatch.setattr(cli, "_store", lambda: store)
+    monkeypatch.setattr(gen, "load_llm_proposals", lambda _: (proposals, {}))
+    report_path = tmp_path / "gd-report.json"
+    assert cli.main(["--screen", "llm-intake", "--output", str(report_path)]) == 0
+    report = json.loads(report_path.read_text())
+    assert report["grading_version"] == gen.GD_GRADING_VERSION
+    assert report["candidates"][cid]["score"]["clusters"] == 100
+    with store.connect() as conn:
+        records = conn.execute(
+            f"SELECT detail_json FROM {gen.RESULTS_TABLE} "
+            "WHERE candidate_id=? ORDER BY evaluated_at", (cid,)).fetchall()
+    assert len(records) == 2
+    assert json.loads(records[0]["detail_json"])["grading_version"] == "legacy-instrument-unit"
+    latest = gen.read_results_for_board(store)["candidates"][0]
+    assert latest["grading_version"] == gen.GD_GRADING_VERSION
+    assert latest["cluster_unit"] == gen.GD_CLUSTER_UNIT
 
 
 def test_gd_metrics_match_a_second_hand_computation(tmp_path):

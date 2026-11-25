@@ -313,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
             score = cand.get("score") or {}
             detail = {"legs": cand.get("legs"),
                       "floors": cand.get("floors"),
+                      "grading_version": cand["grading_version"],
                       "asset": reg["asset"], "mask": reg["mask"],
                       "proposed_at": reg["proposed_at"],
                       "coverage": cand.get("coverage")}
@@ -335,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
         report = gen.base_report("G-D", now=now)
         report.update({
             "status": "GRADED",
+            "grading_version": graded["grading_version"],
             "verified_proposals": len(proposals),
             "rejected": rejected,
             "registrations": registrations,

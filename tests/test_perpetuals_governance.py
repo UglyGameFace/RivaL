@@ -47,9 +47,9 @@ def test_a_few_lucky_wins_cannot_qualify_a_drifting_model():
 
 
 def test_small_or_unreliable_skill_cannot_be_called_qualified():
-    weak = score_paired_forward(paired_days([.002] * 7))
+    weak = score_paired_forward(paired_days([.0] * 7))
     assert weak.status == "rejected_shadow"
-    assert "below minimum" in weak.reason
+    assert "not positive" in weak.reason
     noisy = score_paired_forward(
         paired_days([.08, .08, .08, .08, .08, .08, -.12])
     )
@@ -58,6 +58,18 @@ def test_small_or_unreliable_skill_cannot_be_called_qualified():
     assert noisy.lower_day_bound < 0
     assert noisy.status == "rejected_shadow"
     assert "stress" in noisy.reason
+
+
+def test_small_but_consistent_skill_qualifies_under_the_corrected_leg():
+    # The pre-2026-11-24 leg demanded a paired gain above 0.005 -- a
+    # ~7pp corrected bias by the Murphy identity -- so this perfectly
+    # consistent +0.002 gain (positive every day, stress bound equal
+    # to the gain itself) was rejected as "below minimum". Under the
+    # corrected leg the stress bound, not a magnitude bar, decides.
+    audit = score_paired_forward(paired_days([.002] * 7))
+    assert audit.paired_gain == pytest.approx(.002)
+    assert audit.lower_day_bound == pytest.approx(.002)
+    assert audit.status == "qualified_shadow"
 
 
 def test_invalid_scores_or_timestamps_never_vote_for_model_promotion():

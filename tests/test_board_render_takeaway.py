@@ -256,6 +256,9 @@ def test_contest_text_within_field_limit():
                        "significant": False})
     text = _contest_text({"contest": models})
     assert text is not None
-    assert text.startswith("**Takeaway:**")
+    # The derived verdict line leads the contest field; the takeaway
+    # (closest candidate, caveat) follows directly under it.
+    assert text.startswith("**Polymarket contest:**")
+    assert "\n**Takeaway:**" in text
     assert len(fit_embed_field_value(text)) <= 1024
     assert len(text) <= 1024

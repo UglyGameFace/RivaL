@@ -1487,8 +1487,11 @@ def _contest_text(reports: dict) -> str | None:
         return None
     rows = trial_board.contest_rows(models)
     takeaway = contest_takeaway(rows)
-    return ((takeaway + "\n" if takeaway else "")
-            + _contest_verdict(rows) + "\n" + trial_board.contest_table(rows)
+    # The derived verdict line leads the field (a pinned owner-facing
+    # contract); the takeaway's closest-candidate detail follows it.
+    return (_contest_verdict(rows) + "\n"
+            + (takeaway + "\n" if takeaway else "")
+            + trial_board.contest_table(rows)
             + "-# Edge = less error than Polymarket's own odds, in points. Fees = practice "
             f"result per contract after Polymarket's fee. To qualify: "
             f"{trial_board.CONTEST_CONTRACTS} contracts and a statistical pass.")

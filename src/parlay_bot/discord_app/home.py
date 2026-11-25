@@ -901,12 +901,30 @@ def workbench_text(record: object, *, full: bool = False) -> str:
         parts = [summary]
         if passed:
             parts.append("Passed: " + "; ".join(_names(verdict="PASS")) + ".")
-        if pending:
-            parts.append("Not measurable yet: "
-                         + "; ".join(_names(status="NOT_MEASURABLE")) + ".")
-        if blocked:
-            parts.append("Data-blocked: "
-                         + "; ".join(_names(status="DATA-BLOCKED")) + ".")
+        # Every blocked candidate gets its own line with its specific
+        # blocker and its progress toward its floors -- never a bare
+        # name in an aggregate pile (Felix, 2026-11-24). The field cap
+        # is real, so overflow points at the board's Grading page,
+        # which lists every candidate without a length limit.
+        limbo = [c for c in candidates
+                 if c.get("status") in ("NOT_MEASURABLE", "DATA-BLOCKED")]
+        shown = 0
+        for cand in limbo:
+            line = (f"• {cand.get('display') or cand.get('candidate_id')}"
+                    f" — {_state(cand)}")
+            if cand.get("blocker"):
+                line += f": {cand['blocker']}"
+            if cand.get("progress"):
+                line += f" Progress: {cand['progress']}."
+            if len("\n".join(parts + [line])) > 980 and shown:
+                break
+            parts.append(line)
+            shown += 1
+        if shown < len(limbo):
+            parts.append(
+                f"+{len(limbo) - shown} more blocked — every candidate "
+                "with its blocker and progress is on the evidence "
+                "board's Grading page.")
         if killed:
             parts.append("Killed: " + "; ".join(_names(verdict="KILL")) + ".")
         text = "\n".join(parts)
@@ -919,6 +937,14 @@ def workbench_text(record: object, *, full: bool = False) -> str:
         if cand.get("graded_rows"):
             line += (f" · {int(cand['graded_rows']):,} graded"
                      f" · {int(cand.get('calls') or 0):,} calls")
+        if cand.get("status") in ("NOT_MEASURABLE", "DATA-BLOCKED"):
+            if cand.get("progress"):
+                line += f" · {cand['progress']}"
+            if cand.get("blocker"):
+                blocker = str(cand["blocker"])
+                if len(blocker) > 85:
+                    blocker = blocker[:85].rsplit(" ", 1)[0] + "…"
+                line += f" — {blocker}"
         lines.append(line)
     if len(candidates) > 6:
         lines.append(f"+{len(candidates) - 6} more in Full evidence.")

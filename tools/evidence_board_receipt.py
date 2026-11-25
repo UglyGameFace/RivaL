@@ -1494,6 +1494,37 @@ def _snapshot_source_detail(value: dict, errors: dict, key: str,
     return _source_detail("failed_read", "read_failed", checked_at)
 
 
+def _bounded_copy(value, *, depth: int = 0):
+    """Bounded JSON copy for a new payload section (the collector applies
+    its own strict whitelist on top of this)."""
+    if depth > 4:
+        return None
+    if isinstance(value, dict):
+        return {str(k)[:60]: _bounded_copy(v, depth=depth + 1)
+                for k, v in list(value.items())[:48]}
+    if isinstance(value, (list, tuple)):
+        return [_bounded_copy(v, depth=depth + 1) for v in list(value)[:16]]
+    if isinstance(value, str):
+        return value[:400]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return None
+
+
+def _live_grading_block(host_report: dict | None) -> dict:
+    """The host report's live-grading section, bounded, or unavailable.
+
+    The section is computed bot-side from recorded state (read-only);
+    this collector only carries it into the receipt payload.
+    """
+    if not isinstance(host_report, dict):
+        return {"status": "read_unavailable"}
+    section = host_report.get("live_grading")
+    if not isinstance(section, dict):
+        return {"status": "read_unavailable"}
+    return _bounded_copy(section)
+
+
 def build_source_details(host: dict, db: dict, drive: dict, github: dict,
                          performance: dict, errors: dict,
                          checked_at: str | None = None) -> dict:
@@ -1607,6 +1638,7 @@ def publish() -> int:
         "host": host, "database": db, "drive": drive,
         "github": github,
         "performance": performance,
+        "live_grading": _live_grading_block(host_report),
     }
     try:
         jwt = _github_oidc()

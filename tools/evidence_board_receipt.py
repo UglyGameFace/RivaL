@@ -1496,14 +1496,21 @@ def _snapshot_source_detail(value: dict, errors: dict, key: str,
 
 def _bounded_copy(value, *, depth: int = 0):
     """Bounded JSON copy for a new payload section (the collector applies
-    its own strict whitelist on top of this)."""
-    if depth > 4:
+    its own strict whitelist on top of this).
+
+    Depth 6 is the live-grading section's schema depth: its leaves
+    (a leg's CI bounds, a candidate's floor progress) sit at depth 6
+    under the section root. A shallower cap silently nulls them --
+    the section shipped with every fair-value floor and leg nulled
+    at depth 5 until this was raised.
+    """
+    if depth > 6:
         return None
     if isinstance(value, dict):
         return {str(k)[:60]: _bounded_copy(v, depth=depth + 1)
                 for k, v in list(value.items())[:48]}
     if isinstance(value, (list, tuple)):
-        return [_bounded_copy(v, depth=depth + 1) for v in list(value)[:16]]
+        return [_bounded_copy(v, depth=depth + 1) for v in list(value)[:40]]
     if isinstance(value, str):
         return value[:400]
     if isinstance(value, (int, float, bool)) or value is None:

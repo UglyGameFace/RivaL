@@ -879,6 +879,12 @@ def _closest_candidate(candidates: list[dict]) -> tuple[dict, str] | None:
     """
     best: tuple[float, int, dict, str] | None = None
     for cand in candidates:
+        if cand.get("verdict") in ("PASS", "KILL"):
+            # Decided candidates are not "closest to qualifying" --
+            # a killed candidate whose floors are long since met
+            # otherwise tops this ranking on raw volume and the
+            # takeaway names a dead model as the nearest hope.
+            continue
         floors = cand.get("floors")
         if not isinstance(floors, dict) or not floors:
             continue

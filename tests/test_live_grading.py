@@ -161,9 +161,11 @@ def test_candidates_block_names_blockers(store):
     block = live_grading.read_live_grading(store, NOW)["candidates"]
     assert block["status"] == "recorded"
     assert block["snapshot_at"] == at
+    # evaluated counts every EVALUATED row, including the killed one:
+    # the headline must agree with the list printed under it.
     assert block["counts"] == {"total": 2, "passed": 0, "killed": 1,
                                "not_measurable": 1, "data_blocked": 0,
-                               "evaluated": 0}
+                               "evaluated": 1}
     by_id = {c["id"]: c for c in block["candidates"]}
     assert "G-D grader" in by_id["llm-mask-btc-trend"]["blocker"]
     assert by_id["gen-book-all"]["blocker"] is None

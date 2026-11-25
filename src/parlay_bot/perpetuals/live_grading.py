@@ -337,6 +337,13 @@ def _candidates_block(store) -> dict:
     snapshot_at = None
     for cand in record.get("candidates") or []:
         counts["total"] += 1
+        if cand.get("status") == "EVALUATED":
+            # Counted independently of the verdict buckets below: an
+            # EVALUATED candidate with a KILL verdict is BOTH killed
+            # and evaluated. The earlier if/elif chain let the verdict
+            # swallow it, so the headline read "0 evaluated" directly
+            # above a list of evaluated candidates.
+            counts["evaluated"] += 1
         if cand.get("verdict") == "PASS":
             counts["passed"] += 1
         elif cand.get("verdict") == "KILL":
@@ -345,8 +352,6 @@ def _candidates_block(store) -> dict:
             counts["not_measurable"] += 1
         elif cand.get("status") == "DATA-BLOCKED":
             counts["data_blocked"] += 1
-        else:
-            counts["evaluated"] += 1
         evaluated = cand.get("evaluated_at")
         if isinstance(evaluated, str) and (
                 snapshot_at is None or evaluated > snapshot_at):

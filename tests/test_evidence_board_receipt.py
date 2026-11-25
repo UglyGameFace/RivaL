@@ -18,6 +18,7 @@ from evidence_board_receipt import (
     _artifact_prefix,
     _check_receipt_size,
     _collection_block,
+    _live_grading_block,
     _nonnegative,
     _paper_proof,
     _recent_forecast_summary,
@@ -1250,3 +1251,78 @@ class CombinedPayloadBudgetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LiveGradingBlockTests(unittest.TestCase):
+    """The live-grading section's leaves sit at schema depth 5-6; the
+    bounded copy must carry them, not null them (regression: the
+    section shipped with every fair-value floor and leg nulled)."""
+
+    def _section(self) -> dict:
+        return {
+            "schema": "rival-live-grading-v1",
+            "computed_at": "2026-11-25T00:00:00+00:00",
+            "tests": [{
+                "id": "fair_value_polymarket", "kind": "fair_value",
+                "status": "ACCRUAL", "verdict": None,
+                "floors": {
+                    "recording_days": {"have": 5, "need": 7},
+                    "evaluated_windows": {"have": 2400, "need": 2500},
+                    "triggered_calls": {"have": 1900, "need": 250},
+                },
+                "legs": {
+                    "paired_log_loss": {
+                        "value": -0.001, "ci95": {"lower": -0.004,
+                        "upper": 0.002, "days": 5},
+                        "passing_now": False, "rule": "delta < 0"},
+                    "paired_brier_frozen": {
+                        "value": -0.002, "bar": -0.005,
+                        "passing_now": False, "rule": "delta <= bar"},
+                },
+                "calls": {"n": 1900, "mean_net": 0.01, "win_rate": 0.72},
+                "observations": 2400,
+                "per_asset": {"BTC": {"delta_log_loss": -0.002,
+                                      "delta_brier": -0.001,
+                                      "calls": 900, "call_mean_net": 0.02}},
+                "coverage": {"windows_seen": 2352,
+                             "window_exclusions": {"index_missing": 12},
+                             "observation_exclusions": {"index_gap": 30}},
+            }],
+            "candidates": {
+                "status": "recorded",
+                "counts": {"total": 1},
+                "candidates": [{
+                    "id": "llm-mask-btc-trend", "status": "NOT_MEASURABLE",
+                    "blocker": "below its measurement floors",
+                    "floors": {"rows": {"have": 120, "need": 500},
+                               "calls": {"have": 30, "need": 100}},
+                }],
+            },
+        }
+
+    def test_nested_grades_survive_the_bounded_copy(self) -> None:
+        block = _live_grading_block({"live_grading": self._section()})
+        test = block["tests"][0]
+        self.assertEqual(test["floors"]["evaluated_windows"],
+                         {"have": 2400, "need": 2500})
+        leg = test["legs"]["paired_log_loss"]
+        self.assertEqual(leg["value"], -0.001)
+        self.assertEqual(leg["ci95"]["upper"], 0.002)
+        self.assertEqual(test["legs"]["paired_brier_frozen"]["bar"], -0.005)
+        self.assertEqual(test["per_asset"]["BTC"]["delta_log_loss"], -0.002)
+        self.assertEqual(
+            test["coverage"]["window_exclusions"]["index_missing"], 12)
+        cand = block["candidates"]["candidates"][0]
+        self.assertEqual(cand["floors"]["rows"], {"have": 120, "need": 500})
+
+    def test_bound_still_applies_beyond_schema_depth(self) -> None:
+        deep = {"a": {"b": {"c": {"d": {"e": {"f": {"g": 1}}}}}}}
+        block = _live_grading_block({"live_grading": {"tests": [],
+                                                      "deep": deep}})
+        self.assertIsNone(block["deep"]["a"]["b"]["c"]["d"]["e"]["f"])
+
+    def test_missing_section_is_read_unavailable(self) -> None:
+        self.assertEqual(_live_grading_block(None),
+                         {"status": "read_unavailable"})
+        self.assertEqual(_live_grading_block({}),
+                         {"status": "read_unavailable"})

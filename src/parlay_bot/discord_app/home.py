@@ -849,6 +849,128 @@ def _workbench_record(market: object, asset: str, _horizon: int) -> dict:
         return read_results_for_board(market.store)
 
 
+def _blocker_short(cand: dict) -> str | None:
+    """A candidate's complete short blocker for board lines.
+
+    Prefers the canonical short form resolved at board-read time.
+    Records built elsewhere may carry only the full text: a short
+    full text is already complete, but a long one is NEVER sliced --
+    the line falls back to a complete generic phrase instead.
+    """
+    short = cand.get("blocker_short")
+    if isinstance(short, str) and short.strip():
+        return short.strip()
+    blocker = cand.get("blocker")
+    if isinstance(blocker, str) and blocker.strip():
+        blocker = blocker.strip()
+        if len(blocker) <= 72:
+            return blocker
+        return "blocked — full reason in Full evidence"
+    return None
+
+
+def _closest_candidate(candidates: list[dict]) -> tuple[dict, str] | None:
+    """The candidate nearest qualifying, judged on recorded floors.
+
+    Closeness is the bottleneck floor ratio (the scarcest floor is
+    what a candidate still needs); ties break on graded rows. Returns
+    (candidate, what-it-still-needs) or None when no candidate carries
+    floor progress worth calling close.
+    """
+    best: tuple[float, int, dict, str] | None = None
+    for cand in candidates:
+        floors = cand.get("floors")
+        if not isinstance(floors, dict) or not floors:
+            continue
+        ratios, needs = [], []
+        for label, entry in floors.items():
+            if not isinstance(entry, dict):
+                continue
+            try:
+                have, need = int(entry.get("have") or 0), int(entry.get("need") or 0)
+            except (TypeError, ValueError):
+                continue
+            if need <= 0:
+                continue
+            ratios.append(have / need)
+            if have < need:
+                needs.append(f"{need - have:,} more {label}")
+        if not ratios:
+            continue
+        score = (min(ratios), int(cand.get("graded_rows") or 0))
+        if best is None or score > (best[0], best[1]):
+            best = (score[0], score[1], cand,
+                    "; ".join(needs) if needs else "at its floors, awaiting its legs")
+    if best is None:
+        return None
+    return best[2], best[3]
+
+
+def workbench_takeaway(record: object) -> str:
+    """Plain-words takeaway for the top of the Models board.
+
+    Every number and date is computed from the recorded workbench
+    state -- verdict from the recorded verdicts, closest candidate
+    from its recorded floors, blocked counts grouped by screen with
+    the group's recorded short blocker, and the next step from which
+    blockers are actually present. Nothing is hard-coded: change the
+    record and the line changes.
+    """
+    if not isinstance(record, dict):
+        return ""
+    candidates = record.get("candidates") or []
+    if not candidates:
+        return ""
+    passed = sum(1 for c in candidates if c.get("verdict") == "PASS")
+    if passed:
+        verdict = (f"No model has qualified yet — {passed} candidate(s) passed "
+                   "the screen, and a screen pass is not a qualification.")
+    else:
+        verdict = "No model has qualified yet."
+    lines = [f"**Takeaway:** {verdict}"]
+    closest = _closest_candidate(candidates)
+    if closest is not None:
+        cand, needs = closest
+        name = cand.get("display") or cand.get("candidate_id")
+        progress = cand.get("progress")
+        lines.append(f"Closest: {name}"
+                     + (f" ({progress})" if progress else "")
+                     + f" — still needs {needs}.")
+    else:
+        lines.append("Nothing is close to qualifying yet.")
+    limbo = [c for c in candidates
+             if c.get("status") in ("NOT_MEASURABLE", "DATA-BLOCKED")]
+    if limbo:
+        groups: dict[str, list[dict]] = {}
+        for cand in limbo:
+            groups.setdefault(str(cand.get("screen") or "?"), []).append(cand)
+        bits = []
+        for screen in sorted(groups):
+            members = groups[screen]
+            whys: dict[str, int] = {}
+            for cand in members:
+                why = _blocker_short(cand)
+                if why:
+                    whys[why] = whys.get(why, 0) + 1
+            why = max(whys, key=whys.get) if whys else None
+            bits.append(f"{len(members)} in {screen}"
+                        + (f" ({why})" if why else ""))
+        lines.append("Blocked: " + " · ".join(bits) + ".")
+        nxt = []
+        if any(c.get("floors") for c in limbo):
+            nxt.append("the next workbench run grades the accrual-blocked pile")
+        # Dated next steps ride in the recorded short blockers
+        # themselves (e.g. a first-settlements date); surface those
+        # verbatim rather than inventing a date here.
+        for short in sorted({_blocker_short(c) for c in limbo} - {None}):
+            if ("settlements" in short or "scoring starts" in short) \
+                    and short not in nxt:
+                nxt.append(short)
+        if nxt:
+            lines.append("Next: " + "; ".join(nxt[:3]) + ".")
+    return "\n".join(lines)
+
+
 def workbench_text(record: object, *, full: bool = False) -> str:
     """Replay workbench standings in plain words.
 
@@ -888,6 +1010,7 @@ def workbench_text(record: object, *, full: bool = False) -> str:
         f"{killed} killed · {pending} not measurable yet · "
         f"{blocked} data-blocked."
     )
+    takeaway = workbench_takeaway(record)
     if full:
         def _names(verdict: str | None = None,
                    status: str | None = None) -> list[str]:
@@ -898,7 +1021,10 @@ def workbench_text(record: object, *, full: bool = False) -> str:
                     else c.get("status") == status)
             ]
 
-        parts = [summary]
+        # The Full evidence view carries the full blocker texts
+        # below, so it leads with the takeaway's verdict line only;
+        # the compact board carries the whole takeaway.
+        parts = ([takeaway.split("\n", 1)[0]] if takeaway else []) + [summary]
         if passed:
             parts.append("Passed: " + "; ".join(_names(verdict="PASS")) + ".")
         # Every blocked candidate gets its own line with its specific
@@ -916,7 +1042,7 @@ def workbench_text(record: object, *, full: bool = False) -> str:
                 line += f": {cand['blocker']}"
             if cand.get("progress"):
                 line += f" Progress: {cand['progress']}."
-            if len("\n".join(parts + [line])) > 980 and shown:
+            if len("\n".join(parts + [line])) > 1000 and shown:
                 break
             parts.append(line)
             shown += 1
@@ -927,11 +1053,12 @@ def workbench_text(record: object, *, full: bool = False) -> str:
                 "board's Grading page.")
         if killed:
             parts.append("Killed: " + "; ".join(_names(verdict="KILL")) + ".")
-        text = "\n".join(parts)
-        if len(text) > 1024:
-            text = text[:1000].rsplit(" ", 1)[0] + " …"
-        return text
-    lines = [summary]
+        # Fit the field by dropping whole lines from the tail, never
+        # by cutting a line (and its blocker) mid-sentence.
+        while len(parts) > 1 and len("\n".join(parts)) > 1024:
+            parts.pop()
+        return "\n".join(parts)
+    lines = ([takeaway] if takeaway else []) + [summary]
     for cand in candidates[:6]:
         line = f"• {cand.get('display') or cand.get('candidate_id')} — {_state(cand)}"
         if cand.get("graded_rows"):
@@ -940,11 +1067,9 @@ def workbench_text(record: object, *, full: bool = False) -> str:
         if cand.get("status") in ("NOT_MEASURABLE", "DATA-BLOCKED"):
             if cand.get("progress"):
                 line += f" · {cand['progress']}"
-            if cand.get("blocker"):
-                blocker = str(cand["blocker"])
-                if len(blocker) > 85:
-                    blocker = blocker[:85].rsplit(" ", 1)[0] + "…"
-                line += f" — {blocker}"
+            short = _blocker_short(cand)
+            if short:
+                line += f" — {short}"
         lines.append(line)
     if len(candidates) > 6:
         lines.append(f"+{len(candidates) - 6} more in Full evidence.")
@@ -1316,6 +1441,43 @@ def _contest_verdict(rows: list[dict]) -> str:
     return "**Polymarket contest:** " + " · ".join(parts) + " — vs Polymarket's own odds."
 
 
+def contest_takeaway(rows: list[dict]) -> str:
+    """Plain-words takeaway for the top of the contest view.
+
+    Computed from the rows' recorded fields only: the verdict from
+    the recorded pass state, and the leader (rows arrive sorted with
+    the best-covered passing/ahead row first) with its recorded
+    contracts, edge and after-fees result. The caveat is phrased from
+    the leader's own pass state -- ahead is not a statistical pass.
+    """
+    from parlay_bot.discord_app import trial_board
+
+    if not rows:
+        return ""
+    passed = [r for r in rows if r.get("status") == "PASSED"]
+    if passed:
+        verdict = f"{len(passed)} contest model(s) have statistically passed."
+    else:
+        verdict = "No contest model has qualified yet."
+    leader = rows[0]
+    name = str(leader.get("label") or leader.get("model") or "")
+    name = trial_board.CONTEST_NAMES.get(name, name)
+    contracts = int(leader.get("contracts") or 0)
+    edge = trial_board._pts(trial_board._finite(leader.get("improvement")))
+    net = trial_board._finite(leader.get("net_per_contract"))
+    fees = "—" if net is None or not int(leader.get("trades") or 0) \
+        else f"{net * 100:+.1f}¢"
+    caveat = {
+        "PASSED": "statistically passed",
+        "ahead": "ahead but NOT statistically passed",
+        "level": "level with the odds, not passed",
+        "early": "too early to judge, not passed",
+        "behind": "behind the odds, not passed",
+    }.get(str(leader.get("status") or ""), "not passed")
+    return (f"**Takeaway:** {verdict} Closest: {name} — {contracts:,} graded, "
+            f"edge {edge}, {fees} after fees — {caveat}.")
+
+
 def _contest_text(reports: dict) -> str | None:
     """The Polymarket contest table, or None when there is nothing to show."""
     from parlay_bot.discord_app import trial_board
@@ -1324,7 +1486,9 @@ def _contest_text(reports: dict) -> str | None:
     if not isinstance(models, list) or not models:
         return None
     rows = trial_board.contest_rows(models)
-    return (_contest_verdict(rows) + "\n" + trial_board.contest_table(rows)
+    takeaway = contest_takeaway(rows)
+    return ((takeaway + "\n" if takeaway else "")
+            + _contest_verdict(rows) + "\n" + trial_board.contest_table(rows)
             + "-# Edge = less error than Polymarket's own odds, in points. Fees = practice "
             f"result per contract after Polymarket's fee. To qualify: "
             f"{trial_board.CONTEST_CONTRACTS} contracts and a statistical pass.")

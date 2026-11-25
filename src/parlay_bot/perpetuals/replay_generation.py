@@ -29,6 +29,7 @@ is a NEW registration, not an edit):
 """
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import math
@@ -74,6 +75,29 @@ GD_FIT_MIN_ROWS = FIT_MIN_ROWS["B"]
 # loader grades only rows issued at or after it AND with a non-NULL
 # recorded vector -- never a reconstructed one (design section 4.1).
 GD_FEATURES_CUTOFF = "2026-11-20T22:24:10+00:00"
+# --- Screen G-C floors (owner-approved 2026-11-25) ---
+# The owner approved floors mirroring tier B for G-D on 2026-11-24 and
+# extended the identical floors to G-C on 2026-11-25. Registration
+# predates the first settled threshold outcome: the outcome record
+# was empty when the floors were set (the settler's due-scan defect,
+# fixed the same day, had recorded nothing), so no graded sample
+# predates the criteria.
+GC_GRADING_VERSION = "gc-estate-v1-20261125"
+GC_FLOORS = {"min_rows": 500, "min_days": 7, "min_calls": 100,
+             "min_clusters": 40}
+# The options-implied probability for a contract ending at E is read
+# off the listed Deribit expiry nearest E: listed expiries are daily
+# 08:00Z against Polymarket's 17:00Z contract ends, so the nearest
+# listed expiry sits ~9h from the end. 24h admits that pairing and
+# nothing beyond one listed-expiry step past it.
+GC_EXPIRY_TOLERANCE = timedelta(hours=24)
+# Venue-gap matching: same asset and contract type, strikes within
+# 0.25% (Kalshi strikes print at cent precision off the spot, e.g.
+# 73799.99, against Polymarket's round thousands), expiries within
+# 2 hours (Kalshi hourly closes against Polymarket's daily 17:00Z
+# ends), snapshots from the same collection cycle.
+GC_STRIKE_TOLERANCE = 0.0025
+GC_PAIR_EXPIRY_TOLERANCE = timedelta(hours=2)
 # Exchange feature vector layout (features.feature_vector /
 # features._window_features, 10 values): 0 last-bar log return x100,
 # 1 5-bar log close ratio x100, 2 return volatility x100, 3 bar range
@@ -189,12 +213,14 @@ ESTATE_CANDIDATES = (
                   "weekly Above contracts, graded against the "
                   "contracts' settlements (the N1 wedge hypothesis, "
                   "workbench form).",
+     "floors": dict(GC_FLOORS),
      "cause": "no_settled_threshold_outcomes"},
     {"id": "thr-venue-gap", "factory": "lab", "screen": "G-C",
      "display": "PM vs Kalshi threshold gap",
      "mechanism": "Cross-venue threshold gap at matched strike/tenor "
                   "as a call rule on the cheaper venue (the "
                   "convergence hypothesis at threshold tenors).",
+     "floors": dict(GC_FLOORS),
      "cause": "no_settled_threshold_outcomes"},
 )
 
@@ -477,12 +503,15 @@ def screen_conditioning(rows: list[dict],
 
 
 # ---------------------------------------------------------------------------
-# Screen G-C -- new-estate loaders with availability guards (amendment
-# 5). Coverage is aggregate-only (one-row results; nothing is
-# fetchall-ed). No settled threshold outcome exists anywhere in the
-# estate -- the snapshot tables record no outcomes and the weekly
-# contracts settle from 2026-11-27 -- so both registered candidates
-# are NOT_MEASURABLE with the cause named, whatever the coverage.
+# Screen G-C -- the threshold estate, graded (amendment 5; grader
+# registered 2026-11-25 under the owner-approved GC floors). Both
+# candidates grade from the recorded estate only: hourly snapshots
+# (Deribit surface, Polymarket and Kalshi threshold markets) joined
+# to the settled outcomes the threshold settler records in
+# rival_threshold_outcomes, through the shared four-leg template.
+# Until the first settled outcome exists both candidates stay
+# NOT_MEASURABLE with the cause named; below the floors they are
+# NOT_MEASURABLE with floor progress, never a stale cause.
 # ---------------------------------------------------------------------------
 
 def _coverage(store, table: str, stamp: str) -> dict:
@@ -525,21 +554,378 @@ def estate_coverage(store) -> dict:
     }
 
 
+def _implied_above_probability(chain, strike: float) -> float | None:
+    """Risk-neutral P(S_T > strike) from one expiry's call chain.
+
+    chain: (strike, USD call price) pairs. Breeden-Litzenberger: the
+    digital is minus the strike-derivative of the call price,
+    estimated as the slope of the listed segment bracketing the
+    strike (the nearest segment when the strike sits outside the
+    listed range). None when the chain cannot speak: fewer than two
+    usable strikes, or one strike carrying conflicting prices.
+    """
+    points: dict[float, float] = {}
+    for level, price in chain:
+        if level is None or price is None:
+            continue
+        level, price = float(level), float(price)
+        if not (math.isfinite(level) and math.isfinite(price)) \
+                or price < 0:
+            continue
+        if level in points and abs(points[level] - price) > 1e-9:
+            return None
+        points[level] = price
+    strikes = sorted(points)
+    if len(strikes) < 2:
+        return None
+    idx = bisect.bisect_right(strikes, strike)
+    if idx == 0:
+        lo, hi = strikes[0], strikes[1]
+    elif idx >= len(strikes):
+        lo, hi = strikes[-2], strikes[-1]
+    else:
+        lo, hi = strikes[idx - 1], strikes[idx]
+    return wb._clamp((points[lo] - points[hi]) / (hi - lo))
+
+
+def _gc_observation(*, issued_at, g, baseline, label, call, cluster,
+                    asset, horizon, contract_type) -> dict:
+    """One paired observation in the shared four-leg shape."""
+    return {
+        "issued_at": issued_at, "day": issued_at.date().isoformat(),
+        "delta_log_loss": wb._log_loss(g, label)
+        - wb._log_loss(baseline, label),
+        "delta_brier": (g - label) ** 2 - (baseline - label) ** 2,
+        "call_net": call[0] if call else None,
+        "call_cost": call[1] if call else None,
+        "cluster": cluster, "asset": asset, "horizon": horizon,
+        "contract_type": contract_type,
+    }
+
+
+def _gc_pm_call(*, g, baseline, best_bid, best_ask, fee_rate, label):
+    """Call on a Polymarket threshold contract at recorded prices.
+
+    Buys the side the candidate probability favours over the market's
+    own price: YES at the recorded best ask when g > baseline, NO at
+    1 - best bid when g < baseline. The fee comes from the snapshot's
+    recorded fee_rate (the estate's rule: grading reads the fee from
+    the recorded snapshot); an unrecorded fee_rate prices no call
+    rather than guessing a schedule.
+    """
+    if g == baseline or fee_rate is None:
+        return None
+    from parlay_bot.perpetuals.polymarket_learning import polymarket_fee
+
+    if g > baseline:
+        price, won = best_ask, label == 1
+    else:
+        price = None if best_bid is None else 1.0 - float(best_bid)
+        won = label == 0
+    if price is None or not 0.0 < float(price) < 1.0:
+        return None
+    fee = polymarket_fee(float(price), float(fee_rate))
+    return (1.0 if won else 0.0) - float(price) - fee, float(price) + fee
+
+
+def _gc_kalshi_call(*, g, baseline, yes_ask, no_ask, label):
+    """Call on a Kalshi threshold contract at recorded asks, fee by
+    the venue's published taker formula (kalshi_fee)."""
+    if g == baseline:
+        return None
+    from parlay_bot.perpetuals.kalshi_updown import kalshi_fee
+
+    if g > baseline:
+        price, won = yes_ask, label == 1
+    else:
+        price, won = no_ask, label == 0
+    if price is None or not 0.0 < float(price) < 1.0:
+        return None
+    fee = kalshi_fee(float(price))
+    return (1.0 if won else 0.0) - float(price) - fee, float(price) + fee
+
+
+def _settled_outcomes(store, venue: str) -> dict[str, int]:
+    """market_key -> resolved_yes for one venue's settled outcomes."""
+    out: dict[str, int] = {}
+    for raw in wb._stream(
+            store,
+            "SELECT market_key, resolved_yes"
+            " FROM rival_threshold_outcomes"
+            " WHERE venue=? AND resolved_yes IS NOT NULL", (venue,)):
+        row = dict(raw)
+        out[str(row["market_key"])] = int(row["resolved_yes"])
+    return out
+
+
+def load_gc_opt_implied(store) -> tuple[list[dict], dict]:
+    """Observations for opt-implied-btc-weekly.
+
+    One observation per (hourly snapshot, settled BTC weekly Above
+    contract): the options-implied probability from the Deribit call
+    chain of the same collection cycle (mark prices are coin-denominated,
+    so the USD chain is mark x underlying), the market's recorded yes
+    price as the paired baseline, the contract's own settlement as
+    the label. Cluster = the contract.
+    """
+    coverage = {"settled_contracts": 0, "snapshot_rows_seen": 0,
+                "surface_snapshot_missing": 0, "expiry_unmatched": 0,
+                "chain_unusable": 0, "baseline_unusable": 0}
+    outcomes: dict[str, int] = {}
+    for raw in wb._stream(
+            store,
+            "SELECT market_key, resolved_yes"
+            " FROM rival_threshold_outcomes"
+            " WHERE venue=? AND asset=? AND contract_type=?"
+            " AND resolved_yes IS NOT NULL",
+            ("polymarket", "BTC", "above")):
+        row = dict(raw)
+        outcomes[str(row["market_key"])] = int(row["resolved_yes"])
+    coverage["settled_contracts"] = len(outcomes)
+    if not outcomes:
+        return [], coverage
+    # (snapshot, expiry) -> [(strike, USD call price)] for BTC calls.
+    chains: dict[datetime, dict[datetime, list]] = {}
+    for raw in wb._stream(
+            store,
+            "SELECT snapshot_at, expiry_at, strike, mark_price,"
+            " underlying_price FROM rival_options_surface_snapshots"
+            " WHERE currency=? AND option_type=?"
+            " ORDER BY snapshot_at, expiry_at, strike",
+            ("BTC", "call")):
+        row = dict(raw)
+        snap = wb._parse_time(row["snapshot_at"])
+        expiry = wb._parse_time(row["expiry_at"])
+        if snap is None or expiry is None \
+                or row["mark_price"] is None \
+                or row["underlying_price"] is None:
+            continue
+        usd = float(row["mark_price"]) * float(row["underlying_price"])
+        chains.setdefault(snap, {}).setdefault(expiry, []).append(
+            (float(row["strike"]), usd))
+    observations: list[dict] = []
+    for raw in wb._stream(
+            store,
+            "SELECT condition_id, snapshot_at, strike_low, end_date,"
+            " yes_price, best_bid, best_ask, fee_rate"
+            " FROM rival_threshold_market_snapshots"
+            " WHERE asset=? AND contract_type=? AND series_id=?"
+            " ORDER BY snapshot_at", ("BTC", "above", 45)):
+        row = dict(raw)
+        label = outcomes.get(str(row["condition_id"]))
+        if label is None:
+            continue
+        coverage["snapshot_rows_seen"] += 1
+        issued = wb._parse_time(row["snapshot_at"])
+        end = wb._parse_time(row["end_date"])
+        baseline = row["yes_price"]
+        if issued is None or end is None or baseline is None \
+                or not 0.0 < float(baseline) < 1.0 \
+                or row["strike_low"] is None:
+            coverage["baseline_unusable"] += 1
+            continue
+        snapshot_chains = chains.get(issued)
+        if not snapshot_chains:
+            coverage["surface_snapshot_missing"] += 1
+            continue
+        expiry = min(snapshot_chains,
+                     key=lambda e: abs((e - end).total_seconds()))
+        if abs(expiry - end) > GC_EXPIRY_TOLERANCE:
+            coverage["expiry_unmatched"] += 1
+            continue
+        g = _implied_above_probability(
+            snapshot_chains[expiry], float(row["strike_low"]))
+        if g is None:
+            coverage["chain_unusable"] += 1
+            continue
+        baseline = float(baseline)
+        call = _gc_pm_call(
+            g=g, baseline=baseline, best_bid=row["best_bid"],
+            best_ask=row["best_ask"], fee_rate=row["fee_rate"],
+            label=label)
+        observations.append(_gc_observation(
+            issued_at=issued, g=g, baseline=baseline, label=label,
+            call=call, cluster=str(row["condition_id"]), asset="BTC",
+            horizon="weekly", contract_type="above"))
+    return observations, coverage
+
+
+def _strike_match(pm_low, pm_high, k_low, k_high) -> float | None:
+    """Strike distance of a PM/Kalshi pair, or None when not matched.
+
+    Both bounds must be present on both sides or absent on both;
+    distance is relative to the Polymarket strike.
+    """
+    if pm_low is None or k_low is None:
+        return None
+    if (pm_high is None) != (k_high is None):
+        return None
+    distance = abs(float(pm_low) - float(k_low)) / float(pm_low)
+    if pm_high is not None:
+        if float(pm_high) == 0:
+            return None
+        distance = max(
+            distance,
+            abs(float(pm_high) - float(k_high)) / float(pm_high))
+    return distance if distance <= GC_STRIKE_TOLERANCE else None
+
+
+def load_gc_venue_gap(store) -> tuple[list[dict], dict]:
+    """Observations for thr-venue-gap.
+
+    A matched pair is a Polymarket and a Kalshi threshold contract
+    with the same asset and contract type, strikes within
+    GC_STRIKE_TOLERANCE, expiries within GC_PAIR_EXPIRY_TOLERANCE,
+    snapshotted in the same collection cycle. Each pair emits one
+    observation per venue: that venue's price graded against the
+    other venue's price as the candidate probability, settled by
+    that venue's own outcome record (settlements are never crossed).
+    Cluster = the matched pair.
+    """
+    coverage = {"pm_snapshot_rows_seen": 0, "pairs_matched": 0,
+                "ambiguous_pairs": 0, "kalshi_outcome_missing": 0,
+                "kalshi_price_missing": 0, "baseline_unusable": 0}
+    pm_outcomes = _settled_outcomes(store, "polymarket")
+    k_outcomes = _settled_outcomes(store, "kalshi")
+    if not pm_outcomes:
+        return [], coverage
+    observations: list[dict] = []
+
+    def kalshi_bucket(snapshot_at: str) -> list[dict]:
+        with store.connect() as conn:
+            rows = conn.execute(
+                "SELECT market_ticker, asset, contract_type, strike_low,"
+                " strike_high, yes_bid, yes_ask, no_ask, last_price,"
+                " close_time FROM rival_kalshi_threshold_snapshots"
+                " WHERE snapshot_at=?", (snapshot_at,)).fetchall()
+        return [dict(r) for r in rows]
+
+    current_stamp: str | None = None
+    bucket: list[dict] = []
+    for raw in wb._stream(
+            store,
+            "SELECT condition_id, snapshot_at, asset, contract_type,"
+            " horizon, strike_low, strike_high, end_date, yes_price,"
+            " best_bid, best_ask, fee_rate"
+            " FROM rival_threshold_market_snapshots"
+            " ORDER BY snapshot_at", ()):
+        row = dict(raw)
+        label = pm_outcomes.get(str(row["condition_id"]))
+        if label is None:
+            continue
+        coverage["pm_snapshot_rows_seen"] += 1
+        if row["snapshot_at"] != current_stamp:
+            current_stamp = row["snapshot_at"]
+            bucket = kalshi_bucket(current_stamp)
+        issued = wb._parse_time(row["snapshot_at"])
+        end = wb._parse_time(row["end_date"])
+        baseline = row["yes_price"]
+        if issued is None or end is None or baseline is None \
+                or not 0.0 < float(baseline) < 1.0:
+            coverage["baseline_unusable"] += 1
+            continue
+        matches = []
+        for k in bucket:
+            if k["asset"] != row["asset"] \
+                    or k["contract_type"] != row["contract_type"]:
+                continue
+            k_end = wb._parse_time(k["close_time"])
+            if k_end is None \
+                    or abs(k_end - end) > GC_PAIR_EXPIRY_TOLERANCE:
+                continue
+            distance = _strike_match(
+                row["strike_low"], row["strike_high"],
+                k["strike_low"], k["strike_high"])
+            if distance is not None:
+                matches.append((distance, k))
+        if not matches:
+            continue
+        matches.sort(key=lambda m: m[0])
+        if len(matches) > 1 and matches[1][0] == matches[0][0]:
+            coverage["ambiguous_pairs"] += 1
+            continue
+        kalshi = matches[0][1]
+        coverage["pairs_matched"] += 1
+        if kalshi["yes_bid"] is not None and kalshi["yes_ask"] is not None:
+            k_mid = (float(kalshi["yes_bid"]) + float(kalshi["yes_ask"])) / 2
+        elif kalshi["last_price"] is not None:
+            k_mid = float(kalshi["last_price"])
+        else:
+            coverage["kalshi_price_missing"] += 1
+            continue
+        if not 0.0 < k_mid < 1.0:
+            coverage["kalshi_price_missing"] += 1
+            continue
+        baseline = float(baseline)
+        cluster = f"{row['condition_id']}|{kalshi['market_ticker']}"
+        pm_call = _gc_pm_call(
+            g=k_mid, baseline=baseline, best_bid=row["best_bid"],
+            best_ask=row["best_ask"], fee_rate=row["fee_rate"],
+            label=label)
+        observations.append(_gc_observation(
+            issued_at=issued, g=k_mid, baseline=baseline, label=label,
+            call=pm_call, cluster=cluster, asset=str(row["asset"]),
+            horizon=str(row["horizon"]),
+            contract_type=str(row["contract_type"])))
+        k_label = k_outcomes.get(str(kalshi["market_ticker"]))
+        if k_label is None:
+            coverage["kalshi_outcome_missing"] += 1
+            continue
+        k_call = _gc_kalshi_call(
+            g=baseline, baseline=k_mid, yes_ask=kalshi["yes_ask"],
+            no_ask=kalshi["no_ask"], label=k_label)
+        observations.append(_gc_observation(
+            issued_at=issued, g=baseline, baseline=k_mid, label=k_label,
+            call=k_call, cluster=cluster, asset=str(row["asset"]),
+            horizon=str(row["horizon"]),
+            contract_type=str(row["contract_type"])))
+    return observations, coverage
+
+
+_GC_LOADERS = {
+    "opt-implied-btc-weekly": load_gc_opt_implied,
+    "thr-venue-gap": load_gc_venue_gap,
+}
+
+
 def screen_estate(store) -> dict:
     coverage = estate_coverage(store)
+    settled = coverage["settled_threshold_outcomes"]
     candidates = {}
     for cand in ESTATE_CANDIDATES:
-        candidates[cand["id"]] = {
-            "status": "NOT_MEASURABLE", "verdict": None,
-            "cause": cand["cause"],
-            "reason": "the estate records threshold snapshots; settled "
-                      "threshold outcomes began recording with the "
-                      "outcome settler (2026-11-24), and the weekly "
-                      "contracts settle from 2026-11-27 -- no settled "
-                      "sample exists yet to grade against",
-            "coverage": coverage,
+        observations, grade_coverage = _GC_LOADERS[cand["id"]](store)
+        block = wb._paired_block(
+            observations, family_size=len(ESTATE_CANDIDATES))
+        verdict = wb._four_leg_verdict(
+            block, min_rows=GC_FLOORS["min_rows"],
+            min_days=GC_FLOORS["min_days"],
+            min_calls=GC_FLOORS["min_calls"],
+            min_clusters=GC_FLOORS["min_clusters"])
+        floors = {
+            "rows": {"have": block["rows"], "need": GC_FLOORS["min_rows"]},
+            "days": {"have": block["days"], "need": GC_FLOORS["min_days"]},
+            "calls": {"have": block["calls"]["n"],
+                      "need": GC_FLOORS["min_calls"]},
+            "clusters": {"have": block.get("clusters"),
+                         "need": GC_FLOORS["min_clusters"]},
         }
-    return {"screen": "G-C", "coverage": coverage, "candidates": candidates,
+        entry = {**verdict, "floors": floors, "score": block,
+                 "grading_version": GC_GRADING_VERSION,
+                 "coverage": grade_coverage}
+        if settled == 0:
+            entry.update({
+                "status": "NOT_MEASURABLE", "verdict": None,
+                "cause": cand["cause"],
+                "reason": "no settled threshold outcome exists yet: "
+                          "the outcome settler's due-scan defect (fixed "
+                          "2026-11-25) left the record empty, and the "
+                          "grader -- registered the same day, before "
+                          "any outcome existed -- grades as soon as "
+                          "settled contracts land",
+            })
+        candidates[cand["id"]] = entry
+    return {"screen": "G-C", "grading_version": GC_GRADING_VERSION,
+            "coverage": coverage, "candidates": candidates,
             "settlement_index_note": "loader coverage reported above; no "
             "candidate is registered on the settlement-index ticks -- "
             "they are the registered fair-value test's own record "
@@ -952,9 +1338,9 @@ CAUSE_TEXT = {
         "vector exist for its asset at or after the features column "
         "landed on 2026-11-20"),
     "no_settled_threshold_outcomes": (
-        "settled threshold outcomes only started recording on "
-        "2026-11-24; the weekly contracts it grades settle from "
-        "2026-11-27, so no settled sample exists yet"),
+        "the G-C grader is registered (floors set 2026-11-25, before "
+        "any settled outcome existed); outcomes began recording on "
+        "2026-11-25 once the settler's due-scan defect was fixed"),
 }
 DATA_BLOCKED_TEXT = {
     "liq-cascade-v1": (
@@ -974,7 +1360,7 @@ CAUSE_SHORT_TEXT = {
     "no_post_cutoff_lineage_rows": (
         "waiting for settled rows with recorded features"),
     "no_settled_threshold_outcomes": (
-        "outcome recorder added; first settlements Nov 27"),
+        "grader registered; waiting for settled outcomes"),
 }
 DATA_BLOCKED_SHORT_TEXT = {
     "liq-cascade-v1": "needs a paid data source; owner's decision",

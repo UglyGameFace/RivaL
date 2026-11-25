@@ -161,32 +161,58 @@ def test_conditioning_not_measurable_below_call_floor():
 # --- Screen G-C: estate loaders ---
 
 def _estate_store(tmp_path):
+    """Real estate schemas (recorders' own DDL), empty."""
+    from parlay_bot.perpetuals.kalshi_thresholds import (
+        KalshiThresholdsRecorder,
+    )
+    from parlay_bot.perpetuals.options_surface import (
+        OptionsSurfaceRecorder,
+    )
+    from parlay_bot.perpetuals.threshold_markets import (
+        ThresholdMarketsRecorder,
+    )
+    from parlay_bot.perpetuals.threshold_outcomes import (
+        ThresholdOutcomeSettler,
+    )
+
     store = SQLiteHotStore(tmp_path / "estate.sqlite")
+    OptionsSurfaceRecorder(store).initialize()
+    ThresholdMarketsRecorder(store).initialize()
+    KalshiThresholdsRecorder(store).initialize()
+    ThresholdOutcomeSettler(store).initialize()
     with store.connect() as conn:
-        conn.execute("CREATE TABLE rival_options_surface_snapshots"
-                     " (snapshot_at TEXT, asset TEXT)", ())
-        conn.execute("CREATE TABLE rival_threshold_market_snapshots"
-                     " (snapshot_at TEXT, slug TEXT)", ())
-        conn.execute("CREATE TABLE rival_kalshi_threshold_snapshots"
-                     " (snapshot_at TEXT, ticker TEXT)", ())
         conn.execute("CREATE TABLE rival_settlement_index_ticks"
                      " (venue TEXT, source_at TEXT)", ())
-        for i in range(3):
-            conn.execute("INSERT INTO rival_options_surface_snapshots"
-                         " VALUES (?, 'BTC')", (f"2026-11-20T0{i}:00:00Z",))
-        conn.execute("INSERT INTO rival_threshold_market_snapshots"
-                     " VALUES ('2026-11-20T04:00:00Z', 'x')", ())
-        conn.execute("INSERT INTO rival_kalshi_threshold_snapshots"
-                     " VALUES ('2026-11-20T04:00:00Z', 'y')", ())
-        conn.execute("INSERT INTO rival_settlement_index_ticks"
-                     " VALUES ('polymarket', '2026-11-20T03:00:00Z')", ())
-        conn.execute("INSERT INTO rival_settlement_index_ticks"
-                     " VALUES ('kalshi', '2026-11-20T05:00:00Z')", ())
     return store
 
 
 def test_estate_coverage_and_not_measurable(tmp_path):
     store = _estate_store(tmp_path)
+    with store.connect() as conn:
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO rival_options_surface_snapshots"
+                " (snapshot_at, currency, instrument_name, expiry_at,"
+                " strike, option_type, mark_price, mark_iv) VALUES"
+                " (?, 'BTC', ?, '2026-11-27T08:00:00+00:00', 100000.0,"
+                " 'call', 0.05, 50.0)",
+                (f"2026-11-20T0{i}:00:00+00:00", "BTC-27NOV26-100000-C"))
+        conn.execute(
+            "INSERT INTO rival_threshold_market_snapshots"
+            " (snapshot_at, asset, contract_type, horizon, series_id,"
+            " series_slug, condition_id) VALUES"
+            " ('2026-11-20T04:00:00+00:00', 'BTC', 'above', 'daily', 45,"
+            " 'btc-multi-strikes-weekly', 'cond-x')", ())
+        conn.execute(
+            "INSERT INTO rival_kalshi_threshold_snapshots"
+            " (snapshot_at, asset, contract_type, horizon,"
+            " series_ticker, market_ticker) VALUES"
+            " ('2026-11-20T04:00:00+00:00', 'BTC', 'above', 'hourly',"
+            " 'KXBTCD', 'KXBTCD-1')", ())
+        conn.execute("INSERT INTO rival_settlement_index_ticks"
+                     " VALUES ('polymarket', '2026-11-20T03:00:00Z')", ())
+        conn.execute("INSERT INTO rival_settlement_index_ticks"
+                     " VALUES ('kalshi', '2026-11-20T05:00:00Z')", ())
     result = gen.screen_estate(store)
     assert result["coverage"]["options_surface"]["rows"] == 3
     assert result["coverage"]["settlement_index_ticks"]["kalshi"]["rows"] == 1
@@ -194,6 +220,110 @@ def test_estate_coverage_and_not_measurable(tmp_path):
     for cand in result["candidates"].values():
         assert cand["status"] == "NOT_MEASURABLE"
         assert cand["cause"] == "no_settled_threshold_outcomes"
+        assert cand["floors"]["rows"] == {"have": 0, "need": 500}
+        assert cand["grading_version"] == gen.GC_GRADING_VERSION
+
+
+def test_implied_above_probability_reads_the_bracketing_segment():
+    chain = [(90000.0, 9500.0), (100000.0, 5000.0), (110000.0, 1200.0)]
+    # Strike listed exactly: forward segment slope.
+    assert gen._implied_above_probability(chain, 100000.0) == 0.38
+    # Strike between listed strikes: that segment's slope.
+    assert gen._implied_above_probability(chain, 95000.0) == 0.45
+    # Outside the range: nearest segment.
+    assert gen._implied_above_probability(chain, 80000.0) == 0.45
+    assert gen._implied_above_probability(chain, 120000.0) == 0.38
+    # Unusable chains speak not at all.
+    assert gen._implied_above_probability([(100000.0, 5000.0)], 100000.0) \
+        is None
+    assert gen._implied_above_probability(
+        [(100000.0, 5000.0), (100000.0, 4000.0), (110000.0, 1.0)],
+        100000.0) is None
+
+
+def _gc_outcome(store, venue, key, asset, ctype, resolved):
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO rival_threshold_outcomes (venue, market_key,"
+            " asset, contract_type, resolved_yes, recorded_at) VALUES"
+            " (?, ?, ?, ?, ?, '2026-11-27T18:00:00+00:00')",
+            (venue, key, asset, ctype, resolved))
+
+
+def test_gc_opt_implied_grades_settled_contracts(tmp_path):
+    store = _estate_store(tmp_path)
+    _gc_outcome(store, "polymarket", "cond-1", "BTC", "above", 1)
+    stamps = [f"2026-11-26T{hour:02d}:00:00+00:00" for hour in (10, 11, 12)]
+    with store.connect() as conn:
+        for stamp in stamps:
+            conn.execute(
+                "INSERT INTO rival_threshold_market_snapshots"
+                " (snapshot_at, asset, contract_type, horizon, series_id,"
+                " series_slug, condition_id, strike_low, end_date,"
+                " yes_price, best_bid, best_ask, fee_rate) VALUES"
+                " (?, 'BTC', 'above', 'daily', 45,"
+                " 'btc-multi-strikes-weekly', 'cond-1', 100000.0,"
+                " '2026-11-27T17:00:00Z', 0.40, 0.39, 0.41, 0.01)",
+                (stamp,))
+            # USD chain 10200 / 5600 / 1100 at 90k / 100k / 110k with
+            # underlying 100000 -> implied P(above 100k) = 0.45.
+            for strike, usd in ((90000.0, 10200.0), (100000.0, 5600.0),
+                                (110000.0, 1100.0)):
+                conn.execute(
+                    "INSERT INTO rival_options_surface_snapshots"
+                    " (snapshot_at, currency, instrument_name, expiry_at,"
+                    " strike, option_type, mark_price, mark_iv,"
+                    " underlying_price) VALUES"
+                    " (?, 'BTC', ?, '2026-11-27T08:00:00+00:00', ?,"
+                    " 'call', ?, 50.0, 100000.0)",
+                    (stamp, f"BTC-27NOV26-{int(strike)}-C", strike,
+                     usd / 100000.0))
+    result = gen.screen_estate(store)
+    cand = result["candidates"]["opt-implied-btc-weekly"]
+    assert "cause" not in cand  # a settled sample exists: no stale cause
+    assert cand["status"] == "NOT_MEASURABLE"  # below floors, honestly
+    assert cand["floors"]["rows"] == {"have": 3, "need": 500}
+    assert cand["floors"]["calls"] == {"have": 3, "need": 100}
+    assert cand["floors"]["clusters"] == {"have": 1, "need": 40}
+    assert cand["coverage"]["settled_contracts"] == 1
+    # Implied 0.45 beats the 0.40 baseline on a YES settlement.
+    assert cand["score"]["delta_log_loss"] < 0
+    gap = result["candidates"]["thr-venue-gap"]
+    assert gap["score"]["rows"] == 0
+
+
+def test_gc_venue_gap_pairs_matched_contracts(tmp_path):
+    store = _estate_store(tmp_path)
+    _gc_outcome(store, "polymarket", "cond-g", "BTC", "above", 1)
+    _gc_outcome(store, "kalshi", "KXBTCD-G", "BTC", "above", 0)
+    stamp = "2026-11-26T10:00:00+00:00"
+    with store.connect() as conn:
+        conn.execute(
+            "INSERT INTO rival_threshold_market_snapshots"
+            " (snapshot_at, asset, contract_type, horizon, series_id,"
+            " series_slug, condition_id, strike_low, end_date,"
+            " yes_price, best_bid, best_ask, fee_rate) VALUES"
+            " (?, 'BTC', 'above', 'daily', 45,"
+            " 'btc-multi-strikes-weekly', 'cond-g', 74000.0,"
+            " '2026-11-26T17:00:00Z', 0.30, 0.29, 0.31, 0.01)", (stamp,))
+        conn.execute(
+            "INSERT INTO rival_kalshi_threshold_snapshots"
+            " (snapshot_at, asset, contract_type, horizon,"
+            " series_ticker, market_ticker, strike_low, yes_bid,"
+            " yes_ask, no_ask, last_price, close_time) VALUES"
+            " (?, 'BTC', 'above', 'hourly', 'KXBTCD', 'KXBTCD-G',"
+            " 73999.99, 0.48, 0.52, 0.52, 0.50,"
+            " '2026-11-26T17:00:00Z')", (stamp,))
+    result = gen.screen_estate(store)
+    cand = result["candidates"]["thr-venue-gap"]
+    assert cand["coverage"]["pairs_matched"] == 1
+    assert cand["score"]["rows"] == 2  # one observation per venue
+    assert cand["floors"]["clusters"] == {"have": 1, "need": 40}
+    # PM side: cross price 0.50 vs own 0.30, settled YES -> call wins.
+    # Kalshi side: cross price 0.30 vs own 0.50, settled NO -> the NO
+    # call at 0.52 also wins. Both calls net positive after fees.
+    assert cand["score"]["calls"]["n"] == 2
+    assert cand["score"]["calls"]["mean_net"] > 0
 
 
 # --- Screen G-D: LLM-mask intake ---
@@ -409,7 +539,7 @@ def test_board_blockers_and_progress(tmp_path):
     assert "G-D grader" in by_id["llm-mask-btc-trend"]["blocker"]
     assert "now reads the recorded vectors" in (
         by_id["llm-mask-btc-trend"]["blocker"])
-    assert "2026-11-27" in by_id["opt-implied-btc-weekly"]["blocker"]
+    assert "2026-11-25" in by_id["opt-implied-btc-weekly"]["blocker"]
     assert by_id["cond-tight-book"]["blocker"] == "below its measurement floors"
     assert by_id["cond-tight-book"]["progress"] == "calls 30/250 · days 3/7"
     assert by_id["cond-tight-book"]["floors"]["calls"] == {"have": 30, "need": 250}
@@ -421,7 +551,7 @@ def test_workbench_text_names_every_blocker(tmp_path):
     full = workbench_text(record, full=True)
     assert "15 not measurable" not in full  # counts come from the record
     for needle in ("AI-suggested mask · BTC", "now reads the recorded vectors",
-                   "Options-implied · BTC weekly", "2026-11-27",
+                   "Options-implied · BTC weekly", "2026-11-25",
                    "tight book only", "calls 30/250 · days 3/7",
                    "Liquidation cascade screen"):
         assert needle in full, needle

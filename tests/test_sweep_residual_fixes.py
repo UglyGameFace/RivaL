@@ -16,20 +16,19 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-import evidence_board_receipt as receipt  # noqa: E402
-from parlay_bot.discord_app.opportunities import recent_multi_watches, recent_watches  # noqa: E402
-from parlay_bot.perpetuals import model_checkpoints as checkpoints_module  # noqa: E402
-from parlay_bot.perpetuals.features import LabeledExample  # noqa: E402
-from parlay_bot.perpetuals.forward_audit import MODEL, ForwardAccuracyMonitor  # noqa: E402
-from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle  # noqa: E402
-from parlay_bot.perpetuals.market_store import PerpetualMarketStore  # noqa: E402
-from parlay_bot.perpetuals.multi_exchange import MODEL as MULTI_MODEL  # noqa: E402
-from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch  # noqa: E402
-from parlay_bot.storage.hot import SQLiteHotStore  # noqa: E402
+import evidence_board_receipt as receipt
+
+from parlay_bot.discord_app.opportunities import recent_multi_watches, recent_watches
+from parlay_bot.perpetuals import model_checkpoints as checkpoints_module
+from parlay_bot.perpetuals.features import LabeledExample
+from parlay_bot.perpetuals.forward_audit import MODEL, ForwardAccuracyMonitor
+from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle
+from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.multi_exchange import MODEL as MULTI_MODEL
+from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
+from parlay_bot.storage.hot import SQLiteHotStore
 
 FEATURES = (.1, .2, .01, .03, .05, .2, .1, .1, .1, .1)
 

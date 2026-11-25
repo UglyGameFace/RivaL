@@ -63,9 +63,15 @@ def score_vs_market(rows, *, days: int, edge: float = EDGE) -> dict:
 
 def _time(value) -> datetime | None:
     try:
-        return datetime.fromisoformat(str(value)).astimezone(UTC)
+        parsed = datetime.fromisoformat(str(value))
     except (TypeError, ValueError):
         return None
+    if parsed.utcoffset() is None:
+        # A naive timestamp must fail closed (cf. kalshi_public._date):
+        # astimezone() on a naive value silently assumes the process-
+        # local timezone and would shift the contract window by hours.
+        return None
+    return parsed.astimezone(UTC)
 
 
 class KalshiUpDown:

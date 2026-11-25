@@ -44,7 +44,7 @@ import math
 import random
 import secrets
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from websockets.asyncio.client import connect
 
@@ -54,6 +54,10 @@ _LOG = logging.getLogger(__name__)
 WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 WS_PATH = "/trade-api/ws/v2"
 CHANNEL = "cfbenchmarks_value"
+# A tick older than this at receipt, or further than this in the
+# future, is not a live print (cf. polybolt_twap.MAX_SAMPLE_AGE).
+MAX_TICK_AGE = timedelta(minutes=3)
+MAX_TICK_FUTURE = timedelta(seconds=3)
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
 INDEX_IDS = {
     "BRTI": "BTC",
@@ -248,6 +252,14 @@ def parse_cfbenchmarks_message(message, *, received_at: datetime) -> IndexTick |
     value = _price(frame.get("value"))
     source_at = _ms(frame.get("time")) or _ms(msg.get("received_at"))
     if value is None or source_at is None:
+        return None
+    # Freshness bound, mirroring the PolyBolt Chainlink parser
+    # (MAX_SAMPLE_AGE / +3s): a delayed, replayed or clock-skewed frame
+    # must not enter the settlement-index series as a live print -- a
+    # future print would additionally poison the recorder's ordering
+    # and suppress every real tick stamped before it.
+    if received - source_at > MAX_TICK_AGE \
+            or source_at - received > MAX_TICK_FUTURE:
         return None
     avg_60s = None
     avg_block = msg.get("avg_60s_data")

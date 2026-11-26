@@ -44,7 +44,7 @@ def test_growth_attribution_survives_the_stored_text_budget(monkeypatch):
     class VerboseSnap:
         def __init__(self, rss):
             self.rss_bytes = rss
-            self.detail = " ".join("detail%d" % i for i in range(40))
+            self.detail = " ".join(f"detail{i}" for i in range(40))
 
     readings = iter([100 * 2**20, 130 * 2**20])
     monkeypatch.setattr(memory_receipt.host_memory, "snapshot",

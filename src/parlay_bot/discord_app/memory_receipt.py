@@ -165,13 +165,15 @@ class MemoryReceipt:
         # receipt that itself sees a real step, at most every 30 minutes,
         # so a fast climb is attributed on the receipt that saw it instead
         # of two hours later or never. The walk runs BEFORE the receipt
-        # line is composed so its top holders can ride inside that line:
-        # the problem log stores only the first 180 chars of a record
+        # line is logged so its results can be stored alongside it: the
+        # problem log stores only the first 180 chars of a record
         # (error_log.MAX_TEXT), and the per-rank holder lines log at INFO
         # below pressure, so neither the old line order (growth fields
         # last, always truncated away) nor the separate lines ever
         # reached durable storage -- every stored receipt from the
-        # 2026-11-26 RAM kill onward ends mid-word at "top_gr".
+        # 2026-11-26 RAM kill onward ends mid-word at "top_gr". The
+        # holders themselves are emitted as their own line below (see
+        # there for why they no longer ride inside the receipt line).
         import time as _time
         now = _time.monotonic()
         high = after // MIB >= HOLDERS_ABOVE_MB
@@ -193,16 +195,28 @@ class MemoryReceipt:
         line = f"rss_mb={rss // MIB} after_trim_mb={after // MIB}"
         if grew is not None:
             line += f" grew_mb={grew} top_growth=[{top or 'none'}]"
-        if holders:
-            named = ", ".join(f"{name}={size // MIB}MB"
-                              for name, size in holders[:2])
-            line += f" holders=[{named}]"
         line += f" objects={sum(counts.values())} {memory.detail}"
         if grew is not None and grew >= GREW_MB:
             _LOG.warning("RivaL memory receipt %s", line)
         else:
             _LOG.info("RivaL memory receipt %s", line)
         if holders:
+            # The holders list rides on its OWN stored line, not inside
+            # the receipt line: the first attributable receipt (2026-11-26
+            # 19:53Z) proved the receipt's own top_growth segment eats the
+            # whole 180-char storage budget and the holders segment fell
+            # off the end -- stored text ended at "hold". A dedicated
+            # template keeps the top holders queryable on their own; it
+            # logs at warning whenever the receipt itself did (a real
+            # growth step) or under pressure, so growth episodes always
+            # leave the attribution in durable storage.
+            combined = ", ".join(f"{name}={size // MIB}MB"
+                                 for name, size in holders[:4])
+            if (grew is not None and grew >= GREW_MB) or getattr(
+                    memory, "pressure", False):
+                _LOG.warning("RivaL memory holders %s", combined)
+            else:
+                _LOG.info("RivaL memory holders %s", combined)
             # One line per rank, as before: routine attribution is
             # information, not a problem -- at warning level every 2-hour
             # sample landed on the status card as six red lines while

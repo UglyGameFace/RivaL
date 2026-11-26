@@ -63,10 +63,13 @@ def test_growth_attribution_survives_the_stored_text_budget(monkeypatch):
     del hoard
 
 
-def test_stepped_walk_top_holder_rides_in_the_receipt_line(monkeypatch):
-    """A growth step's holders walk must name its top holder in the
-    receipt line itself: the per-rank lines log at INFO below pressure
-    and are never stored, so the line is the only durable attribution."""
+def test_stepped_walk_top_holder_lands_on_the_stored_holders_line(monkeypatch, caplog):
+    """A growth step's holders walk must name its top holder on the
+    dedicated holders line at warning level: the per-rank lines log at
+    INFO below pressure and are never stored, and the receipt line's own
+    top_growth segment eats the whole 180-char storage budget (proven
+    live 2026-11-26: the stored receipt ended at "hold"), so the holders
+    list needs its own stored line to reach durable storage."""
     readings = iter([100 * 2**20, 120 * 2**20])
     monkeypatch.setattr(memory_receipt.host_memory, "snapshot", lambda: _Snap(next(readings)))
     monkeypatch.setattr(memory_receipt, "_malloc_trim", lambda: False)
@@ -79,9 +82,15 @@ def test_stepped_walk_top_holder_rides_in_the_receipt_line(monkeypatch):
     Holder.__module__ = "parlay_bot.test_fixture"
     holder = Holder()
     holder.big_cache = {i: list(range(50)) for i in range(4000)}
-    line = receipt.sample()
-    assert "holders=[Holder.big_cache=" in line
-    assert line.index("holders=[") < 180
+    with caplog.at_level(logging.INFO, logger="parlay_bot.discord_app.memory_receipt"):
+        line = receipt.sample()
+    assert "holders=[" not in line
+    combined = [r for r in caplog.records
+                if r.getMessage().startswith("RivaL memory holders ")]
+    assert combined, [r.getMessage() for r in caplog.records]
+    assert "Holder.big_cache=" in combined[0].getMessage()
+    assert combined[0].levelname == "WARNING"  # grew 20 MB: stored, not INFO
+    assert len(combined[0].getMessage()) <= 180
     del holder
 
 
@@ -143,10 +152,8 @@ def test_growth_step_triggers_holders_below_high_rss(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger="parlay_bot.discord_app.memory_receipt"):
         line = receipt.sample()
     assert "grew_mb=20" in line
-    # The per-rank holder lines specifically (the receipt line itself now
-    # also names the top holder inside its holders=[...] field, at the
-    # receipt's own level -- it is one line that already warns on growth,
-    # not six new card lines).
+    # The per-rank holder lines specifically (the combined holders line is
+    # asserted separately in the stepped-walk test above).
     holders = [r for r in caplog.records
                if "RivaL memory holder #" in r.getMessage()
                and "Holder.big_cache" in r.getMessage()]

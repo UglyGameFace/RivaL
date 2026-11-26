@@ -33,6 +33,58 @@ def test_malloc_trim_is_safe_to_call():
     assert memory_receipt._malloc_trim() in (True, False)
 
 
+def test_growth_attribution_survives_the_stored_text_budget(monkeypatch):
+    """The problem log stores only the first 180 chars of a record.
+
+    The receipt used to put the host detail before grew_mb/top_growth,
+    so every stored receipt was truncated mid-word and the growth
+    attribution never reached durable storage (found on the receipts
+    from the 2026-11-26 RAM kill). Growth fields must come first.
+    """
+    class VerboseSnap:
+        def __init__(self, rss):
+            self.rss_bytes = rss
+            self.detail = " ".join(f"detail{i}" for i in range(40))
+
+    readings = iter([100 * 2**20, 130 * 2**20])
+    monkeypatch.setattr(memory_receipt.host_memory, "snapshot",
+                        lambda: VerboseSnap(next(readings)))
+    monkeypatch.setattr(memory_receipt, "_malloc_trim", lambda: False)
+    receipt = MemoryReceipt()
+    receipt.sample()
+
+    class LeakyThing:
+        pass
+
+    hoard = [LeakyThing() for _ in range(5000)]
+    line = receipt.sample()
+    assert line.index("top_growth=[") < 180
+    assert "LeakyThing+" in line[:180]
+    del hoard
+
+
+def test_stepped_walk_top_holder_rides_in_the_receipt_line(monkeypatch):
+    """A growth step's holders walk must name its top holder in the
+    receipt line itself: the per-rank lines log at INFO below pressure
+    and are never stored, so the line is the only durable attribution."""
+    readings = iter([100 * 2**20, 120 * 2**20])
+    monkeypatch.setattr(memory_receipt.host_memory, "snapshot", lambda: _Snap(next(readings)))
+    monkeypatch.setattr(memory_receipt, "_malloc_trim", lambda: False)
+    receipt = MemoryReceipt()
+    receipt.sample()
+
+    class Holder:
+        pass
+
+    Holder.__module__ = "parlay_bot.test_fixture"
+    holder = Holder()
+    holder.big_cache = {i: list(range(50)) for i in range(4000)}
+    line = receipt.sample()
+    assert "holders=[Holder.big_cache=" in line
+    assert line.index("holders=[") < 180
+    del holder
+
+
 def test_memory_holders_names_the_attribute_that_holds_the_bytes():
     from parlay_bot.discord_app.memory_receipt import memory_holders
     from parlay_bot.storage import hot
@@ -91,7 +143,13 @@ def test_growth_step_triggers_holders_below_high_rss(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger="parlay_bot.discord_app.memory_receipt"):
         line = receipt.sample()
     assert "grew_mb=20" in line
-    holders = [r for r in caplog.records if "Holder.big_cache" in r.getMessage()]
+    # The per-rank holder lines specifically (the receipt line itself now
+    # also names the top holder inside its holders=[...] field, at the
+    # receipt's own level -- it is one line that already warns on growth,
+    # not six new card lines).
+    holders = [r for r in caplog.records
+               if "RivaL memory holder #" in r.getMessage()
+               and "Holder.big_cache" in r.getMessage()]
     assert holders, [r.getMessage() for r in caplog.records]
     # Attribution is information while memory is fine: it must not land on
     # the status card as a red warning. The growth line itself still does.

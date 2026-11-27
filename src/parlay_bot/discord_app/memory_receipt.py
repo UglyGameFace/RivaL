@@ -164,6 +164,7 @@ def memory_holders(top: int = 10, node_budget: int = 4_000_000,
 class MemoryReceipt:
     def __init__(self) -> None:
         self._last_counts: Counter | None = None
+        self._last_sizes: Counter | None = None
         self._last_rss: int | None = None
         self._holders_at = -HOLDERS_EVERY_S
         # Belt and braces for entry points other than main.py: cap the
@@ -171,25 +172,56 @@ class MemoryReceipt:
         self._arenas_capped = limit_allocator_arenas()
 
     @staticmethod
-    def _census() -> Counter:
-        return Counter(type(obj).__name__ for obj in gc.get_objects())
+    def _census() -> tuple[Counter, Counter]:
+        """Object counts AND payload bytes per type, in one GC pass.
+
+        Counts alone missed the 2026-11-27 step: the +95 MB interval's
+        count leaders were ~880 small tick objects, while the retained
+        bytes sat in payloads (a few huge buffers count once each).
+        sys.getsizeof reports a container's slots and an array's data
+        buffer, so summing it per type makes payload growth through
+        GC-tracked carriers visible in the same pass. Atomic payloads
+        (bytes/str/floats) are not GC-tracked and native buffers owned
+        by C extensions (e.g. DuckDB) are not Python objects at all --
+        both stay invisible here, which is itself the discriminator if
+        a step shows in neither counts nor bytes.
+        """
+        counts: Counter = Counter()
+        sizes: Counter = Counter()
+        for obj in gc.get_objects():
+            name = type(obj).__name__
+            counts[name] += 1
+            try:
+                sizes[name] += sys.getsizeof(obj)
+            except (TypeError, OverflowError):
+                pass
+        return counts, sizes
 
     def sample(self) -> str:
         """One receipt; returns the logged line (for tests)."""
         memory = host_memory.snapshot()
         rss = memory.rss_bytes or 0
-        counts = self._census()
+        counts, sizes = self._census()
         trimmed = _malloc_trim()
         after = host_memory.snapshot().rss_bytes or rss if trimmed else rss
         rss = after
         grew: int | None = None
         top = ""
+        top_bytes = ""
         if self._last_counts is not None and self._last_rss is not None:
             grew = (rss - self._last_rss) // MIB
             delta = counts.copy()
             delta.subtract(self._last_counts)
             top = ", ".join(f"{name}+{n}" for name, n in delta.most_common(TOP) if n > 0)
-        self._last_counts, self._last_rss = counts, rss
+            if self._last_sizes is not None:
+                byte_delta = sizes.copy()
+                byte_delta.subtract(self._last_sizes)
+                # Only payload-scale moves (>= 1 MB) are signal; the
+                # census's own bookkeeping objects churn below that.
+                top_bytes = ", ".join(
+                    f"{name}{n / MIB:+.1f}" for name, n in byte_delta.most_common(TOP)
+                    if n >= MIB)
+        self._last_counts, self._last_sizes, self._last_rss = counts, sizes, rss
         # Name what holds it. Above the high-RSS line, at most every 2 hours
         # (a few seconds of CPU, in this worker thread) -- and on any
         # receipt that itself sees a real step, at most every 30 minutes,
@@ -225,6 +257,8 @@ class MemoryReceipt:
         line = f"rss_mb={rss // MIB} after_trim_mb={after // MIB}"
         if grew is not None:
             line += f" grew_mb={grew} top_growth=[{top or 'none'}]"
+            if top_bytes:
+                line += f" top_bytes=[{top_bytes}]"
         line += (f" objects={sum(counts.values())}"
                  f" arenas={'capped' if self._arenas_capped else 'native'}"
                  f" {memory.detail}")

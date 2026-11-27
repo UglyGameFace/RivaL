@@ -74,6 +74,7 @@ import random
 from datetime import UTC, datetime, time, timedelta
 
 from parlay_bot.perpetuals.convergence_evaluation import (
+    EPOCH_WINDOW_START,
     _reference_from_evidence,
     _snapshot_reference,
 )
@@ -650,9 +651,9 @@ def _table_exists(store, conn, table: str) -> bool:
 FETCH_CHUNK = 2000
 
 
-def _stream_rows(conn, sql: str):
+def _stream_rows(conn, sql: str, params: tuple = ()):
     """Yield a query's rows in FETCH_CHUNK slices, in the query's order."""
-    cursor = conn.execute(sql)
+    cursor = conn.execute(sql, params)
     while True:
         chunk = cursor.fetchmany(FETCH_CHUNK)
         if not chunk:
@@ -673,6 +674,17 @@ def load_windows(store) -> list[dict]:
     Kalshi's ``result_yes`` by ticker. Anything missing stays None and
     is excluded downstream -- never approximated.
     """
+    # Loader epoch bound (rectification 2026-11-27): the snapshots this
+    # test judges were recorded from the shared collection epoch onward
+    # (EPOCH_WINDOW_START, the convergence collection's first window);
+    # auxiliary tables span all history and grow forever, so their reads
+    # are restricted to the contracts the epoch's snapshots name -- the
+    # only keys ever looked up below. No frozen criterion changes: the
+    # parity gate is byte-identical evaluator JSON on the same live data.
+    epoch = (EPOCH_WINDOW_START.isoformat(),)
+    epoch_ids = (
+        "SELECT DISTINCT contract_id FROM rival_convergence_book_snapshots"
+        " WHERE window_open>=?")
     with store.connect() as conn:
         ref_expr = (
             "reference_level"
@@ -684,14 +696,17 @@ def load_windows(store) -> list[dict]:
             " source_at, avg_bid, avg_ask, fee_rate,"
             f" {ref_expr}, book_sha256"
             " FROM rival_convergence_book_snapshots"
+            " WHERE window_open>=?"
             " ORDER BY venue, asset, window_open, source_at",
+            epoch,
         ).fetchall()
         kalshi_refs: dict[str, float] = {}
         kalshi_results: dict[str, int] = {}
         if _table_exists(store, conn, "rival_kalshi_updown"):
             for row in conn.execute(
                     "SELECT ticker, open_reference, result_yes"
-                    " FROM rival_kalshi_updown").fetchall():
+                    " FROM rival_kalshi_updown"
+                    f" WHERE ticker IN ({epoch_ids})", epoch).fetchall():
                 if row["open_reference"] is not None:
                     kalshi_refs[str(row["ticker"])] = float(row["open_reference"])
                 if row["result_yes"] is not None:
@@ -702,7 +717,8 @@ def load_windows(store) -> list[dict]:
             if not _table_exists(store, conn, table):
                 continue
             for row in conn.execute(
-                    f"SELECT slug, evidence_json FROM {table}").fetchall():
+                    f"SELECT slug, evidence_json FROM {table}"
+                    f" WHERE slug IN ({epoch_ids})", epoch).fetchall():
                 slug = str(row["slug"])
                 if slug not in pm_refs:
                     value = _reference_from_evidence(row["evidence_json"])
@@ -711,7 +727,8 @@ def load_windows(store) -> list[dict]:
         if _table_exists(store, conn, "rival_convergence_reference_levels"):
             for row in conn.execute(
                     "SELECT venue, contract_id, reference_level"
-                    " FROM rival_convergence_reference_levels").fetchall():
+                    " FROM rival_convergence_reference_levels"
+                    f" WHERE contract_id IN ({epoch_ids})", epoch).fetchall():
                 value = _snapshot_reference(row["reference_level"])
                 if value is None:
                     continue
@@ -724,7 +741,8 @@ def load_windows(store) -> list[dict]:
             for row in _stream_rows(
                     conn,
                     "SELECT slug, direction"
-                    " FROM rival_polymarket_ai_outcomes"):
+                    " FROM rival_polymarket_ai_outcomes"
+                    f" WHERE slug IN ({epoch_ids})", epoch):
                 direction = str(row["direction"]).upper()
                 if direction == "UP":
                     pm_results[str(row["slug"])] = 1
@@ -733,11 +751,19 @@ def load_windows(store) -> list[dict]:
         series: dict[tuple[str, str], list[tuple[datetime, float]]] = {}
         recording: dict[str, dict] = {}
         if _table_exists(store, conn, "rival_settlement_index_ticks"):
+            # The series load stays proportional to the recording period
+            # by design: recording days / first / last tick are defined
+            # over the venue's full recorded series. The bound below
+            # only excludes pre-epoch rows and venues outside the test's
+            # universe, which can never enter a window or the recording
+            # derivation for a tested venue.
             for row in _stream_rows(
                     conn,
                     "SELECT venue, asset, source_at, value"
                     " FROM rival_settlement_index_ticks"
-                    " ORDER BY venue, asset, source_at"):
+                    " WHERE venue IN ('polymarket', 'kalshi')"
+                    " AND source_at>=?"
+                    " ORDER BY venue, asset, source_at", epoch):
                 stamp = _parse_time(row["source_at"])
                 if stamp is None:
                     continue

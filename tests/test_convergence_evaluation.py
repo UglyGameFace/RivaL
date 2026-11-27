@@ -420,3 +420,67 @@ def test_load_windows_survives_a_pre_repair_schema(tmp_path):
     windows = load_windows(store)
     assert len(windows) == 1
     assert windows[0]["pm_reference"] is None
+
+
+def _record_snapshot(quotes, *, opened, contract_id):
+    assert quotes.record({
+        "venue": "polymarket", "asset": "ETH", "contract_id": contract_id,
+        "window_open": opened, "window_close": opened + timedelta(minutes=15),
+        "source_at": opened + timedelta(seconds=300),
+        "received_at": opened + timedelta(seconds=300),
+        "best_bid": 0.39, "best_ask": 0.41, "bid_size": 20.0,
+        "ask_size": 20.0, "avg_bid": 0.39, "avg_ask": 0.40,
+        "fee_rate": 0.01, "reference_level": None,
+        "book_sha256": "ab" * 32,
+    })
+
+
+def test_load_windows_reads_only_the_registered_epoch(tmp_path):
+    """Rectification 2026-11-27: the loader is bounded to the registered
+    recording epoch [EPOCH_WINDOW_START, ACCRUAL_DEADLINE). Windows
+    before collection went live and after the frozen deadline are not
+    read; the epoch's first window (containing COLLECTION_START) is."""
+    from parlay_bot.perpetuals.convergence_evaluation import (
+        COLLECTION_START,
+        EPOCH_WINDOW_START,
+    )
+    assert EPOCH_WINDOW_START == datetime(2026, 11, 19, 2, 0, tzinfo=UTC)
+    assert EPOCH_WINDOW_START <= COLLECTION_START < (
+        EPOCH_WINDOW_START + timedelta(minutes=15))
+    store = SQLiteHotStore(tmp_path / "hot.sqlite")
+    quotes = ConvergenceQuotes(store)
+    quotes.initialize()
+    _record_snapshot(quotes, opened=datetime(2026, 11, 18, 0, 0, tzinfo=UTC),
+                     contract_id="eth-pre-epoch")
+    _record_snapshot(quotes, opened=EPOCH_WINDOW_START,
+                     contract_id="eth-first-window")
+    _record_snapshot(quotes, opened=OPEN, contract_id="eth-in-epoch")
+    _record_snapshot(quotes, opened=datetime(2026, 12, 11, 0, 0, tzinfo=UTC),
+                     contract_id="eth-post-deadline")
+    windows = load_windows(store)
+    assert [w["window_open"] for w in windows] == [EPOCH_WINDOW_START, OPEN]
+
+
+def test_snapshot_eval_indexes_exist_and_serve_the_evaluator_order(tmp_path):
+    """The covering indexes for the evaluators' ORDER BY exist after
+    collector init, and SQLite's plan for the bounded convergence scan
+    uses one instead of a temp B-tree sort over a full scan."""
+    store = SQLiteHotStore(tmp_path / "hot.sqlite")
+    quotes = ConvergenceQuotes(store)
+    quotes.initialize()
+    with store.connect() as conn:
+        names = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+            " AND tbl_name='rival_convergence_book_snapshots'").fetchall()}
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT venue, asset, contract_id,"
+            " window_open, source_at FROM rival_convergence_book_snapshots"
+            " WHERE window_open>=? AND window_open<?"
+            " ORDER BY asset, window_open, venue, source_at",
+            ("2026-11-19T02:00:00+00:00", "2026-12-10T02:12:00+00:00"),
+        ).fetchall()
+    assert "idx_convergence_snapshots_eval_order" in names
+    assert "idx_convergence_snapshots_venue_order" in names
+    plan_text = " ".join(str(row[-1]) for row in plan)
+    assert "idx_convergence_snapshots_eval_order" in plan_text
+    assert "TEMP B-TREE" not in plan_text

@@ -348,13 +348,30 @@ class PolymarketResearch:
             return self._record_uma_resolution(call, row, now=now)
         try:
             payouts = row["payouts"]
+            # On-chain provenance: a full transaction hash, as most
+            # resolutions carry -- or, for the Chainlink-reported
+            # resolutions Polymarket began returning for the SOL/XRP
+            # 15-minute series on 2026-11-23, an explicitly empty hash
+            # together with the positive resolved block (the live row
+            # shape: transaction_hash "", resolved_block 97906248,
+            # reporter CHAINLINK). The empty-hash shape with no block,
+            # a missing hash, or a malformed non-empty hash is rejected
+            # exactly as before. Before this, every SOL/XRP 15m outcome
+            # since 2026-11-23T13:30Z was retried forever and never
+            # recorded (fair-value PM settlement_unavailable gap).
+            tx_hash = row.get("transaction_hash")
+            block = row.get("resolved_block")
+            has_block = (isinstance(block, int) and not isinstance(block, bool)
+                         and block > 0)
+            has_provenance = has_block and (
+                (isinstance(tx_hash, str)
+                 and re.fullmatch(r"0x[0-9a-fA-F]{64}", tx_hash) is not None)
+                or tx_hash == "")
             if (
                 row.get("condition_id") != call["condition_id"]
                 or row.get("status") != "resolved"
                 or row.get("extended_review") is not False
-                or not isinstance(row.get("transaction_hash"), str)
-                or not re.fullmatch(r"0x[0-9a-fA-F]{64}", row["transaction_hash"])
-                or not isinstance(row.get("resolved_block"), int) or row["resolved_block"] <= 0
+                or not has_provenance
                 or not isinstance(payouts, list) or len(payouts) != 2
                 or any(isinstance(v, bool) for v in payouts)
             ):

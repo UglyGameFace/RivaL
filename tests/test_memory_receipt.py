@@ -61,6 +61,25 @@ def test_limit_allocator_arenas_is_a_safe_noop_without_glibc(monkeypatch):
     assert memory_receipt.limit_allocator_arenas() is False
 
 
+def test_byte_census_names_payload_growth_counts_cannot_see(monkeypatch):
+    """The 2026-11-27 +95 MB step's count leaders were ~880 small tick
+    objects -- the retained bytes sat in payloads, where one object
+    counts once no matter how many megabytes it carries. The receipt
+    must report per-type BYTE growth alongside the counts."""
+    readings = iter([100 * 2**20, 120 * 2**20])
+    monkeypatch.setattr(memory_receipt.host_memory, "snapshot", lambda: _Snap(next(readings)))
+    monkeypatch.setattr(memory_receipt, "_malloc_trim", lambda: False)
+    receipt = MemoryReceipt()
+    receipt.sample()
+    # A GC-tracked payload carrier: bytes/str themselves are not
+    # GC-tracked, so the census sees payloads through their containers
+    # and array buffers -- a 4M-slot list carries ~32 MB of slots.
+    payload = [None] * (4 * 2**20)
+    line = receipt.sample()
+    assert "top_bytes=[list+" in line
+    del payload
+
+
 def test_receipt_line_marks_the_arena_cap_state(monkeypatch):
     """Every stored receipt proves whether the running instance booted
     with the arena cap applied."""

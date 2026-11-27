@@ -352,3 +352,48 @@ def test_unsettled_excludes_resolved_slugs_from_every_source(hot):
             (done, f"cond-{done}", "UP", now.isoformat(), now.isoformat(), "sha", "{}"))
     result = service._unsettled(now)
     assert [row["slug"] for row in result] == [open_slug]
+
+
+@pytest.mark.asyncio
+async def test_chainlink_reported_resolution_without_tx_hash_is_recorded(hot):
+    """Live-row regression (recorder-integrity sweep, 2026-11-27).
+
+    Since 2026-11-23T13:30Z the data API's resolutions for the SOL/XRP
+    15-minute series are Chainlink-reported: the row carries
+    transaction_hash "" with a positive resolved_block, where BTC/ETH
+    rows carry a full hash. The recorder's hash-only provenance check
+    rejected that shape, so SOL/XRP 15m outcomes stopped being recorded
+    (855 contracts attempted, 0 recorded) and the fair-value PM sample
+    piled up settlement_unavailable exclusions. The row below is the
+    verbatim live shape for sol-updown-15m-1795563900.
+    """
+    service = PolymarketResearch(hot)
+    service.initialize()
+    condition = "0x012bbd620f3d0dd05e161b7cfac96ed8b9000000000000000000000000000000"
+    row = {"condition_id": condition, "status": "resolved",
+           "extended_review": False, "was_disputed": False,
+           "new_version_q": False, "transaction_hash": "", "log_index": "",
+           "last_update_timestamp": "2026-11-25T00:00:41Z",
+           "market_type": "BINARY", "payouts": [0, 1000000],
+           "resolution_source": "reported", "reporter": "CHAINLINK",
+           "was_arbitrated": False, "resolved_block": 97906248,
+           "resolved_at": "2026-11-25T00:00:41Z"}
+    call = {"slug": "sol-updown-15m-1795563900", "condition_id": condition,
+            "expires_at": "2026-11-25T00:00:00+00:00"}
+    now = datetime(2026, 11, 25, 0, 5, tzinfo=UTC)
+    # Provenance failures stay rejected: empty hash with no block, a
+    # malformed non-empty hash, and a missing hash field.
+    assert service._record_resolution(
+        call, {**row, "resolved_block": 0}, now=now) == 0
+    assert service._record_resolution(
+        call, {**row, "transaction_hash": "0xzz"}, now=now) == 0
+    missing = {k: v for k, v in row.items() if k != "transaction_hash"}
+    assert service._record_resolution(call, missing, now=now) == 0
+    # The live Chainlink-reported shape records, direction from payouts.
+    assert service._record_resolution(call, row, now=now) == 1
+    with hot.connect() as conn:
+        saved = conn.execute(
+            "SELECT * FROM rival_polymarket_ai_outcomes").fetchone()
+    assert saved["direction"] == "DOWN"
+    assert saved["slug"] == "sol-updown-15m-1795563900"
+    await service.aclose()

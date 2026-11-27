@@ -53,8 +53,21 @@ def test_invalid_environment_and_cgroup_fail_closed_for_deferral(monkeypatch):
     monkeypatch.setenv("RIVAL_HOST_MEMORY_MB", "invalid")
     monkeypatch.setattr(host_memory, "_read_bytes", lambda path: "bad value")
     state = host_memory.snapshot()
-    assert state.limit_bytes == 512 * host_memory.MIB
+    assert state.limit_bytes == 1794 * host_memory.MIB
     assert state.rss_bytes is None
+    assert not state.pressure
+
+
+def test_fallback_limit_is_the_actual_allocation(monkeypatch):
+    """No cgroup and no env override: the fallback must be the bot's
+    actual 1,794 MB Discloud allocation (verified live 2026-11-27), not
+    the long-stale 512 MB figure -- at 512 the 0.83 pressure fraction
+    would defer optional work at ~425 MB of real usage."""
+    monkeypatch.delenv("RIVAL_HOST_MEMORY_MB", raising=False)
+    monkeypatch.setattr(host_memory, "_read_bytes", lambda path: None)
+    state = host_memory.snapshot()
+    assert host_memory._FALLBACK_MB == 1794
+    assert state.limit_bytes == 1794 * host_memory.MIB
     assert not state.pressure
 
 
@@ -131,7 +144,7 @@ def test_unlimited_cgroup_does_not_confuse_machine_usage_with_app_rss(monkeypatc
     }
     monkeypatch.setattr(host_memory, "_read_bytes", fixtures.get)
     state = host_memory.snapshot()
-    assert state.limit_bytes == 512 * host_memory.MIB
+    assert state.limit_bytes == 1794 * host_memory.MIB
     assert state.cgroup_bytes is None
     assert state.cgroup_peak_bytes is None
     assert not state.pressure

@@ -1,4 +1,4 @@
-"""Small, dependency-free host memory telemetry for a 512 MB Discloud bot.
+"""Small, dependency-free host memory telemetry for the Discloud bot.
 
 This is an optional-work deferral signal, not an OOM recovery mechanism.
 An external SIGKILL cannot be caught by Python. Live market observations,
@@ -11,9 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MIB = 1024 * 1024
-# Only valid on the shipped 512 MB Discloud configuration when cgroups are
-# unavailable. Operators changing RAM should set RIVAL_HOST_MEMORY_MB too.
-_FALLBACK_MB = 512
+# Fallback only, used when cgroups are unavailable: the bot's actual
+# Discloud allocation, verified live at 1,794 MB on 2026-11-27 (the
+# allocation is raised via the Discloud RAM endpoint, so discloud.config's
+# stale RAM= line is NOT a source for it). The cgroup limit is read first
+# whenever it exists, and RIVAL_HOST_MEMORY_MB overrides this constant --
+# operators changing RAM should set that env var or update this value.
+_FALLBACK_MB = 1794
 _PRESSURE_FRACTION = 0.83
 
 
@@ -162,7 +166,7 @@ def snapshot() -> HostMemory:
         limit_bytes=cgroup_limit or _fallback_limit(),
         oom_kills=_cgroup_oom_kills(),
         # An unlimited/root cgroup may measure the entire host rather than
-        # this 512 MB app. Only compare usage with a real cgroup limit.
+        # this app. Only compare usage with a real cgroup limit.
         cgroup_bytes=_cgroup_usage() if cgroup_limit is not None else None,
         cgroup_peak_bytes=_cgroup_peak() if cgroup_limit is not None else None,
         vm_data_bytes=_vm_data_bytes(),

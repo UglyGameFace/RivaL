@@ -57,6 +57,33 @@ def _malloc_trim() -> bool:
         return False
 
 
+# glibc mallopt parameter for the maximum number of malloc arenas.
+M_ARENA_MAX = -8
+ARENA_CAP = 2
+
+
+def limit_allocator_arenas(max_arenas: int = ARENA_CAP) -> bool:
+    """Cap glibc malloc arenas (glibc only; a no-op elsewhere).
+
+    Measured live 2026-11-26 on the production bot: 642 MB of RSS sat in
+    anonymous mappings against 150 MB in the main heap -- 59 anonymous
+    regions of 4 MB or more across 23 threads -- while every GC-visible
+    holder (path/window memos, checkpoint cache) was flat for hours and
+    the post-trim floor still climbed ~20 MB/h to the container kill.
+    Freed blocks were stranding in per-thread arenas, which malloc_trim
+    cannot drain (it trims only the main arena). Capping arena creation
+    forces freed blocks back into a couple of arenas that reuse and the
+    trim can actually return to the OS. Most effective before worker
+    threads spawn (main.py calls it first); harmless to repeat.
+    """
+    try:
+        import ctypes
+
+        return bool(ctypes.CDLL("libc.so.6").mallopt(M_ARENA_MAX, max_arenas))
+    except (OSError, AttributeError):
+        return False
+
+
 def _deep_size(root, seen: set, budget: list) -> int:
     """Bytes reachable from ``root`` not already counted (bounded walk)."""
     total = 0
@@ -139,6 +166,9 @@ class MemoryReceipt:
         self._last_counts: Counter | None = None
         self._last_rss: int | None = None
         self._holders_at = -HOLDERS_EVERY_S
+        # Belt and braces for entry points other than main.py: cap the
+        # allocator arenas here too (idempotent; see limit_allocator_arenas).
+        self._arenas_capped = limit_allocator_arenas()
 
     @staticmethod
     def _census() -> Counter:
@@ -195,7 +225,9 @@ class MemoryReceipt:
         line = f"rss_mb={rss // MIB} after_trim_mb={after // MIB}"
         if grew is not None:
             line += f" grew_mb={grew} top_growth=[{top or 'none'}]"
-        line += f" objects={sum(counts.values())} {memory.detail}"
+        line += (f" objects={sum(counts.values())}"
+                 f" arenas={'capped' if self._arenas_capped else 'native'}"
+                 f" {memory.detail}")
         if grew is not None and grew >= GREW_MB:
             _LOG.warning("RivaL memory receipt %s", line)
         else:

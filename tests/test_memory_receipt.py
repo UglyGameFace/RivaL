@@ -33,6 +33,45 @@ def test_malloc_trim_is_safe_to_call():
     assert memory_receipt._malloc_trim() in (True, False)
 
 
+def test_limit_allocator_arenas_sets_the_glibc_cap(monkeypatch):
+    """The arena cap is the retention fix for the 2026-11-26 kill: freed
+    blocks stranded in per-thread arenas (642 MB anonymous vs 150 MB main
+    heap, holders flat) that malloc_trim cannot drain."""
+    import ctypes
+
+    calls = []
+
+    class FakeLibc:
+        def mallopt(self, param, value):
+            calls.append((param, value))
+            return 1
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda name: FakeLibc())
+    assert memory_receipt.limit_allocator_arenas() is True
+    assert calls == [(memory_receipt.M_ARENA_MAX, memory_receipt.ARENA_CAP)]
+
+
+def test_limit_allocator_arenas_is_a_safe_noop_without_glibc(monkeypatch):
+    import ctypes
+
+    def no_libc(name):
+        raise OSError("no libc here")
+
+    monkeypatch.setattr(ctypes, "CDLL", no_libc)
+    assert memory_receipt.limit_allocator_arenas() is False
+
+
+def test_receipt_line_marks_the_arena_cap_state(monkeypatch):
+    """Every stored receipt proves whether the running instance booted
+    with the arena cap applied."""
+    readings = iter([100 * 2**20])
+    monkeypatch.setattr(memory_receipt.host_memory, "snapshot", lambda: _Snap(next(readings)))
+    monkeypatch.setattr(memory_receipt, "_malloc_trim", lambda: False)
+    monkeypatch.setattr(memory_receipt, "limit_allocator_arenas", lambda: True)
+    line = MemoryReceipt().sample()
+    assert "arenas=capped" in line
+
+
 def test_growth_attribution_survives_the_stored_text_budget(monkeypatch):
     """The problem log stores only the first 180 chars of a record.
 

@@ -86,6 +86,18 @@ CREATE TABLE IF NOT EXISTS rival_convergence_book_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_convergence_quotes_window
     ON rival_convergence_book_snapshots (venue, asset, window_open);
+-- Evaluator read orders (rectification 2026-11-27, following the
+-- market_store covering-index precedent): the convergence evaluator
+-- scans in (asset, window_open, venue, source_at) order and the
+-- fair-value evaluator in (venue, asset, window_open, source_at)
+-- order, both bounded to the registered recording epoch on
+-- window_open. Without these the planner seq-scans and sorts the
+-- whole snapshots table on every readout (4.62s / 3.29s slow
+-- operations measured live 2026-11-27).
+CREATE INDEX IF NOT EXISTS idx_convergence_snapshots_eval_order
+    ON rival_convergence_book_snapshots (asset, window_open, venue, source_at);
+CREATE INDEX IF NOT EXISTS idx_convergence_snapshots_venue_order
+    ON rival_convergence_book_snapshots (venue, asset, window_open, source_at);
 CREATE TABLE IF NOT EXISTS rival_convergence_reference_levels (
     venue TEXT NOT NULL, asset TEXT NOT NULL, contract_id TEXT NOT NULL,
     window_open TEXT NOT NULL, window_close TEXT NOT NULL,

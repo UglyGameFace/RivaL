@@ -104,6 +104,17 @@ COLLECTION_START = datetime(2026, 11, 19, 2, 12, tzinfo=UTC)
 ACCRUAL_WINDOW_DAYS = 21
 ACCRUAL_DEADLINE = COLLECTION_START + timedelta(days=ACCRUAL_WINDOW_DAYS)
 
+# Loader epoch bound (rectification 2026-11-27): load_windows reads only
+# the registered recording epoch, [EPOCH_WINDOW_START, ACCRUAL_DEADLINE).
+# Collection went live mid-window at COLLECTION_START, so the epoch's
+# first window is the 15-minute window containing it -- that window's
+# snapshots are registered data, not pre-collection history. Bounding
+# the read changes no frozen criterion: every row the evaluator could
+# ever judge lies inside the epoch, and the parity gate for this change
+# is byte-identical evaluator JSON on the same live data.
+EPOCH_WINDOW_START = COLLECTION_START.replace(
+    minute=(COLLECTION_START.minute // 15) * 15, second=0, microsecond=0)
+
 # --- Diligence condition 1: fee-regime split ---
 FEE_CHANGE_AT = datetime(2026, 11, 20, 23, 59, tzinfo=UTC)
 
@@ -467,6 +478,13 @@ def load_windows(store) -> list[dict]:
                 " AND name=?", (table,)).fetchone()
         return found is not None
 
+    epoch = (EPOCH_WINDOW_START.isoformat(), ACCRUAL_DEADLINE.isoformat())
+    # Auxiliary tables span all history, not just this test's epoch, and
+    # grow forever; only rows for contracts the epoch's snapshots name
+    # can ever be looked up below, so the reads are restricted to them.
+    epoch_ids = (
+        "SELECT DISTINCT contract_id FROM rival_convergence_book_snapshots"
+        " WHERE window_open>=? AND window_open<?")
     with store.connect() as conn:
         # A store the repaired collector has not initialized yet has no
         # reference_level column: every snapshot then simply carries no
@@ -481,13 +499,16 @@ def load_windows(store) -> list[dict]:
             " received_at, best_bid, best_ask, avg_bid, avg_ask, fee_rate,"
             f" {ref_expr}, book_sha256"
             " FROM rival_convergence_book_snapshots"
+            " WHERE window_open>=? AND window_open<?"
             " ORDER BY asset, window_open, venue, source_at",
+            epoch,
         ).fetchall()
         kalshi_refs: dict[str, float] = {}
         if _exists(conn, "rival_kalshi_updown"):
             for row in conn.execute(
                     "SELECT ticker, open_reference FROM rival_kalshi_updown"
-                    " WHERE open_reference IS NOT NULL").fetchall():
+                    " WHERE open_reference IS NOT NULL"
+                    f" AND ticker IN ({epoch_ids})", epoch).fetchall():
                 kalshi_refs[str(row["ticker"])] = float(row["open_reference"])
         pm_refs: dict[str, float] = {}
         for table in ("rival_poly_oracle_observations",
@@ -495,7 +516,8 @@ def load_windows(store) -> list[dict]:
             if not _exists(conn, table):
                 continue
             for row in conn.execute(
-                    f"SELECT slug, evidence_json FROM {table}").fetchall():
+                    f"SELECT slug, evidence_json FROM {table}"
+                    f" WHERE slug IN ({epoch_ids})", epoch).fetchall():
                 slug = str(row["slug"])
                 if slug not in pm_refs:
                     value = _reference_from_evidence(row["evidence_json"])
@@ -509,7 +531,8 @@ def load_windows(store) -> list[dict]:
         if _exists(conn, "rival_convergence_reference_levels"):
             for row in conn.execute(
                     "SELECT venue, contract_id, reference_level"
-                    " FROM rival_convergence_reference_levels").fetchall():
+                    " FROM rival_convergence_reference_levels"
+                    f" WHERE contract_id IN ({epoch_ids})", epoch).fetchall():
                 value = _snapshot_reference(row["reference_level"])
                 if value is None:
                     continue

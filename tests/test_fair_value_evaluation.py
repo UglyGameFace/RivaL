@@ -382,3 +382,27 @@ def test_loader_joins_snapshots_strikes_settlements_and_index(tmp_path):
     kalshi = next(w for w in windows if w["venue"] == "kalshi")
     assert kalshi["strike"] == pytest.approx(67230.0)  # open_reference join
     assert kalshi["settlement"] == 1
+
+
+def test_loader_reads_only_the_collection_epoch(tmp_path):
+    """Rectification 2026-11-27: snapshots from before the shared
+    collection epoch (EPOCH_WINDOW_START) are not read; in-epoch
+    windows load exactly as before."""
+    store = SQLiteHotStore(tmp_path / "fv.sqlite")
+    quotes = ConvergenceQuotes(store)
+    opened = datetime(2026, 11, 19, 12, 0, 0, tzinfo=UTC)
+    for when, contract in (
+            (datetime(2026, 11, 18, 12, 0, 0, tzinfo=UTC), "btc-pre-epoch"),
+            (opened, "btc-in-epoch")):
+        assert quotes.record({
+            "venue": "polymarket", "asset": "BTC", "contract_id": contract,
+            "window_open": when, "window_close": when + timedelta(minutes=15),
+            "source_at": when + timedelta(seconds=300),
+            "received_at": when + timedelta(seconds=300),
+            "best_bid": 0.59, "best_ask": 0.61, "bid_size": 50.0,
+            "ask_size": 50.0, "avg_bid": 0.595, "avg_ask": 0.615,
+            "fee_rate": 0.07, "reference_level": 67234.5,
+            "book_sha256": "cd" * 32,
+        })
+    windows = load_windows(store)
+    assert [w["contract_id"] for w in windows] == ["btc-in-epoch"]

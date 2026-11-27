@@ -7,6 +7,8 @@ the same discipline the N2/N3 graders were proven against.
 """
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from parlay_bot.perpetuals.late_window_evaluation import (
     ACCRUAL_DEADLINE,
     REGISTRATION_EPOCH,
@@ -68,7 +70,7 @@ def test_below_floors_is_accrual_never_a_verdict():
     report = grade_late_window(obs, now=NOW)
     assert report["status"] == "ACCRUAL" and report["verdict"] is None
     assert report["standing"]["preliminary"] is True
-    assert report["standing"]["mean_net"] == 0.09  # shown, labeled
+    assert report["standing"]["mean_net"] == pytest.approx(0.09)  # shown, labeled
 
 
 def test_accrual_deadline_fails_closed():

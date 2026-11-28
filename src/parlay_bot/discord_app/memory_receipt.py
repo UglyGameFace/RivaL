@@ -257,8 +257,6 @@ class MemoryReceipt:
         line = f"rss_mb={rss // MIB} after_trim_mb={after // MIB}"
         if grew is not None:
             line += f" grew_mb={grew} top_growth=[{top or 'none'}]"
-            if top_bytes:
-                line += f" top_bytes=[{top_bytes}]"
         line += (f" objects={sum(counts.values())}"
                  f" arenas={'capped' if self._arenas_capped else 'native'}"
                  f" {memory.detail}")
@@ -266,6 +264,22 @@ class MemoryReceipt:
             _LOG.warning("RivaL memory receipt %s", line)
         else:
             _LOG.info("RivaL memory receipt %s", line)
+        if top_bytes:
+            # The byte census rides on its OWN stored line, not inside
+            # the receipt line: the problem log keeps only WARNING+ and
+            # truncates text at 180 chars, and the receipt's top_growth
+            # segment eats that whole budget -- in every stored receipt
+            # since the census deployed (2026-11-27) the text ends inside
+            # top_growth, so top_bytes never once reached durable
+            # storage and the step hunt stayed blind exactly on the
+            # receipts that saw steps (+131/+163 MB on 2026-11-28).
+            # Same remedy as the holders line below. It logs at warning
+            # whenever the receipt itself did (a real growth step), so
+            # step attribution always lands in the problem log.
+            if grew is not None and grew >= GREW_MB:
+                _LOG.warning("RivaL memory bytes %s", top_bytes)
+            else:
+                _LOG.info("RivaL memory bytes %s", top_bytes)
         if holders:
             # The holders list rides on its OWN stored line, not inside
             # the receipt line: the first attributable receipt (2026-11-26

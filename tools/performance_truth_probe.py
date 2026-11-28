@@ -9,8 +9,16 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import sys
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+# Standalone runs (Discloud exec) have no PYTHONPATH: the bot process
+# gets src/ from main.py, this probe must add it itself, exactly as
+# tools/evaluate_*.py do. Without it every run died with
+# {"error": "ModuleNotFoundError"} (recorder-integrity sweep, 2026-11-27).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 MARKER = "RIVAL_PERFORMANCE_PROBE="
 

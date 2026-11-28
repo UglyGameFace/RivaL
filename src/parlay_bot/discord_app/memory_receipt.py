@@ -303,8 +303,22 @@ def census_snapshot() -> tuple[int, Counter, Counter]:
     counts live objects, it changes nothing.
     """
     counts, sizes = MemoryReceipt._census()
-    rss = host_memory.snapshot().rss_bytes or 0
+    rss = getattr(host_memory.snapshot(), "rss_bytes", None) or 0
     return rss, counts, sizes
+
+
+def census_start():
+    """Fail-safe before snapshot for job wraps: None when unavailable.
+
+    The wraps are additive logging only, so a census failure must never
+    break the job it brackets -- callers pass the result to
+    log_job_census(), which treats None as "no bracket".
+    """
+    try:
+        return census_snapshot()
+    except Exception:  # noqa: BLE001 - instrumentation must not break jobs
+        _LOG.warning("RivaL memory census snapshot unavailable", exc_info=True)
+        return None
 
 
 def census_delta(before, after) -> dict:
@@ -337,10 +351,18 @@ def log_job_census(job: str, before) -> str:
 
     One INFO line per run: ``memory census job=<name> rss_delta_mb=<n>
     top_counts=<...> top_bytes=<...>``. Additive logging only -- the
-    caller passes the before snapshot from census_snapshot() and its
-    control flow is unchanged. Returns the logged line (for tests).
+    caller passes the before snapshot from census_start() and its
+    control flow is unchanged; a missing or unreadable bracket logs
+    nothing and returns "". Returns the logged line (for tests).
     """
-    delta = census_delta(before, census_snapshot())
+    if before is None:
+        return ""
+    try:
+        delta = census_delta(before, census_snapshot())
+    except Exception:  # noqa: BLE001 - instrumentation must not break jobs
+        _LOG.warning("RivaL memory census for job=%s unavailable", job,
+                     exc_info=True)
+        return ""
     line = (f"memory census job={job} rss_delta_mb={delta['rss_delta_mb']}"
             f" top_counts=[{delta['top_counts'] or 'none'}]"
             f" top_bytes=[{delta['top_bytes'] or 'none'}]")

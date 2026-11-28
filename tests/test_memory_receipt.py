@@ -330,3 +330,27 @@ def test_log_job_census_emits_the_plan_line(monkeypatch, caplog):
     assert line == ("memory census job=archive rss_delta_mb=12 "
                     "top_counts=[dict+8] top_bytes=[dict+2.0]")
     assert any(line in r.getMessage() for r in caplog.records)
+
+
+def test_census_snapshot_tolerates_a_snapshot_without_rss(monkeypatch):
+    """Callers stub host_memory.snapshot() with partial namespaces (the
+    records-loop tests stub one carrying only .pressure); the census
+    must read RSS defensively instead of killing the bracketed job."""
+    import types
+
+    monkeypatch.setattr(memory_receipt.host_memory, "snapshot",
+                        lambda: types.SimpleNamespace(pressure=False))
+    rss, counts, sizes = memory_receipt.census_snapshot()
+    assert rss == 0 and counts and sizes is not None
+
+
+def test_census_start_and_log_job_census_never_raise(monkeypatch):
+    """Additive logging only: a broken census yields no bracket and no
+    line, never an exception into the job loop."""
+    def boom():
+        raise RuntimeError("no census here")
+
+    monkeypatch.setattr(memory_receipt, "census_snapshot", boom)
+    assert memory_receipt.census_start() is None
+    assert memory_receipt.log_job_census("archive", None) == ""
+    assert memory_receipt.log_job_census("archive", (0, {}, {})) == ""

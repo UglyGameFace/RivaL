@@ -2031,7 +2031,7 @@ class RivalDiscordClient(discord.Client):
         from pathlib import Path
 
         from parlay_bot.discord_app.memory_receipt import (
-            census_snapshot,
+            census_start,
             log_job_census,
         )
         from parlay_bot.perpetuals.records_backup import RecordsBackup
@@ -2041,7 +2041,7 @@ class RivalDiscordClient(discord.Client):
         backup = RecordsBackup(self.store, self.research_drive,
                                Path(tempfile.gettempdir()) / "rival-records")
         while not self.is_closed():
-            _census_before = await asyncio.to_thread(census_snapshot)
+            _census_before = await asyncio.to_thread(census_start)
             # XMarket's completed-day proof must NOT depend on a successful
             # full records backup. A slow/failed backup otherwise suppresses
             # the only prospective Drive export before archive training.
@@ -2752,7 +2752,7 @@ class RivalDiscordClient(discord.Client):
         rival_lab_refill_enabled is on; it is off since the price-first
         pivot, so the lab's roster only shrinks."""
         from parlay_bot.discord_app.memory_receipt import (
-            census_snapshot,
+            census_start,
             log_job_census,
         )
         from parlay_bot.perpetuals.model_lab import REVIEW_EVERY
@@ -2760,7 +2760,7 @@ class RivalDiscordClient(discord.Client):
         await self.wait_until_ready()
         await asyncio.sleep(120)   # let startup work finish first
         while not self.is_closed():
-            _census_before = await asyncio.to_thread(census_snapshot)
+            _census_before = await asyncio.to_thread(census_start)
             try:
                 changed = await asyncio.wait_for(
                     asyncio.to_thread(self.model_lab().review), timeout=240)
@@ -3073,7 +3073,7 @@ class RivalDiscordClient(discord.Client):
         scorecard on the same 30-minute schedule.
         """
         from parlay_bot.discord_app.memory_receipt import (
-            census_snapshot,
+            census_start,
             log_job_census,
         )
 
@@ -3086,7 +3086,7 @@ class RivalDiscordClient(discord.Client):
                 _LOG.warning("Saved Bot Performance copies not loaded", exc_info=True)
         await asyncio.sleep(150)  # start between forecast cycles
         while not self.is_closed():
-            _census_before = await asyncio.to_thread(census_snapshot)
+            _census_before = await asyncio.to_thread(census_start)
             if self.perp_collector is not None and not host_memory.snapshot().pressure:
                 try:
                     await asyncio.to_thread(warm_benefit_cache, self.perp_collector.market)
@@ -4108,7 +4108,7 @@ class RivalDiscordClient(discord.Client):
 
     async def _archive_loop(self) -> None:
         from parlay_bot.discord_app.memory_receipt import (
-            census_snapshot,
+            census_start,
             log_job_census,
         )
 
@@ -4121,7 +4121,7 @@ class RivalDiscordClient(discord.Client):
                 _LOG.warning("RivaL optional archival deferred: high host RSS")
                 await asyncio.sleep(min(300, self.settings.rival_archive_run_seconds))
                 continue
-            _census_before = await asyncio.to_thread(census_snapshot)
+            _census_before = await asyncio.to_thread(census_start)
             try:
                 cutoff = datetime.now(UTC) - timedelta(
                     minutes=self.settings.rival_archive_closed_state_minutes

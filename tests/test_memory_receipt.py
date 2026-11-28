@@ -61,11 +61,18 @@ def test_limit_allocator_arenas_is_a_safe_noop_without_glibc(monkeypatch):
     assert memory_receipt.limit_allocator_arenas() is False
 
 
-def test_byte_census_names_payload_growth_counts_cannot_see(monkeypatch):
+def test_byte_census_names_payload_growth_counts_cannot_see(monkeypatch, caplog):
     """The 2026-11-27 +95 MB step's count leaders were ~880 small tick
     objects -- the retained bytes sat in payloads, where one object
     counts once no matter how many megabytes it carries. The receipt
-    must report per-type BYTE growth alongside the counts."""
+    must report per-type BYTE growth alongside the counts.
+
+    The bytes ride their OWN log line ("RivaL memory bytes %s"), never
+    the receipt line: the problem log truncates stored text at 180
+    chars, the receipt's top_growth segment eats that whole budget,
+    and in every stored receipt since the census deployed the bytes
+    segment fell off the end (found 2026-11-28 on +131/+163 MB steps
+    whose stored text ends inside top_growth)."""
     readings = iter([100 * 2**20, 120 * 2**20])
     monkeypatch.setattr(memory_receipt.host_memory, "snapshot", lambda: _Snap(next(readings)))
     monkeypatch.setattr(memory_receipt, "_malloc_trim", lambda: False)
@@ -75,8 +82,14 @@ def test_byte_census_names_payload_growth_counts_cannot_see(monkeypatch):
     # GC-tracked, so the census sees payloads through their containers
     # and array buffers -- a 4M-slot list carries ~32 MB of slots.
     payload = [None] * (4 * 2**20)
-    line = receipt.sample()
-    assert "top_bytes=[list+" in line
+    with caplog.at_level(logging.WARNING, logger="parlay_bot.discord_app.memory_receipt"):
+        line = receipt.sample()
+    assert "top_bytes" not in line
+    byte_lines = [r.getMessage() for r in caplog.records
+                  if r.getMessage().startswith("RivaL memory bytes")]
+    assert len(byte_lines) == 1 and "list+" in byte_lines[0]
+    # The dedicated line fits the 180-char stored-text budget whole.
+    assert len(byte_lines[0]) <= 180
     del payload
 
 

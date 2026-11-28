@@ -292,3 +292,79 @@ class MemoryReceipt:
             for rank, (name, size) in enumerate(holders, start=1):
                 _LOG.log(level, f"RivaL memory holder #{rank}: %s=%dMB", name, size // MIB)
         return line
+
+
+def census_snapshot() -> tuple[int, Counter, Counter]:
+    """One (rss_bytes, counts, sizes) census snapshot for before/after pairs.
+
+    The same GC pass MemoryReceipt.sample() uses, exposed so a periodic
+    job can bracket its own run with a pair and have the delta attributed
+    to it (memory step attribution plan, 2026-11-27). Read-only: it
+    counts live objects, it changes nothing.
+    """
+    counts, sizes = MemoryReceipt._census()
+    rss = getattr(host_memory.snapshot(), "rss_bytes", None) or 0
+    return rss, counts, sizes
+
+
+def census_start():
+    """Fail-safe before snapshot for job wraps: None when unavailable.
+
+    The wraps are additive logging only, so a census failure must never
+    break the job it brackets -- callers pass the result to
+    log_job_census(), which treats None as "no bracket".
+    """
+    try:
+        return census_snapshot()
+    except Exception:  # noqa: BLE001 - instrumentation must not break jobs
+        _LOG.warning("RivaL memory census snapshot unavailable", exc_info=True)
+        return None
+
+
+def census_delta(before, after) -> dict:
+    """Delta between two census_snapshot() results, without logging.
+
+    Returns rss_delta_mb (signed whole MB) plus the receipt's own
+    top-growth formats: count deltas for the TOP types, and byte deltas
+    restricted to payload-scale moves (>= 1 MB), matching sample().
+    """
+    rss_before, counts_before, sizes_before = before
+    rss_after, counts_after, sizes_after = after
+    count_delta = counts_after.copy()
+    count_delta.subtract(counts_before)
+    top_counts = ", ".join(
+        f"{name}+{n}" for name, n in count_delta.most_common(TOP) if n > 0)
+    byte_delta = sizes_after.copy()
+    byte_delta.subtract(sizes_before)
+    top_bytes = ", ".join(
+        f"{name}{n / MIB:+.1f}" for name, n in byte_delta.most_common(TOP)
+        if n >= MIB)
+    return {
+        "rss_delta_mb": (rss_after - rss_before) // MIB,
+        "top_counts": top_counts,
+        "top_bytes": top_bytes,
+    }
+
+
+def log_job_census(job: str, before) -> str:
+    """Take the after snapshot for ``job`` and log its census delta line.
+
+    One INFO line per run: ``memory census job=<name> rss_delta_mb=<n>
+    top_counts=<...> top_bytes=<...>``. Additive logging only -- the
+    caller passes the before snapshot from census_start() and its
+    control flow is unchanged; a missing or unreadable bracket logs
+    nothing and returns "". Returns the logged line (for tests).
+    """
+    if before is None:
+        return ""
+    try:
+        delta = census_delta(before, census_snapshot())
+    except Exception:  # noqa: BLE001 - instrumentation must not break jobs
+        _LOG.warning("RivaL memory census for job=%s unavailable", job,
+                     exc_info=True)
+        return ""
+    line = (f"memory census job={job} rss_delta_mb={delta['rss_delta_mb']}"
+            f" top_counts=[{delta['top_counts'] or 'none'}]"
+            f" top_bytes=[{delta['top_bytes'] or 'none'}]")
+    _LOG.info("RivaL %s", line)
+    return line

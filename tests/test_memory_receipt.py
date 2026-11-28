@@ -284,3 +284,73 @@ def test_memory_holders_reports_a_partial_walk():
     _, partial = memory_holders(top=20, node_budget=10)
     assert partial
     del holder
+
+
+def test_census_delta_math_on_a_synthetic_pair():
+    """The job-census helper is pure delta math on a before/after pair:
+    signed RSS delta, positive count growth only, byte deltas only at
+    payload scale (>= 1 MB), in the receipt's own formats."""
+    from collections import Counter
+
+    mib = memory_receipt.MIB
+    before = (100 * mib, Counter({"dict": 10, "list": 5}),
+              Counter({"dict": 3 * mib, "bytes": 2 * mib}))
+    after = (137 * mib, Counter({"dict": 25, "list": 5, "tuple": 3}),
+             Counter({"dict": 3 * mib + mib // 2, "bytes": 5 * mib}))
+    delta = memory_receipt.census_delta(before, after)
+    assert delta["rss_delta_mb"] == 37
+    assert delta["top_counts"] == "dict+15, tuple+3"
+    # dict grew by only 0.5 MB (below the payload floor); bytes +3.0 MB.
+    assert delta["top_bytes"] == "bytes+3.0"
+
+
+def test_census_delta_handles_shrinkage_and_no_growth():
+    from collections import Counter
+
+    mib = memory_receipt.MIB
+    before = (200 * mib, Counter({"dict": 10}), Counter({"dict": 4 * mib}))
+    after = (180 * mib, Counter({"dict": 4}), Counter({"dict": 4 * mib}))
+    delta = memory_receipt.census_delta(before, after)
+    assert delta["rss_delta_mb"] == -20
+    assert delta["top_counts"] == ""
+    assert delta["top_bytes"] == ""
+
+
+def test_log_job_census_emits_the_plan_line(monkeypatch, caplog):
+    """One INFO line per job run, in the setup plan's exact format."""
+    from collections import Counter
+
+    mib = memory_receipt.MIB
+    before = (100 * mib, Counter({"dict": 1}), Counter({"dict": mib}))
+    after = (112 * mib, Counter({"dict": 9}), Counter({"dict": 3 * mib}))
+    monkeypatch.setattr(memory_receipt, "census_snapshot", lambda: after)
+    with caplog.at_level(logging.INFO,
+                         logger="parlay_bot.discord_app.memory_receipt"):
+        line = memory_receipt.log_job_census("archive", before)
+    assert line == ("memory census job=archive rss_delta_mb=12 "
+                    "top_counts=[dict+8] top_bytes=[dict+2.0]")
+    assert any(line in r.getMessage() for r in caplog.records)
+
+
+def test_census_snapshot_tolerates_a_snapshot_without_rss(monkeypatch):
+    """Callers stub host_memory.snapshot() with partial namespaces (the
+    records-loop tests stub one carrying only .pressure); the census
+    must read RSS defensively instead of killing the bracketed job."""
+    import types
+
+    monkeypatch.setattr(memory_receipt.host_memory, "snapshot",
+                        lambda: types.SimpleNamespace(pressure=False))
+    rss, counts, sizes = memory_receipt.census_snapshot()
+    assert rss == 0 and counts and sizes is not None
+
+
+def test_census_start_and_log_job_census_never_raise(monkeypatch):
+    """Additive logging only: a broken census yields no bracket and no
+    line, never an exception into the job loop."""
+    def boom():
+        raise RuntimeError("no census here")
+
+    monkeypatch.setattr(memory_receipt, "census_snapshot", boom)
+    assert memory_receipt.census_start() is None
+    assert memory_receipt.log_job_census("archive", None) == ""
+    assert memory_receipt.log_job_census("archive", (0, {}, {})) == ""

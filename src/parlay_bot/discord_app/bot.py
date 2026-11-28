@@ -2030,6 +2030,10 @@ class RivalDiscordClient(discord.Client):
         import tempfile
         from pathlib import Path
 
+        from parlay_bot.discord_app.memory_receipt import (
+            census_start,
+            log_job_census,
+        )
         from parlay_bot.perpetuals.records_backup import RecordsBackup
 
         await self.wait_until_ready()
@@ -2037,6 +2041,7 @@ class RivalDiscordClient(discord.Client):
         backup = RecordsBackup(self.store, self.research_drive,
                                Path(tempfile.gettempdir()) / "rival-records")
         while not self.is_closed():
+            _census_before = await asyncio.to_thread(census_start)
             # XMarket's completed-day proof must NOT depend on a successful
             # full records backup. A slow/failed backup otherwise suppresses
             # the only prospective Drive export before archive training.
@@ -2063,6 +2068,7 @@ class RivalDiscordClient(discord.Client):
                 raise
             except Exception:  # noqa: BLE001 - backup must never affect the bot
                 _LOG.exception("RivaL records backup failed; retrying next hour")
+            await asyncio.to_thread(log_job_census, "records_backup", _census_before)
             await asyncio.sleep(3600)
 
     async def _status_loop(self) -> None:
@@ -2745,11 +2751,16 @@ class RivalDiscordClient(discord.Client):
         Refill (opening replacement designs) happens only when
         rival_lab_refill_enabled is on; it is off since the price-first
         pivot, so the lab's roster only shrinks."""
+        from parlay_bot.discord_app.memory_receipt import (
+            census_start,
+            log_job_census,
+        )
         from parlay_bot.perpetuals.model_lab import REVIEW_EVERY
 
         await self.wait_until_ready()
         await asyncio.sleep(120)   # let startup work finish first
         while not self.is_closed():
+            _census_before = await asyncio.to_thread(census_start)
             try:
                 changed = await asyncio.wait_for(
                     asyncio.to_thread(self.model_lab().review), timeout=240)
@@ -2762,6 +2773,7 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001 - the lab must never stop the bot
                 _LOG.warning("RivaL model lab review failed; retrying next round",
                              exc_info=True)
+            await asyncio.to_thread(log_job_census, "model_lab_review", _census_before)
             # Fixed :17/:47 phase (see _phase_sleep_seconds): the review
             # must not drift into the benefit warm or the :00/:30 cycles.
             await asyncio.sleep(_phase_sleep_seconds(
@@ -3060,6 +3072,11 @@ class RivalDiscordClient(discord.Client):
         improvement check, the exchange scorecard, and the Polymarket
         scorecard on the same 30-minute schedule.
         """
+        from parlay_bot.discord_app.memory_receipt import (
+            census_start,
+            log_job_census,
+        )
+
         await self.wait_until_ready()
         if self.perp_collector is not None:
             from parlay_bot.discord_app import screen_snapshots
@@ -3069,6 +3086,7 @@ class RivalDiscordClient(discord.Client):
                 _LOG.warning("Saved Bot Performance copies not loaded", exc_info=True)
         await asyncio.sleep(150)  # start between forecast cycles
         while not self.is_closed():
+            _census_before = await asyncio.to_thread(census_start)
             if self.perp_collector is not None and not host_memory.snapshot().pressure:
                 try:
                     await asyncio.to_thread(warm_benefit_cache, self.perp_collector.market)
@@ -3091,6 +3109,7 @@ class RivalDiscordClient(discord.Client):
                     await asyncio.to_thread(warm_page_reads, self.perp_collector.market)
                 except Exception:  # noqa: BLE001 - optional page context
                     _LOG.exception("RivaL Performance page refresh failed")
+            await asyncio.to_thread(log_job_census, "snapshot_build", _census_before)
             # Fixed :07/:37 phase (see _phase_sleep_seconds): the warm
             # must not drift into the Model Lab review or :00/:30 cycles.
             await asyncio.sleep(_phase_sleep_seconds(7))
@@ -4088,6 +4107,11 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(wait)
 
     async def _archive_loop(self) -> None:
+        from parlay_bot.discord_app.memory_receipt import (
+            census_start,
+            log_job_census,
+        )
+
         await self.wait_until_ready()
         assert self.archive_runtime is not None
         await self._after_startup_burst()
@@ -4097,6 +4121,7 @@ class RivalDiscordClient(discord.Client):
                 _LOG.warning("RivaL optional archival deferred: high host RSS")
                 await asyncio.sleep(min(300, self.settings.rival_archive_run_seconds))
                 continue
+            _census_before = await asyncio.to_thread(census_start)
             try:
                 cutoff = datetime.now(UTC) - timedelta(
                     minutes=self.settings.rival_archive_closed_state_minutes
@@ -4154,6 +4179,7 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001 - background archive must not kill Discord
                 _LOG.exception("RivaL cold archive cycle failed safely")
 
+            await asyncio.to_thread(log_job_census, "archive", _census_before)
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     # Every background worker, so shutdown cancels all of them, not a

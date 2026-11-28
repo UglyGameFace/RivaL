@@ -1018,6 +1018,29 @@ def load_llm_proposals(store) -> tuple[list[dict], dict]:
     return proposals, rejected
 
 
+def _stream_gd(store, sql, params):
+    """Stream the G-D loader query with parallel workers disabled.
+
+    The managed Postgres host's /dev/shm cannot grant the 16 MB POSIX
+    dynamic-shared-memory resize this join's parallel hash plan needs
+    (DiskFull, SQLSTATE 53100, reproduced live 2026-11-27; the serial
+    plan completes with identical rows). SET LOCAL scopes the GUC to
+    this checkout's transaction only: it evaporates at the commit on
+    connection exit, before the pooled connection is handed back, so
+    no other caller's plan changes. SQLite has no such GUC and no
+    parallel planner, so the SET is Postgres-only.
+    """
+    with store.connect() as conn:
+        if getattr(conn, "backend", None) == "postgres":
+            conn.execute("SET LOCAL max_parallel_workers_per_gather = 0")
+        cursor = conn.execute(sql, params)
+        while True:
+            chunk = cursor.fetchmany(wb.FETCH_CHUNK)
+            if not chunk:
+                return
+            yield from chunk
+
+
 def load_gd_record(store) -> tuple[list[dict], dict]:
     """Settled perp rows joined to their decision-time lineage vector.
 
@@ -1057,7 +1080,7 @@ def load_gd_record(store) -> tuple[list[dict], dict]:
     )
     rows: list[dict] = []
     coverage = {"settled_rows_seen": 0, "unparseable_row": 0}
-    for raw in wb._stream(store, sql, (PERP_MODEL, GD_FEATURES_CUTOFF)):
+    for raw in _stream_gd(store, sql, (PERP_MODEL, GD_FEATURES_CUTOFF)):
         coverage["settled_rows_seen"] += 1
         issued = wb._parse_time(raw["issued_at"])
         settled = wb._parse_time(raw["settled_at"])

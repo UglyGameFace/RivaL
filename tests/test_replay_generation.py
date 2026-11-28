@@ -675,6 +675,83 @@ def test_gd_loader_excludes_pre_cutoff_and_unrecorded_rows(tmp_path):
     assert all(r["cluster"].startswith("BTC:2026-") for r in rows)
 
 
+class _StubCursor:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    def fetchmany(self, _n):
+        return self._chunks.pop(0) if self._chunks else []
+
+
+class _StubConn:
+    """Records every statement; __exit__ stands in for the pooled
+    checkout's commit, at which a SET LOCAL GUC evaporates."""
+
+    def __init__(self, backend, chunks):
+        self.backend = backend
+        self.statements = []
+        self._chunks = chunks
+        self.exited = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.exited = True
+        return False
+
+    def execute(self, sql, params=()):
+        self.statements.append(sql)
+        return _StubCursor(self._chunks)
+
+
+class _StubStore:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def connect(self):
+        return self._conn
+
+
+def test_gd_stream_disables_parallel_workers_postgres_only():
+    pg = _StubConn("postgres", [[{"x": 1}], []])
+    rows = list(gen._stream_gd(_StubStore(pg), "SELECT 1", ()))
+    assert rows == [{"x": 1}]
+    # Transaction-scoped (LOCAL), issued before the loader's SELECT on
+    # the same checkout -- never a bare/session SET that could leak to
+    # the next borrower of the pooled connection.
+    assert pg.statements[0] == (
+        "SET LOCAL max_parallel_workers_per_gather = 0")
+    assert pg.statements[1] == "SELECT 1"
+    assert pg.exited
+
+    lite = _StubConn("sqlite", [[{"x": 2}], []])
+    rows = list(gen._stream_gd(_StubStore(lite), "SELECT 1", ()))
+    assert rows == [{"x": 2}]
+    assert lite.statements == ["SELECT 1"]
+
+
+def test_gd_loader_sets_guc_on_postgres_checkout():
+    issued = datetime(2026, 11, 22, 12, 0, tzinfo=UTC)
+    raw = {
+        "venue": "binance", "contract": "BTCUSDT", "quote": "USDT",
+        "horizon_minutes": 15,
+        "reference_opened_at": (issued - timedelta(minutes=15)).isoformat(),
+        "issued_at": issued.isoformat(),
+        "features_json": json.dumps(_gd_features(1)),
+        "asset": "BTC",
+        "target_opened_at": (issued + timedelta(minutes=15)).isoformat(),
+        "probability_up": 0.6, "baseline_up": 0.5, "outcome_up": 1,
+        "settled_at": (issued + timedelta(minutes=30)).isoformat(),
+    }
+    conn = _StubConn("postgres", [[raw], []])
+    rows, coverage = gen.load_gd_record(_StubStore(conn))
+    assert coverage["eligible_rows"] == len(rows) == 1
+    assert conn.statements[0] == (
+        "SET LOCAL max_parallel_workers_per_gather = 0")
+    assert conn.statements[1].startswith("SELECT l.venue")
+
+
 def test_gd_below_floor_reports_floor_progress(tmp_path):
     store = _gd_store(tmp_path, days=9, per_day=50, contracts=5)
     rows, _ = gen.load_gd_record(store)

@@ -139,6 +139,22 @@ def test_model_lab_scored_review_uses_targeted_partial_index(tmp_path, monkeypat
             assert "settled_at IS NOT NULL" in definition
             assert "model_brier BETWEEN 0 AND 1" in definition
             assert "incumbent_brier BETWEEN 0 AND 1" in definition
+            # The cover twin carries every column the score read evaluates,
+            # so PostgreSQL can answer it index-only instead of fetching
+            # each of the ~260k window rows from the heap (7-11 s per
+            # horizon on production, 2026-11-28).
+            assert _columns(conn, "idx_rival_model_shadow_lab_scored_cover") == [
+                "horizon_minutes", "family", "asset", "issued_at",
+                "target_opened_at", "venue", "contract", "settled_at",
+                "model_brier", "incumbent_brier"
+            ]
+            cover_definition = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name=?",
+                ("idx_rival_model_shadow_lab_scored_cover",),
+            ).fetchone()["sql"]
+            assert "settled_at IS NOT NULL" in cover_definition
+            assert "model_brier BETWEEN 0 AND 1" in cover_definition
+            assert "incumbent_brier BETWEEN 0 AND 1" in cover_definition
             for sql, params in captured:
                 plan = conn.execute(
                     "EXPLAIN QUERY PLAN " + sql, params,

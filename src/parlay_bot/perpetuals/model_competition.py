@@ -197,6 +197,23 @@ class ShadowModelCompetition:
                 WHERE settled_at IS NOT NULL AND outcome_up IN (0,1)
                   AND model_brier BETWEEN 0 AND 1
                   AND incumbent_brier BETWEEN 0 AND 1;
+            -- The lab review's score read also evaluates target_opened_at,
+            -- venue, contract, settled_at and both Brier columns per row,
+            -- none of which the index above carries: with ~260k scored
+            -- rows in the window (oldest running design sets the start),
+            -- every candidate row cost a heap fetch and the read ran
+            -- 7-11 s per horizon on production (2026-11-28), tripping the
+            -- database slow-operation incident on every review cycle.
+            -- This twin carries those columns after the range columns, so
+            -- the same read runs index-only; the numbers are unchanged.
+            CREATE INDEX IF NOT EXISTS idx_rival_model_shadow_lab_scored_cover
+                ON rival_model_shadow_forecasts
+                (horizon_minutes,family,asset,issued_at,
+                 target_opened_at,venue,contract,settled_at,
+                 model_brier,incumbent_brier)
+                WHERE settled_at IS NOT NULL AND outcome_up IN (0,1)
+                  AND model_brier BETWEEN 0 AND 1
+                  AND incumbent_brier BETWEEN 0 AND 1;
             """)
             # Stops recorded by early_stop: issue() reads this on every
             # stream, so it must exist wherever the ledger does.
